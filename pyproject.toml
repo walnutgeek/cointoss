@@ -1,0 +1,154 @@
+# ---- Project Info and Dependencies ----
+
+[project.urls]
+Repository = "https://github.com/walnutgeek/cointoss"
+
+[project]
+name = "cointoss"
+description = "Crypto coin portfolio tracker and research platform - powered by lythonic and woodglue"
+authors = [
+    { name="Walnut Geek", email="wg@walnutgeek.com" },
+]
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11,<4.0"
+dynamic = ["version"]
+
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Typing :: Typed",
+]
+
+
+# ---- Main dependencies ----
+
+dependencies = [
+    "lythonic",
+    "woodglue",
+    "httpx",
+    "tornado>=6.5.5",
+]
+
+
+# ---- Dev dependencies ----
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.5",
+    "pytest-sugar>=1.0.0",
+    "ruff>=0.14.2",
+    "codespell>=2.4.1",
+    "rich>=14.0.0",
+    "basedpyright>=1.32.1",
+    "funlog>=0.2.1",
+    "coverage>=7.6.7",
+    "pytest-cov>=7.0.0",
+    "pytest-asyncio>=1.2.0",
+]
+docs = [
+    "markdown-pycon>=1.0.1",
+    "mkdocs>=1.6",
+    "mkdocs-material>=9.5",
+    "mkdocstrings[python]>=0.27",
+]
+
+[project.scripts]
+cointoss = "cointoss.cli:main"
+
+
+# ---- Build system ----
+
+[build-system]
+requires = ["hatchling", "uv-dynamic-versioning"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+source = "uv-dynamic-versioning"
+
+[tool.uv-dynamic-versioning]
+vcs = "git"
+style = "pep440"
+bump = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cointoss"]
+
+
+# ---- Settings ----
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+    "E",
+    "F",
+    "UP",
+    "B",
+    "I",
+]
+ignore = [
+    "E501",
+    "E402",
+    "E731",
+    "W191",
+    "E111",
+    "E114",
+    "E117",
+    "D206",
+    "D300",
+    "Q000",
+    "Q001",
+    "Q002",
+    "Q003",
+    "COM812",
+    "COM819",
+    "ISC002",
+]
+
+[tool.basedpyright]
+include = ["src", "tests", "devtools"]
+reportIgnoreCommentWithoutRule = false
+reportUnnecessaryTypeIgnoreComment = false
+reportMissingTypeStubs = false
+reportUnusedCallResult = false
+reportAny = false
+reportExplicitAny = false
+reportImplicitStringConcatenation = false
+reportUnreachable = false
+reportImplicitOverride = false
+reportUnknownMemberType = false
+
+[tool.codespell]
+
+[tool.pytest.ini_options]
+python_files = ["*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+testpaths = [
+    "src",
+    "tests",
+]
+norecursedirs = []
+filterwarnings = []
+
+addopts = ["--import-mode=importlib", "--doctest-modules", "--cov=src", "--cov-report=term-missing", "--cov-report=xml:cov.xml"]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "debug: marks tests for debugging (select with '-m debug')",
+]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+
+[tool.coverage.report]
+exclude_lines = [
+    "raise NotImplementedError",
+    "raise AssertionError",
+]
