@@ -33,6 +33,7 @@ dependencies = [
     "lythonic",
     "woodglue",
     "httpx",
+    "tornado>=6.5.5",
 ]
 
 
@@ -122,6 +123,8 @@ reportAny = false
 reportExplicitAny = false
 reportImplicitStringConcatenation = false
 reportUnreachable = false
+reportImplicitOverride = false
+reportUnknownMemberType = false
 
 [tool.codespell]
 
