@@ -22,7 +22,9 @@ from cointoss.models import (
     PortfolioSnapshot,
     RelationshipType,
     create_schema,
+    seed_relationship_types,
 )
+from cointoss.ontology import get_coin_relationships
 
 
 @pytest.fixture
@@ -252,3 +254,59 @@ def test_portfolio_snapshot(db_conn: sqlite3.Connection):
     snaps = PortfolioSnapshot.select(db_conn, portfolio_id=portfolio.id)
     assert len(snaps) == 1
     assert math.isclose(snaps[0].total_value_usd, 12345.67)
+
+
+# ---------------------------------------------------------------------------
+# Ontology seed data and graph queries
+# ---------------------------------------------------------------------------
+
+
+def test_seed_relationship_types(db_conn: sqlite3.Connection):
+    """seed_relationship_types should insert all 5 default types exactly once."""
+    seed_relationship_types(db_conn)
+
+    all_types = RelationshipType.select(db_conn)
+    names = {rt.name for rt in all_types}
+    expected = {"fork_of", "competes_with", "ecosystem_member", "depends_on", "bridges_to"}
+    assert expected == names
+
+    # Calling again should be idempotent (no duplicates, no errors)
+    seed_relationship_types(db_conn)
+    assert len(RelationshipType.select(db_conn)) == 5
+
+
+def test_get_coin_relationships(db_conn: sqlite3.Connection):
+    """get_coin_relationships should return bitcoin-cash as an incoming fork of bitcoin."""
+    from lythonic import utc_now
+
+    now = utc_now()
+    for slug, sym, nm in [
+        ("bitcoin", "btc", "Bitcoin"),
+        ("bitcoin-cash", "bch", "Bitcoin Cash"),
+    ]:
+        Coin(id=slug, symbol=sym, name=nm, description="", last_fetched=now).insert(db_conn)
+
+    seed_relationship_types(db_conn)
+
+    fork_of_type = RelationshipType.select(db_conn, name="fork_of")[0]
+    rel = CoinRelationship(
+        coin_from="bitcoin-cash",
+        coin_to="bitcoin",
+        relationship_type=fork_of_type.id,
+        confidence=0.99,
+        source="manual",
+    )
+    rel.save(db_conn)
+    db_conn.commit()
+
+    relationships = get_coin_relationships(db_conn, "bitcoin")
+    assert len(relationships) == 1
+
+    entry = relationships[0]
+    assert entry["coin"] == "bitcoin-cash"
+    assert entry["relationship"] == "fork_of"
+    assert entry["direction"] == "incoming"
+    confidence = entry["confidence"]
+    assert isinstance(confidence, float)
+    assert math.isclose(confidence, 0.99)
+    assert entry["source"] == "manual"
