@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cointoss - Crypto Research Platform</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: system-ui, sans-serif; background: #0f172a; color: #e2e8f0; padding: 2rem; }
+        h1 { color: #38bdf8; margin-bottom: 0.5rem; }
+        h2 { color: #94a3b8; margin: 1.5rem 0 0.5rem; font-size: 1.1rem; }
+        .subtitle { color: #64748b; margin-bottom: 2rem; }
+        table { width: 100%; border-collapse: collapse; margin-top: 0.5rem; }
+        th, td { text-align: left; padding: 0.5rem 1rem; border-bottom: 1px solid #1e293b; }
+        th { color: #94a3b8; font-weight: 600; }
+        .price { font-family: monospace; }
+        .rank { color: #64748b; }
+        .status { padding: 1rem; background: #1e293b; border-radius: 0.5rem; margin: 1rem 0; }
+        .error { color: #f87171; }
+        .loading { color: #94a3b8; }
+    </style>
+</head>
+<body>
+    <h1>Cointoss</h1>
+    <p class="subtitle">Crypto coin research platform</p>
+
+    <div id="status" class="status loading">Connecting to API...</div>
+
+    <h2>Tracked Coins</h2>
+    <div id="coins"></div>
+
+    <h2>Ontology Graph</h2>
+    <div id="graph" class="status">Relationships will appear here</div>
+
+    <script>
+        const API = window.location.port === '' ? '/api' : 'http://localhost:8888/api';
+
+        async function loadCoins() {
+            try {
+                const resp = await fetch(`${API}/coins`);
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                const coins = await resp.json();
+
+                if (coins.length === 0) {
+                    document.getElementById('coins').innerHTML =
+                        '<p class="status">No coins yet. Run: cointoss coins fetch</p>';
+                    return;
+                }
+
+                let html = '<table><tr><th>Rank</th><th>Symbol</th><th>Name</th></tr>';
+                for (const c of coins) {
+                    html += `<tr>
+                        <td class="rank">${c.market_cap_rank ? '#' + c.market_cap_rank : '-'}</td>
+                        <td>${c.symbol.toUpperCase()}</td>
+                        <td>${c.name}</td>
+                    </tr>`;
+                }
+                html += '</table>';
+                document.getElementById('coins').innerHTML = html;
+                document.getElementById('status').textContent =
+                    `Connected. Tracking ${coins.length} coins.`;
+                document.getElementById('status').classList.remove('loading');
+            } catch (e) {
+                document.getElementById('status').innerHTML =
+                    `<span class="error">API unavailable. Start server: cointoss server start</span>`;
+            }
+        }
+
+        async function loadGraph() {
+            try {
+                const resp = await fetch(`${API}/ontology/graph`);
+                if (!resp.ok) return;
+                const graph = await resp.json();
+                if (graph.edges.length === 0) {
+                    document.getElementById('graph').textContent = 'No relationships defined yet.';
+                    return;
+                }
+                let html = '<table><tr><th>From</th><th>Relationship</th><th>To</th></tr>';
+                for (const e of graph.edges) {
+                    html += `<tr><td>${e.from}</td><td>${e.type}</td><td>${e.to}</td></tr>`;
+                }
+                html += '</table>';
+                document.getElementById('graph').innerHTML = html;
+            } catch (e) {
+                // Graph loading is optional
+            }
+        }
+
+        loadCoins();
+        loadGraph();
+    </script>
+</body>
+</html>
