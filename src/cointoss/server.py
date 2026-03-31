@@ -166,7 +166,7 @@ def make_app(db_path: Path, frontend_dir: Path | None = None) -> tornado.web.App
         (r"/api/ontology/graph", OntologyGraphHandler, handler_kwargs),
     ]
 
-    if frontend_dir is not None and frontend_dir.exists():
+    if frontend_dir and frontend_dir.is_dir():
         routes.append(
             (
                 r"/(.*)",
@@ -181,14 +181,24 @@ def make_app(db_path: Path, frontend_dir: Path | None = None) -> tornado.web.App
 _DEFAULT_DB_PATH = Path("./cointoss.db")
 
 
-def start_server(db_path: Path = _DEFAULT_DB_PATH, port: int = 8888) -> None:
+_DEFAULT_FRONTEND_DIR = Path("frontend")
+
+
+def start_server(
+    db_path: Path = _DEFAULT_DB_PATH,
+    port: int = 8888,
+    frontend_dir: Path | None = None,
+) -> None:
     """Start the Tornado API server."""
+    if frontend_dir is None:
+        frontend_dir = _DEFAULT_FRONTEND_DIR
+
     with contextlib.closing(sqlite3.connect(str(db_path))) as conn:
         schema = create_schema()
         schema.create_tables(conn)
         seed_relationship_types(conn)
 
-    app = make_app(db_path)
+    app = make_app(db_path, frontend_dir)
     app.listen(port)
     print(f"Cointoss API server running on http://localhost:{port}")
     tornado.ioloop.IOLoop.current().start()

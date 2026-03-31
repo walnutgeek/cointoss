@@ -188,7 +188,8 @@ def start(ctx: RunContext) -> None:
         import importlib
 
         mod = importlib.import_module("cointoss.server")
-        mod.start_server()  # pyright: ignore[reportUnknownMemberType]
+        frontend_dir = Path("frontend")
+        mod.start_server(frontend_dir=frontend_dir)  # pyright: ignore[reportUnknownMemberType]
     except ImportError:
         ctx.print("Server module not yet available.")
 
