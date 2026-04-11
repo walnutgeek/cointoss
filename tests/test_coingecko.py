@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -27,22 +28,23 @@ def test_rate_limiter_blocks_at_budget():
     assert limiter.remaining == 0
 
 
+def _mock_tornado_fetch(expected: object) -> AsyncMock:
+    """Return an AsyncMock that mimics AsyncHTTPClient.fetch returning JSON body."""
+    response = MagicMock()
+    response.body = json.dumps(expected).encode()
+    mock_client = MagicMock()
+    mock_client.fetch = AsyncMock(return_value=response)
+    return mock_client
+
+
 @pytest.mark.asyncio
 async def test_fetch_coin_list():
     """fetch_coin_list should return the JSON list from /coins/list."""
     expected = [{"id": "bitcoin", "symbol": "btc", "name": "Bitcoin"}]
 
-    mock_response = MagicMock()
-    mock_response.status_code = 200
-    mock_response.json.return_value = expected
-    mock_response.raise_for_status = lambda: None
-
-    mock_async_client = MagicMock()
-    mock_async_client.__aenter__ = AsyncMock(return_value=mock_async_client)
-    mock_async_client.__aexit__ = AsyncMock(return_value=False)
-    mock_async_client.get = AsyncMock(return_value=mock_response)
-
-    with patch("httpx.AsyncClient", return_value=mock_async_client):
+    with patch(
+        "cointoss.sources.coingecko.AsyncHTTPClient", return_value=_mock_tornado_fetch(expected)
+    ):
         client = CoinGeckoClient()
         result = await client.fetch_coin_list()
 
@@ -59,17 +61,9 @@ async def test_fetch_coin_detail():
         "market_data": {"current_price": {"usd": 50000}},
     }
 
-    mock_response = MagicMock()
-    mock_response.status_code = 200
-    mock_response.json.return_value = expected
-    mock_response.raise_for_status = lambda: None
-
-    mock_async_client = MagicMock()
-    mock_async_client.__aenter__ = AsyncMock(return_value=mock_async_client)
-    mock_async_client.__aexit__ = AsyncMock(return_value=False)
-    mock_async_client.get = AsyncMock(return_value=mock_response)
-
-    with patch("httpx.AsyncClient", return_value=mock_async_client):
+    with patch(
+        "cointoss.sources.coingecko.AsyncHTTPClient", return_value=_mock_tornado_fetch(expected)
+    ):
         client = CoinGeckoClient()
         result = await client.fetch_coin_detail("bitcoin")
 

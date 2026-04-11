@@ -30,11 +30,11 @@ classifiers = [
 # ---- Main dependencies ----
 
 dependencies = [
-    "lythonic",
     "woodglue",
-    "httpx",
-    "tornado>=6.5.5",
 ]
+
+[tool.uv.sources]
+woodglue = { path = "../woodglue/", editable = true }
 
 
 # ---- Dev dependencies ----
@@ -51,6 +51,7 @@ dev = [
     "coverage>=7.6.7",
     "pytest-cov>=7.0.0",
     "pytest-asyncio>=1.2.0",
+    "jupyter",
 ]
 docs = [
     "markdown-pycon>=1.0.1",

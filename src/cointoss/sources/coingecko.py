@@ -2,13 +2,23 @@
 
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import urlencode
 
-import httpx
+from tornado.httpclient import AsyncHTTPClient
 
 BASE_URL = "https://api.coingecko.com/api/v3"
+DOCS_URL = "https://docs.coingecko.com/v3.0.1/reference/{endpoint}.md"
+
+ENDPOINTS_URL_TO_ID = {
+    "/coins/{id}/ohlc": "coins-id-ohlc",
+    "/coins/list": "coins-list",
+    "/simple/supported_vs_currencies": "simple-supported-currencies",
+    "/coins/{id}": "coins-id",
+}
 
 
 @dataclass
@@ -54,11 +64,13 @@ class CoinGeckoClient:
             raise RuntimeError(
                 f"CoinGecko daily budget of {self.rate_limiter.daily_budget} calls exhausted."
             )
-        async with httpx.AsyncClient() as client:
-            response = await client.get(f"{BASE_URL}{path}", params=params)
-            response.raise_for_status()
-            self.rate_limiter.record_call()
-            return response.json()
+        url = f"{BASE_URL}{path}"
+        if params:
+            url = f"{url}?{urlencode(params)}"
+        client = AsyncHTTPClient()
+        response = await client.fetch(url)
+        self.rate_limiter.record_call()
+        return json.loads(response.body)
 
     async def fetch_coin_list(self) -> list[dict[str, Any]]:
         """Fetch the full list of coins from /coins/list."""
