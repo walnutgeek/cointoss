@@ -31,10 +31,12 @@ classifiers = [
 
 dependencies = [
     "woodglue",
+    "lythonic",
 ]
 
 [tool.uv.sources]
 woodglue = { path = "../woodglue/", editable = true }
+lythonic = { path = "../lythonic/", editable = true }
 
 
 # ---- Dev dependencies ----

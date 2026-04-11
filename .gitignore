@@ -20,3 +20,4 @@ cov.xml
 site/
 .DS_Store
 node_modules/
+data/
