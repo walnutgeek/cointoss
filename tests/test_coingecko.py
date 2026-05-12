@@ -7,25 +7,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from cointoss.sources.coingecko import CoinGeckoClient, RateLimiter
-
-
-def test_rate_limiter_allows_within_budget():
-    """A fresh RateLimiter should allow calls and increment the counter."""
-    limiter = RateLimiter(daily_budget=10)
-    assert limiter.can_call() is True
-    limiter.record_call()
-    assert limiter.calls_today == 1
-    assert limiter.remaining == 9
-
-
-def test_rate_limiter_blocks_at_budget():
-    """A limiter that has exhausted its budget should block further calls."""
-    limiter = RateLimiter(daily_budget=2)
-    limiter.record_call()
-    limiter.record_call()
-    assert limiter.can_call() is False
-    assert limiter.remaining == 0
+from cointoss.sources.coingecko import (
+    CoinDetail,
+    CoinGeckoClient,
+    CoinListItem,
+    CoinsMarketItem,
+    OhlcCandle,
+)
 
 
 def _mock_tornado_fetch(expected: object) -> AsyncMock:
@@ -39,32 +27,86 @@ def _mock_tornado_fetch(expected: object) -> AsyncMock:
 
 @pytest.mark.asyncio
 async def test_fetch_coin_list():
-    """fetch_coin_list should return the JSON list from /coins/list."""
+    """fetch_coin_list should return CoinListItem instances."""
     expected = [{"id": "bitcoin", "symbol": "btc", "name": "Bitcoin"}]
-
     with patch(
         "cointoss.sources.coingecko.AsyncHTTPClient", return_value=_mock_tornado_fetch(expected)
     ):
         client = CoinGeckoClient()
         result = await client.fetch_coin_list()
-
-    assert result == expected
+    assert len(result) == 1
+    assert isinstance(result[0], CoinListItem)
+    assert result[0].id == "bitcoin"
+    assert result[0].symbol == "btc"
 
 
 @pytest.mark.asyncio
-async def test_fetch_coin_detail():
-    """fetch_coin_detail should return the JSON dict from /coins/{id}."""
+async def test_fetch_coin():
+    """fetch_coin should return a CoinDetail instance."""
     expected = {
         "id": "bitcoin",
         "symbol": "btc",
         "name": "Bitcoin",
         "market_data": {"current_price": {"usd": 50000}},
     }
-
     with patch(
         "cointoss.sources.coingecko.AsyncHTTPClient", return_value=_mock_tornado_fetch(expected)
     ):
         client = CoinGeckoClient()
-        result = await client.fetch_coin_detail("bitcoin")
+        result = await client.fetch_coin("bitcoin")
+    assert isinstance(result, CoinDetail)
+    assert result.id == "bitcoin"
+    assert result.market_data is not None
+    assert result.market_data["current_price"]["usd"] == 50000
 
-    assert result == expected
+
+@pytest.mark.asyncio
+async def test_fetch_coins_markets():
+    """fetch_coins_markets should return CoinsMarketItem instances."""
+    expected = [
+        {
+            "id": "bitcoin",
+            "symbol": "btc",
+            "name": "Bitcoin",
+            "current_price": 50000,
+            "market_cap": 1000000000,
+            "market_cap_rank": 1,
+            "total_volume": 30000000,
+        }
+    ]
+    with patch(
+        "cointoss.sources.coingecko.AsyncHTTPClient", return_value=_mock_tornado_fetch(expected)
+    ):
+        client = CoinGeckoClient()
+        result = await client.fetch_coins_markets()
+    assert len(result) == 1
+    assert isinstance(result[0], CoinsMarketItem)
+    assert result[0].current_price == 50000
+    assert result[0].market_cap_rank == 1
+
+
+@pytest.mark.asyncio
+async def test_fetch_coin_ohlc():
+    """fetch_coin_ohlc should parse array items into OhlcCandle instances."""
+    expected = [
+        [1709395200000, 61942, 62211, 61721, 61845],
+        [1709409600000, 61828, 62139, 61726, 62139],
+    ]
+    with patch(
+        "cointoss.sources.coingecko.AsyncHTTPClient", return_value=_mock_tornado_fetch(expected)
+    ):
+        client = CoinGeckoClient()
+        result = await client.fetch_coin_ohlc("bitcoin")
+    assert len(result) == 2
+    assert isinstance(result[0], OhlcCandle)
+    assert result[0].timestamp == 1709395200000
+    assert result[0].open == 61942
+    assert result[0].close == 61845
+
+
+def test_build_params_drops_none():
+    """_build_params should exclude None values and convert bools."""
+    from cointoss.sources.coingecko import _build_params  # pyright: ignore[reportPrivateUsage]
+
+    params = _build_params(a="hello", b=None, c=True, d=False, e=42)
+    assert params == {"a": "hello", "c": "true", "d": "false", "e": "42"}

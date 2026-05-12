@@ -1,10 +1,13 @@
 """CLI for the cointoss application, built with lythonic's ActionTree."""
 
+from __future__ import annotations
+
 import asyncio
 import sqlite3
 import sys
 from pathlib import Path
 
+from lythonic import utc_now
 from lythonic.compose.cli import ActionTree, Main, RunContext
 from pydantic import BaseModel, Field
 
@@ -12,7 +15,6 @@ from cointoss.models import create_schema, seed_relationship_types
 from cointoss.models import portfolio as portfolio_models
 from cointoss.models.coin import Coin, CoinPrice
 from cointoss.ontology import get_coin_relationships
-from cointoss.pipeline import run_fetch_top_coins
 from cointoss.sources.coingecko import CoinGeckoClient
 
 DEFAULT_DB_PATH = Path("./cointoss.db")
@@ -53,8 +55,33 @@ def fetch(ctx: RunContext) -> None:
     conn = ensure_db(db_path)
     try:
         client = CoinGeckoClient()
-        coin_ids = asyncio.run(run_fetch_top_coins(conn, client))
-        ctx.print(f"Fetched {len(coin_ids)} coins.")
+        items = asyncio.run(client.fetch_coins_markets(per_page=50))
+        for item in items:
+            existing = Coin.select(conn, id=item.id)
+            if existing:
+                coin = existing[0]
+                coin.symbol = item.symbol
+                coin.name = item.name
+                coin.last_fetched = utc_now()
+                coin.update(conn, id=coin.id)
+            else:
+                Coin(
+                    id=item.id,
+                    symbol=item.symbol,
+                    name=item.name,
+                    description="",
+                    last_fetched=utc_now(),
+                ).insert(conn)
+            if item.current_price is not None:
+                CoinPrice(
+                    coin_id=item.id,
+                    price_usd=item.current_price,
+                    market_cap=item.market_cap,
+                    total_volume=item.total_volume,
+                    price_change_24h=item.price_change_24h,
+                ).save(conn)
+        conn.commit()
+        ctx.print(f"Fetched {len(items)} coins.")
     finally:
         conn.close()
 

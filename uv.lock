@@ -2717,7 +2717,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "cryptography" },
-    { name = "lythonic" },
+    { name = "lythonic", editable = "../lythonic" },
     { name = "polars" },
     { name = "pydantic-yaml" },
     { name = "tornado" },
@@ -2730,6 +2730,7 @@ dev = [
     { name = "coverage", specifier = ">=7.6.7" },
     { name = "funlog", specifier = ">=0.2.1" },
     { name = "jupyter" },
+    { name = "playwright", specifier = ">=1.59.0" },
     { name = "pytest", specifier = ">=8.3.5" },
     { name = "pytest-asyncio", specifier = ">=1.2.0" },
     { name = "pytest-cov", specifier = ">=7.0.0" },

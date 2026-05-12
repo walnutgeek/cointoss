@@ -16,7 +16,6 @@ cov.xml
 .coverage
 *.db
 *.sqlite
-*.ipynb
 site/
 .DS_Store
 node_modules/
