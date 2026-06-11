@@ -5,10 +5,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from datetime import datetime, timezone
+import time
+from datetime import UTC, datetime
 from typing import Any, ClassVar
 from urllib.parse import urlencode
 
+from lythonic.compose.namespace import require_cache
 from pydantic import BaseModel, ConfigDict, model_validator
 from tornado.httpclient import AsyncHTTPClient, HTTPClientError
 
@@ -121,7 +123,7 @@ class OhlcCandle(BaseModel):
     @property
     def dt(self) -> datetime:
         """Timestamp as a UTC datetime."""
-        return datetime.fromtimestamp(self.timestamp / 1000, tz=timezone.utc)
+        return datetime.fromtimestamp(self.timestamp / 1000, tz=UTC)
 
     @model_validator(mode="before")
     @classmethod
@@ -157,11 +159,21 @@ def _build_params(**kwargs: Any) -> dict[str, str]:
 
 
 class CoinGeckoClient:
-    """Async HTTP client for the CoinGecko public API."""
+    """Async HTTP client for the CoinGecko public API.
+
+    Args:
+        rpm: Max requests per minute. None means no local rate limiting.
+            CoinGecko demo API allows ~30 rpm.
+    """
+
+    def __init__(self, rpm: float | None = None) -> None:
+        self._min_interval: float | None = 60.0 / rpm if rpm else None
+        self._last_request: float = 0.0
 
     async def _get(self, path: str, params: dict[str, str] | None = None) -> Any:
         """Make a GET request and return parsed JSON.
 
+        Enforces the rpm interval between requests.
         On HTTP 429, reads the Retry-After header and sleeps before retrying.
         """
         url = f"{BASE_URL}{path}"
@@ -169,7 +181,13 @@ class CoinGeckoClient:
             url = f"{url}?{urlencode(params)}"
         client = AsyncHTTPClient()
         while True:
+            # Enforce local rate limit
+            if self._min_interval is not None:
+                elapsed = time.monotonic() - self._last_request
+                if elapsed < self._min_interval:
+                    await asyncio.sleep(self._min_interval - elapsed)
             try:
+                self._last_request = time.monotonic()
                 response = await client.fetch(url)
                 return json.loads(response.body)
             except HTTPClientError as exc:
@@ -184,6 +202,7 @@ class CoinGeckoClient:
                 log.warning("Rate limited on %s, retrying after %.0fs", path, retry_after)
                 await asyncio.sleep(retry_after)
 
+    @require_cache
     async def fetch_coin_list(
         self,
         *,
@@ -199,6 +218,7 @@ class CoinGeckoClient:
         data = await self._get("/coins/list", params or None)
         return [CoinListItem.model_validate(item) for item in data]
 
+    @require_cache
     async def fetch_coins_markets(
         self,
         vs_currency: str = "usd",
@@ -255,6 +275,7 @@ class CoinGeckoClient:
         data = await self._get("/coins/markets", params or None)
         return [CoinsMarketItem.model_validate(item) for item in data]
 
+    @require_cache
     async def fetch_coin(
         self,
         coin_id: str,
@@ -295,6 +316,7 @@ class CoinGeckoClient:
         data = await self._get(f"/coins/{coin_id}", params or None)
         return CoinDetail.model_validate(data)
 
+    @require_cache
     async def fetch_coin_ohlc(
         self,
         coin_id: str,

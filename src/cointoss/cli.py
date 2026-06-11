@@ -198,29 +198,6 @@ def value(ctx: RunContext) -> None:
         conn.close()
 
 
-# ---- server group ----
-
-
-class Server(BaseModel):
-    """Server management commands."""
-
-
-server = root.actions.add(Server)
-
-
-@server.actions.wrap
-def start(ctx: RunContext) -> None:
-    """Start the API server."""
-    try:
-        import importlib
-
-        mod = importlib.import_module("cointoss.server")
-        frontend_dir = Path("frontend")
-        mod.start_server(frontend_dir=frontend_dir)  # pyright: ignore[reportUnknownMemberType]
-    except ImportError:
-        ctx.print("Server module not yet available.")
-
-
 # ---- Entry point ----
 
 

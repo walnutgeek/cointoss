@@ -2717,7 +2717,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "cryptography" },
-    { name = "lythonic", editable = "../lythonic" },
+    { name = "lythonic" },
     { name = "polars" },
     { name = "pydantic-yaml" },
     { name = "tornado" },
