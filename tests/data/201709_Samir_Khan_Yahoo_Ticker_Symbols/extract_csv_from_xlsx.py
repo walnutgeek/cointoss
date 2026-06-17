@@ -1,6 +1,7 @@
-from openpyxl import load_workbook
 import csv
 from pathlib import Path
+
+from openpyxl import load_workbook
 
 outdir = Path('tests/data/201709_Samir_Khan_Yahoo_Ticker_Symbols')
 
