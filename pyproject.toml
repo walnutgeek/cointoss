@@ -32,7 +32,12 @@ classifiers = [
 dependencies = [
     "woodglue",
     "lythonic",
+    "yfinance>=1.4.1"
 ]
+
+[project.optional-dependencies]
+scripts = ["openpyxl"]
+
 
 [tool.uv.sources]
 woodglue = { path = "../woodglue/", editable = true }
@@ -88,6 +93,7 @@ packages = ["src/cointoss"]
 
 [tool.ruff]
 line-length = 100
+extend-exclude = ["tests/data"]
 
 [tool.ruff.lint]
 select = [
@@ -118,6 +124,7 @@ ignore = [
 
 [tool.basedpyright]
 include = ["src", "tests", "devtools"]
+exclude = ["tests/data"]
 reportIgnoreCommentWithoutRule = false
 reportUnnecessaryTypeIgnoreComment = false
 reportMissingTypeStubs = false
@@ -139,7 +146,7 @@ testpaths = [
     "src",
     "tests",
 ]
-norecursedirs = []
+norecursedirs = ["tests/data"]
 filterwarnings = []
 
 addopts = ["--import-mode=importlib", "--doctest-modules", "--cov=src", "--cov-report=term-missing", "--cov-report=xml:cov.xml"]
