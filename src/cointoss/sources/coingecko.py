@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from typing import Any, ClassVar
 from urllib.parse import urlencode
 
-from lythonic.compose.namespace import require_cache
+from lythonic.compose.namespace import NamespaceFragment, nsnode, require_cache
 from pydantic import BaseModel, ConfigDict, model_validator
 from tornado.httpclient import AsyncHTTPClient, HTTPClientError
 
@@ -158,7 +158,7 @@ def _build_params(**kwargs: Any) -> dict[str, str]:
 # -- Client --
 
 
-class CoinGeckoClient:
+class CoinGeckoClient(NamespaceFragment):
     """Async HTTP client for the CoinGecko public API.
 
     Args:
@@ -203,6 +203,7 @@ class CoinGeckoClient:
                 await asyncio.sleep(retry_after)
 
     @require_cache
+    @nsnode(tags=["api"])
     async def fetch_coin_list(
         self,
         *,
@@ -219,6 +220,7 @@ class CoinGeckoClient:
         return [CoinListItem.model_validate(item) for item in data]
 
     @require_cache
+    @nsnode(tags=["api"])
     async def fetch_coins_markets(
         self,
         vs_currency: str = "usd",
@@ -276,6 +278,7 @@ class CoinGeckoClient:
         return [CoinsMarketItem.model_validate(item) for item in data]
 
     @require_cache
+    @nsnode(tags=["api"])
     async def fetch_coin(
         self,
         coin_id: str,
@@ -317,6 +320,7 @@ class CoinGeckoClient:
         return CoinDetail.model_validate(data)
 
     @require_cache
+    @nsnode(tags=["api"])
     async def fetch_coin_ohlc(
         self,
         coin_id: str,
