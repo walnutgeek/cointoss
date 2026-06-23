@@ -1,0 +1,32 @@
+namespaces:
+  cointoss:
+    entries:
+      - type: fragment
+        gref: "cointoss.sources.coingecko:CoinGeckoClient"
+        nsref: "coingecko:"
+        init:
+          rpm: 25
+        configs:
+          fetch_coin_list:
+            min_ttl: 0.9
+            max_ttl: 1.0
+          fetch_coins_markets:
+            min_ttl: 0.9
+            max_ttl: 1.0
+          fetch_coin:
+            min_ttl: 0.9
+            max_ttl: 1.0
+          fetch_coin_ohlc:
+            min_ttl: 0.9
+            max_ttl: 1.0
+      - type: fragment
+        gref: "cointoss.sources.yahoofinance"
+        nsref: "yfinance:"
+        defaults:
+          cache:
+            min_ttl: 3.0
+            max_ttl: 5.0
+        configs:
+          get_prices:
+            min_ttl: 0.9
+            max_ttl: 1.0
