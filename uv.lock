@@ -386,9 +386,13 @@ name = "cointoss"
 source = { editable = "." }
 dependencies = [
     { name = "lythonic" },
-    { name = "openpyxl" },
     { name = "woodglue" },
     { name = "yfinance" },
+]
+
+[package.optional-dependencies]
+scripts = [
+    { name = "openpyxl" },
 ]
 
 [package.dev-dependencies]
@@ -415,10 +419,11 @@ docs = [
 [package.metadata]
 requires-dist = [
     { name = "lythonic", editable = "../lythonic" },
-    { name = "openpyxl" },
+    { name = "openpyxl", marker = "extra == 'scripts'" },
     { name = "woodglue", editable = "../woodglue" },
     { name = "yfinance", specifier = ">=1.4.1" },
 ]
+provides-extras = ["scripts"]
 
 [package.metadata.requires-dev]
 dev = [

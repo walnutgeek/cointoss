@@ -135,3 +135,17 @@ Always use full type annotations, generics, and other modern practices.
 - Never use/import `Optional` for new code.
 - Use modern generics: `dict[str, str]` not `Dict[str, str]`
 - Use `StrEnum` if appropriate.
+
+## Agent skills
+
+### Issue tracker
+
+Issues are tracked in GitHub Issues for walnutgeek/cointoss. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Using default triage labels (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context layout with `CONTEXT.md` at repo root and ADRs in `docs/adr/`. See `docs/agents/domain.md`.

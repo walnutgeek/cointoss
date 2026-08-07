@@ -68,7 +68,7 @@ docs = [
 ]
 
 [project.scripts]
-cointoss = "cointoss.cli:main"
+#cointoss = "cointoss.cli:main"
 
 
 # ---- Build system ----

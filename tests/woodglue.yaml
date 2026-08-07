@@ -6,17 +6,8 @@ namespaces:
         nsref: "coingecko:"
         init:
           rpm: 25
-        configs:
-          fetch_coin_list:
-            min_ttl: 0.9
-            max_ttl: 1.0
-          fetch_coins_markets:
-            min_ttl: 0.9
-            max_ttl: 1.0
-          fetch_coin:
-            min_ttl: 0.9
-            max_ttl: 1.0
-          fetch_coin_ohlc:
+        defaults:
+          cache:
             min_ttl: 0.9
             max_ttl: 1.0
       - type: fragment

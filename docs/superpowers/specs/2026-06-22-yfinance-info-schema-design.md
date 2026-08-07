@@ -27,16 +27,14 @@ namespaces:
       - type: fragment
         gref: "cointoss.sources.yahoofinance"
         nsref: "yfinance:"
+        defaults:
+          cache:
+            min_ttl: 3.0
+            max_ttl: 5.0
         configs:
-          get_info:
-            min_ttl: 3.0
-            max_ttl: 5.0
           get_prices:
-            min_ttl: 3.0
-            max_ttl: 5.0
-          lookup:
-            min_ttl: 3.0
-            max_ttl: 5.0
+            min_ttl: 0.9
+            max_ttl: 1.0
 ```
 
 All cached results are stored by the woodglue namespace cache and persist
