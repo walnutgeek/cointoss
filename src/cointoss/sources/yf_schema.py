@@ -72,7 +72,7 @@ def load_tickers(ticker_dir: Path, instrument_type: str) -> list[str]:
     """Load ticker symbols from CSV file for the given instrument type."""
     csv_path = ticker_dir / f"{instrument_type}.csv"
     tickers: list[str] = []
-    with open(csv_path, newline="") as f:
+    with open(csv_path, newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for row in reader:
             ticker = row.get("Ticker", "").strip()
@@ -283,7 +283,7 @@ def write_manifest(result: SchemaRunResult, output_path: Path) -> None:
             for itype, tr in result.results.items()
         },
     }
-    output_path.write_text(json.dumps(manifest, indent=2) + "\n")
+    output_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
 
 def _setup_cached_get_info(cache_db: Path) -> Any:
@@ -383,15 +383,15 @@ def discover_schema(
     model_code = generate_model_code(all_field_meta)
     models_path = output_dir / "yf_models.py"
     if models_path.exists():
-        old_content = models_path.read_text()
+        old_content = models_path.read_text(encoding="utf-8")
         diff = detect_changes(old_content, model_code)
         if diff is None:
             log.info("No changes detected in yf_models.py")
         else:
             log.info("Changes detected in yf_models.py:\n%s", diff)
-            models_path.write_text(model_code)
+            models_path.write_text(model_code, encoding="utf-8")
     else:
-        models_path.write_text(model_code)
+        models_path.write_text(model_code, encoding="utf-8")
         log.info("Created yf_models.py")
 
     # Write manifest
