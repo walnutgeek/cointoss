@@ -418,9 +418,9 @@ docs = [
 
 [package.metadata]
 requires-dist = [
-    { name = "lythonic", editable = "../lythonic" },
+    { name = "lythonic" },
     { name = "openpyxl", marker = "extra == 'scripts'" },
-    { name = "woodglue", editable = "../woodglue" },
+    { name = "woodglue" },
     { name = "yfinance", specifier = ">=1.4.1" },
 ]
 provides-extras = ["scripts"]
@@ -1251,42 +1251,16 @@ wheels = [
 
 [[package]]
 name = "lythonic"
-source = { editable = "../lythonic" }
+version = "0.0.22"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "croniter" },
     { name = "pydantic" },
     { name = "pyyaml" },
 ]
-
-[package.metadata]
-requires-dist = [
-    { name = "croniter", specifier = ">=6.2.2" },
-    { name = "pandas", marker = "extra == 'pandas'" },
-    { name = "polars", marker = "extra == 'polars'" },
-    { name = "pyarrow", marker = "extra == 'pyarrow'" },
-    { name = "pydantic" },
-    { name = "pyyaml", specifier = ">=6.0.3" },
-]
-provides-extras = ["pandas", "polars", "pyarrow"]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "basedpyright", specifier = ">=1.32.1" },
-    { name = "codespell", specifier = ">=2.4.1" },
-    { name = "coverage", specifier = ">=7.6.7" },
-    { name = "funlog", specifier = ">=0.2.1" },
-    { name = "pytest", specifier = ">=8.3.5" },
-    { name = "pytest-asyncio", specifier = ">=1.2.0" },
-    { name = "pytest-cov", specifier = ">=7.0.0" },
-    { name = "pytest-sugar", specifier = ">=1.0.0" },
-    { name = "rich", specifier = ">=14.0.0" },
-    { name = "ruff", specifier = ">=0.14.2" },
-]
-docs = [
-    { name = "markdown-pycon", specifier = ">=1.0.1" },
-    { name = "mkdocs", specifier = ">=1.6" },
-    { name = "mkdocs-material", specifier = ">=9.5" },
-    { name = "mkdocstrings", extras = ["python"], specifier = ">=0.27" },
+sdist = { url = "https://files.pythonhosted.org/packages/61/14/1621e9efab35f641e925ce3d06cd16faf7daa981e6fd55a8514e6f56b4be/lythonic-0.0.22.tar.gz", hash = "sha256:d1e9d07c817ceba54ec88e0cb3181ca48663630fd0875041bc76db2aa0265e13", size = 236595, upload-time = "2026-08-09T05:44:15.122Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/2e/c7/39699ca1ccb4cae5c1132219e78ea27328ce596cda3a5157c0c7fc791058/lythonic-0.0.22-py3-none-any.whl", hash = "sha256:e9dfcd1c15d982399c10963cfa3639c0c12cb365743e3b6f8db1aadcc84be69a", size = 78736, upload-time = "2026-08-09T05:44:13.797Z" },
 ]
 
 [[package]]
@@ -3024,7 +2998,8 @@ wheels = [
 
 [[package]]
 name = "woodglue"
-source = { editable = "../woodglue" }
+version = "0.0.6"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "cryptography" },
     { name = "lythonic" },
@@ -3032,37 +3007,9 @@ dependencies = [
     { name = "pydantic-yaml" },
     { name = "tornado" },
 ]
-
-[package.metadata]
-requires-dist = [
-    { name = "cryptography" },
-    { name = "lythonic" },
-    { name = "polars" },
-    { name = "pydantic-yaml" },
-    { name = "tornado" },
-]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "basedpyright", specifier = ">=1.32.1" },
-    { name = "codespell", specifier = ">=2.4.1" },
-    { name = "coverage", specifier = ">=7.6.7" },
-    { name = "funlog", specifier = ">=0.2.1" },
-    { name = "jupyter" },
-    { name = "playwright", specifier = ">=1.59.0" },
-    { name = "pytest", specifier = ">=8.3.5" },
-    { name = "pytest-asyncio", specifier = ">=1.2.0" },
-    { name = "pytest-cov", specifier = ">=7.0.0" },
-    { name = "pytest-sugar", specifier = ">=1.0.0" },
-    { name = "rich", specifier = ">=14.0.0" },
-    { name = "ruff", specifier = ">=0.14.2" },
-    { name = "watchdog" },
-]
-docs = [
-    { name = "markdown-pycon", specifier = ">=1.0.1" },
-    { name = "mkdocs", specifier = ">=1.6" },
-    { name = "mkdocs-material", specifier = ">=9.5" },
-    { name = "mkdocstrings", extras = ["python"], specifier = ">=0.27" },
+sdist = { url = "https://files.pythonhosted.org/packages/01/69/913852f9541da5c6bb06f0a4e73fb0a71b06b84ac0ce18acac718ef2fa19/woodglue-0.0.6.tar.gz", hash = "sha256:2bc1bdf13974e322699b340e574508d16348c673dabc888b1ef0339771337782", size = 732339, upload-time = "2026-08-09T06:04:43.454Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/9e/d5/ef265e291128ff37ac6753b7a497585790485ad7d53795c6b6ae5a117870/woodglue-0.0.6-py3-none-any.whl", hash = "sha256:9c9bf300824bf86cabf27c083c6d7cd82df39344fa7c121aaeecbed307560b09", size = 70621, upload-time = "2026-08-09T06:04:41.713Z" },
 ]
 
 [[package]]

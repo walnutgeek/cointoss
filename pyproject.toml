@@ -39,9 +39,9 @@ dependencies = [
 scripts = ["openpyxl"]
 
 
-[tool.uv.sources]
-woodglue = { path = "../woodglue/", editable = true }
-lythonic = { path = "../lythonic/", editable = true }
+# [tool.uv.sources]
+# woodglue = { path = "../woodglue/", editable = true }
+# lythonic = { path = "../lythonic/", editable = true }
 
 
 # ---- Dev dependencies ----
@@ -68,7 +68,7 @@ docs = [
 ]
 
 [project.scripts]
-#cointoss = "cointoss.cli:main"
+cointoss = "cointoss.cli:main"
 
 
 # ---- Build system ----
