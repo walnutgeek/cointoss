@@ -1,5 +1,7 @@
 # Unified Instrument abstraction and Trade as System of Record
 
+Status: accepted. The Instrument-identity portion is superseded by ADR-0004; the Portfolio, Trade, and Snapshot decisions stand.
+
 Context: Product shifted from crypto-only to crypto+stocks. Need to support real brokers, paper/what_if portfolios, incomplete histories, and easy aggregation for net-worth views.
 
 Decision:

@@ -22,7 +22,7 @@ def get_prices(ticker: str, period: YfPeriod = "max") -> FrameData:
     df = yf.Ticker(ticker).history(period=period, interval="1d", auto_adjust=False, timeout=10)  # pyright: ignore[reportUnknownMemberType]
     dd: list[str] = list(map(str, df.index.date))  # pyright: ignore[reportAttributeAccessIssue,reportUnknownArgumentType]
     df.insert(loc=0, column="date", value=dd)  # pyright: ignore
-    return FrameData.from_pandas(df)
+    return FrameData.pd.from_frame(df)
 
 
 @require_cache
@@ -30,4 +30,4 @@ def get_prices(ticker: str, period: YfPeriod = "max") -> FrameData:
 def lookup(query: str) -> FrameData:
     df = yf.Lookup(query).all
     df.insert(loc=0, column="ticker", value=df.index)  # pyright: ignore[reportUnknownMemberType]
-    return FrameData.from_pandas(df)
+    return FrameData.pd.from_frame(df)

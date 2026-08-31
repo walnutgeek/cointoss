@@ -1,0 +1,26 @@
+# Instrument Identity: Immutable Slug Anchored on Composite FIGI
+
+Status: accepted. Supersedes the Instrument-identity portion of ADR-0001; that ADR's Portfolio, Trade, and Snapshot decisions stand.
+
+Context: ADR-0001 called for a "thin stable Instrument" with an id, a symbol, provider refs, and alias history, without saying what makes the id stable. Tickers change (FB became META), freed tickers are reused by unrelated issuers, and crypto symbols collide across chains. The identifier must survive all three. FIGI is an OMG standard published as open data under MIT in perpetuity, with a free API, and is explicitly stable across ticker changes and corporate actions - but its crypto coverage is roughly 8,000 assets against the tens of thousands that exist, and synthetic instruments (`what_if` holdings, the future lot-as-instrument direction) will never have one.
+
+Decision:
+- `Instrument.id` is an internal, immutable identifier of the form `{type}.{scope}.{symbol}`, minted once from the symbol first seen and never changed: `stock.us.aapl`, `crypto.native.btc`, `crypto.eth.usdc`. FIGI is a first-class external reference, not the primary key.
+- `scope` is the authority under which the symbol is unique: an ISO country for a listed instrument, a chain for an on-chain token, `native` for a chain's own coin. Uniform three-part arity across all asset classes.
+- Ids are unique by constraint. A symbol already taken by an unrelated instrument gets a qualifier derived from the issuer name, or a number when no usable name is available: `stock.us.fb_proshares`, then `stock.us.fb_2`. Retired ids are never reused.
+- Identity is established by external reference in priority order: FIGI, then a provider's own stable id, then `{type}.{scope}.{symbol}` as a last resort. A matching symbol alone never establishes identity.
+- Equities anchor on `compositeFIGI`, which matches the country grain of the id by construction; `shareClassFIGI` is kept as a secondary reference. Crypto anchors on the asset-level FIGI, with chain and contract address as further references. Currency-pair and trading-venue FIGIs describe markets, which is a price-source concern rather than an identity one.
+- A FIGI resolution attempt is mandatory when an instrument is created. Falling back to symbol-keyed identity is permitted, but the instrument is flagged unresolved and retried, because third-party coverage lags.
+- When a later resolution reveals two existing instruments are one, the relation is recorded as supersession and resolved on read. The earliest-minted instrument survives; nothing already stored is rewritten. Automatic when the FIGI evidence is unambiguous, flagged for review when it conflicts.
+- ADR-0001's "alias history" becomes `Ticker History`: a time-bounded record of which symbols an instrument traded under and when. It resolves symbols supplied by people and documents at a date; it does not establish identity.
+- No `Issuer` entity yet. Grouping share classes of one company is expressed as an `ExposureSeries`, which is already time-versioned and so handles spinoffs and mergers correctly.
+
+Considered Options:
+- FIGI as the primary key. Portable between installations for free, but the crypto long tail and synthetic instruments have none, so a second id scheme and a discriminator appear anyway; and "the instrument" is composite-level for an equity but asset-level for a coin, so the level is an internal decision wearing an external id's clothes.
+- An opaque surrogate id (ULID). The only scheme that encodes nothing and therefore cannot go stale. Rejected because `Instrument.id` is the axis key in every matrix, doctest, and export, and unreadable axes cost more day to day than occasionally stale-looking ones.
+- A mutable readable slug synced to the current ticker, with an alias table for history. Most readable, but it breaks the immutability premise and makes stored matrices ambiguous.
+- Anchoring equities on `shareClassFIGI`. Would aggregate US and XETRA listings of one share class automatically, but the id's country component becomes a lie and multi-currency holdings collapse into one.
+- `Issuer` as a first-class entity keyed by LEI. Correct long term and necessary once fundamentals are ingested; premature now.
+- True merge on late resolution - repointing trades and rewriting stored subject keys. Simpler reads forever, but it rewrites records that ADR-0001 and ADR-0005 declare immutable.
+
+Consequences: `stock.us.fb` denotes Meta permanently, while the thing currently trading as FB is `stock.us.fb_proshares`. This reads backwards to a human and is the honest price of immutable readable ids. Instrument creation depends on a third-party network call, so a local FIGI cache and an offline path are needed for tests and bulk ingest. Every read path that aggregates by instrument must first chase supersession, so a plain grouping by id is not sufficient. A stored matrix may contain an id that no longer resolves to a live instrument on its own. `shareClassFIGI` is equity-only, so that reference is empty for every other type. Bridged tokens are several instruments and need the same `ExposureSeries` grouping treatment as share classes. FIGI's own crypto identifiers are issued through Kaiko as certified provider, so coverage there depends on a single upstream.

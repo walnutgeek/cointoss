@@ -1,5 +1,7 @@
 # Exposure Matrix and Universe as Time-Versioned Series
 
+Status: superseded by ADR-0003. Retained as the record of what was decided before lythonic owned the value types.
+
 Context: Need to classify instruments across dimensions (GICS sectors, crypto narratives, geography, supplier/customer exposure) and scope data gathering. Both classifications and universes change over time, and weight semantics vary by matrix.
 
 Decision:

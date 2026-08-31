@@ -1251,16 +1251,16 @@ wheels = [
 
 [[package]]
 name = "lythonic"
-version = "0.0.22"
+version = "0.0.24"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "croniter" },
     { name = "pydantic" },
     { name = "pyyaml" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/61/14/1621e9efab35f641e925ce3d06cd16faf7daa981e6fd55a8514e6f56b4be/lythonic-0.0.22.tar.gz", hash = "sha256:d1e9d07c817ceba54ec88e0cb3181ca48663630fd0875041bc76db2aa0265e13", size = 236595, upload-time = "2026-08-09T05:44:15.122Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/45/c1/d6ff13641d3c59ee37f9ad91655f1bf11a4fc7df72fd60059c326fbd9a95/lythonic-0.0.24.tar.gz", hash = "sha256:725796caa42ad7e011725842ebd6801c76017eaff2b2d05a27dc596522c28d3d", size = 285825, upload-time = "2026-08-21T05:40:50.847Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/2e/c7/39699ca1ccb4cae5c1132219e78ea27328ce596cda3a5157c0c7fc791058/lythonic-0.0.22-py3-none-any.whl", hash = "sha256:e9dfcd1c15d982399c10963cfa3639c0c12cb365743e3b6f8db1aadcc84be69a", size = 78736, upload-time = "2026-08-09T05:44:13.797Z" },
+    { url = "https://files.pythonhosted.org/packages/5e/86/f7f63cce5f37d1e0586682cb18b7f361dd25415c50ff391cd45def0e4f63/lythonic-0.0.24-py3-none-any.whl", hash = "sha256:56e239ab55b12094e6bef8ae09c8e1dd23e8d27a1c0549045b8528c3f4344093", size = 97334, upload-time = "2026-08-21T05:40:49.75Z" },
 ]
 
 [[package]]
