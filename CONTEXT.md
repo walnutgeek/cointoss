@@ -46,6 +46,10 @@ _Avoid_: enrichment, lookup status
 The relation recording that one Instrument was later found to be the same thing as an earlier one. The earlier Instrument survives, nothing already stored is rewritten, and reads fold the two together.
 _Avoid_: merge, duplicate, alias, link
 
+**Instrument Registry**:
+The collection of known Instruments, and the authority that turns an observation from a source into the Instrument it belongs to.
+_Avoid_: catalog, directory, master, book
+
 **Ticker History**:
 The record of which symbols an Instrument traded under, and between which dates. Resolves symbols supplied by people and documents at a point in time. Not a means of establishing identity.
 _Avoid_: alias, rename, symbol mapping
