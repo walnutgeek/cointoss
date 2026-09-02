@@ -7,6 +7,8 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from lythonic.compose import Method
+from lythonic.universe import Universe
 from tornado.httpclient import HTTPClientError
 
 from cointoss.instrument import FigiResolution, ReferenceKind
@@ -105,3 +107,32 @@ async def test_short_response_still_lines_up_with_jobs(monkeypatch: pytest.Monke
         FigiResolution.NOT_ATTEMPTED,
         FigiResolution.NOT_ATTEMPTED,
     ]
+
+
+def test_no_method_claims_a_cache_it_cannot_have() -> None:
+    """A cached callable's parameters become its cache primary key, so each must be a
+    `simple_type` KnownType. Both entry points take a collection, and no collection type
+    qualifies. This would otherwise fail at namespace mount, which no other test reaches."""
+    client = OpenFigiClient(api_key="k")
+    for name in ("map_identifiers", "map_tickers"):
+        method = getattr(client, name)
+        assert not getattr(method, "_require_cache", False), (
+            f"{name} claims @require_cache but its parameters cannot form a cache key"
+        )
+        with pytest.raises(ValueError, match="not a registered KnownType"):
+            Method(method).validate_simple_type_args()
+
+
+async def test_map_tickers_rejects_duplicates_and_keeps_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A Universe axis is ordered and duplicate-free; a repeated ticker is a caller mistake."""
+    monkeypatch.delenv(API_KEY_ENV, raising=False)
+    client = _mock_client([[{"data": [GOOG_RECORD]}, {"data": [GOOG_RECORD]}]])
+    with patch("cointoss.sources.openfigi.AsyncHTTPClient", return_value=client):
+        await OpenFigiClient().map_tickers(Universe(["GOOG", "GOOGL"]))
+    sent = json.loads(client.fetch.await_args.kwargs["body"])
+    assert [job["idValue"] for job in sent] == ["GOOG", "GOOGL"]
+
+    with pytest.raises(ValueError, match="duplicate keys in universe"):
+        await OpenFigiClient().map_tickers(["GOOG", "GOOG"])

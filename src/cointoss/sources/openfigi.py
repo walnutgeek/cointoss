@@ -3,6 +3,13 @@
 Batch mapping only: identifiers in, FIGI records out. Failures -- transport, rate limit, empty
 match -- come back as a `FigiResolution` other than `RESOLVED` rather than as an exception, so
 an upstream outage degrades ingestion into unresolved Instruments instead of halting it.
+
+Nothing here is cached. Caching a namespace callable requires every parameter to resolve to a
+`KnownType` with `simple_type=True`, because the parameters become the cache table's primary
+key. Both entry points take a collection, and no collection type qualifies -- not `list[str]`,
+and not `Universe`. FIGI mappings are cached one layer up instead, keyed by a universe's name
+and date rather than by its contents -- see ADR-0006. The module tests enforce that nothing
+here claims a cache it cannot have.
 """
 
 from __future__ import annotations
@@ -12,7 +19,8 @@ import logging
 import os
 from typing import Any, ClassVar
 
-from lythonic.compose.namespace import NamespaceFragment, nsnode, require_cache
+from lythonic.compose.namespace import NamespaceFragment, nsnode
+from lythonic.universe import Universe
 from pydantic import BaseModel, ConfigDict
 from tornado.httpclient import AsyncHTTPClient
 
@@ -137,7 +145,6 @@ class OpenFigiClient(NamespaceFragment):
             log.warning("OpenFIGI mapping failed for %d jobs: %s", len(batch), exc)
             return [MappingResult(error=str(exc), attempted=False) for _ in batch]
 
-    @require_cache
     @nsnode(tags=["api"])
     async def map_identifiers(self, jobs: list[MappingJob]) -> list[MappingResult]:
         """Map identifiers to FIGI records, one result per job in the order given.
@@ -161,10 +168,16 @@ class OpenFigiClient(NamespaceFragment):
             results.extend(batch_results)
         return results
 
-    @require_cache
     @nsnode(tags=["api"])
-    async def map_tickers(self, tickers: list[str], exch_code: str = "US") -> list[MappingResult]:
-        """Map exchange tickers, the common case for listed equities."""
+    async def map_tickers(
+        self, tickers: Universe | list[str], exch_code: str = "US"
+    ) -> list[MappingResult]:
+        """Map exchange tickers, the common case for listed equities.
+
+        Takes a `Universe`, so the ticker set is ordered and duplicate-free: a duplicate is a
+        caller mistake that would otherwise cost a wasted job and return a redundant result.
+        Results stay positional against the universe order.
+        """
         return await self.map_identifiers(
-            [MappingJob(idType="TICKER", idValue=t, exchCode=exch_code) for t in tickers]
+            [MappingJob(idType="TICKER", idValue=t, exchCode=exch_code) for t in Universe(tickers)]
         )
