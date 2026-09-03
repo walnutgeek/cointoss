@@ -78,6 +78,14 @@ _Avoid_: factor model, estimator config, spec
 One recorded edit to a Risk Model, numbered in sequence. Revisions accumulate and are never removed.
 _Avoid_: version, change, migration
 
+**Risk Parameters**:
+The recipe held by a Risk Model at one revision: a universe reference, a lookback, a return frequency, and an estimator. An external estimator names a source instead of a computable recipe.
+_Avoid_: config, settings, spec
+
+**Revision Stamp**:
+The Risk Model revision a declared covariance was produced under, recorded on it at declaration. What keeps an entry interpretable after the model has been edited.
+_Avoid_: version tag, provenance
+
 **Covariance Series**:
 A Series of symmetric matrices over a universe of instruments. Each entry is declared for a date under a stated Risk Model revision and is never recomputed, even when the price history beneath it is later rewritten.
 _Avoid_: risk matrix, covariance cache, correlation series
