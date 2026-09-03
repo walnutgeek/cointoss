@@ -22,10 +22,14 @@ immutable readable ids -- see ADR-0004.
 
 from __future__ import annotations
 
+import copy
+import pickle
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from datetime import date
 from enum import StrEnum
+from typing import Any
 
 __all__ = [
     "AmbiguousSymbol",
@@ -35,11 +39,14 @@ __all__ = [
     "IdentityResult",
     "Instrument",
     "InstrumentError",
+    "InstrumentId",
     "InstrumentRegistry",
     "InstrumentType",
     "Observation",
     "Outcome",
     "ReferenceKind",
+    "Scope",
+    "ScopeKind",
     "SupersessionCycle",
     "TickerRecord",
     "UnknownScope",
@@ -112,6 +119,133 @@ class Outcome(StrEnum):
     MATCHED = "matched"
     SUPERSEDED = "superseded"
     FLAGGED = "flagged"
+
+
+class ScopeKind(StrEnum):
+    """Which authority a Scope belongs to."""
+
+    CHAIN = "chain"
+    COUNTRY = "country"
+
+
+class Scope(str):
+    """A validated Scope: the authority under which a symbol is unique.
+
+    Construction is validation, so a `Scope` cannot hold an unchecked value and there is no
+    way to reach one that was never checked. It is a `str`, so its stored and printed form is
+    the scope itself.
+
+    >>> Scope(InstrumentType.STOCK, "US")
+    Scope('us')
+    >>> Scope(InstrumentType.CRYPTO, "eth").kind
+    <ScopeKind.CHAIN: 'chain'>
+    >>> Scope(InstrumentType.CRYPTO, "ethereum")
+    Traceback (most recent call last):
+        ...
+    cointoss.instrument.UnknownScope: 'ethereum' is not in the chain vocabulary...
+    """
+
+    kind: ScopeKind
+
+    def __new__(cls, instrument_type: InstrumentType, value: str) -> Scope:
+        normalized = value.strip().lower()
+        if instrument_type is InstrumentType.CRYPTO:
+            if normalized not in set(Chain):
+                raise UnknownScope(
+                    f"{normalized!r} is not in the chain vocabulary: {sorted(set(Chain))}"
+                )
+            kind = ScopeKind.CHAIN
+        else:
+            if not re.fullmatch(r"[a-z]{2}", normalized):
+                raise UnknownScope(f"{normalized!r} is not an ISO 3166-1 alpha-2 country")
+            kind = ScopeKind.COUNTRY
+        scope = super().__new__(cls, normalized)
+        scope.kind = kind
+        return scope
+
+    def __reduce__(self) -> tuple[Any, tuple[str, ScopeKind]]:
+        """Rebuild from the validated value and its kind.
+
+        The default `str` reduction would call `__new__` with one argument, so a `Scope` would
+        be uncopyable and unpicklable. Reconstruction skips revalidation because a `Scope` that
+        exists was validated when it was made.
+        """
+        return (_rebuild_scope, (str.__str__(self), self.kind))
+
+    def __repr__(self) -> str:
+        return f"Scope({str.__str__(self)!r})"
+
+
+def _rebuild_scope(value: str, kind: ScopeKind) -> Scope:
+    scope = str.__new__(Scope, value)
+    scope.kind = kind
+    return scope
+
+
+class InstrumentId(str):
+    """An Instrument Id: `{type}.{scope}.{symbol}[_{qualifier}]`, minted once and immutable.
+
+    A `str` subclass, so the readable slug ADR-0004 chose is exactly what is stored, printed,
+    and used as a key -- but a distinct type, so a symbol or a name cannot be passed where an
+    id belongs. Construction parses and validates; there is no partial value.
+
+    >>> InstrumentId("stock.us.fb").symbol
+    'FB'
+    >>> InstrumentId("stock.us.fb_proshares").qualifier
+    'proshares'
+    >>> InstrumentId.mint(InstrumentType.CRYPTO, Scope(InstrumentType.CRYPTO, "eth"), "USDC")
+    InstrumentId('crypto.eth.usdc')
+    >>> InstrumentId("AAPL")
+    Traceback (most recent call last):
+        ...
+    ValueError: 'AAPL' is not an Instrument Id...
+    """
+
+    type: InstrumentType
+    scope: Scope
+    symbol: str
+    qualifier: str | None
+
+    def __new__(cls, text: str) -> InstrumentId:
+        parts = text.split(".")
+        if len(parts) != 3:
+            raise ValueError(f"{text!r} is not an Instrument Id: expected type.scope.symbol")
+        raw_type, raw_scope, tail = parts
+        try:
+            instrument_type = InstrumentType(raw_type)
+        except ValueError:
+            raise ValueError(
+                f"{text!r} is not an Instrument Id: unknown type {raw_type!r}"
+            ) from None
+        # A normalised symbol never contains "_", so the first one always starts the Qualifier.
+        symbol, _, qualifier = tail.partition("_")
+        if not symbol:
+            raise ValueError(f"{text!r} is not an Instrument Id: empty symbol")
+        instrument_id = super().__new__(cls, text)
+        instrument_id.type = instrument_type
+        instrument_id.scope = Scope(instrument_type, raw_scope)
+        instrument_id.symbol = symbol.upper()
+        instrument_id.qualifier = qualifier or None
+        return instrument_id
+
+    @classmethod
+    def mint(
+        cls,
+        instrument_type: InstrumentType,
+        scope: Scope,
+        symbol: str,
+        qualifier: str | None = None,
+    ) -> InstrumentId:
+        """Compose an id from its parts. The only way to build one that has never existed."""
+        base = f"{instrument_type}.{scope}.{symbol.lower()}"
+        return cls(f"{base}_{qualifier}" if qualifier else base)
+
+    def __reduce__(self) -> tuple[Any, tuple[str]]:
+        """Rebuild by reparsing the slug, which is the whole of the value."""
+        return (InstrumentId, (str.__str__(self),))
+
+    def __repr__(self) -> str:
+        return f"InstrumentId({str.__str__(self)!r})"
 
 
 # Identity resolution order. FIGI first, then an on-chain contract, then a provider's own
@@ -203,10 +337,13 @@ class Observation:
     references: tuple[ExternalReference, ...] = ()
     figi_resolution: FigiResolution = FigiResolution.NOT_ATTEMPTED
 
+    @property
+    def is_resolved(self) -> bool:
+        return self.figi_resolution is FigiResolution.RESOLVED
+
     def __post_init__(self) -> None:
         has_anchor = any(r.is_anchor_figi for r in self.references)
-        resolved = self.figi_resolution is FigiResolution.RESOLVED
-        if has_anchor != resolved:
+        if has_anchor != self.is_resolved:
             raise ValueError(
                 "figi_resolution RESOLVED and an anchor FIGI reference must accompany each other"
             )
@@ -218,9 +355,9 @@ class Observation:
 class Instrument:
     """The canonical, stable identity for a tradable asset."""
 
-    id: str
+    id: InstrumentId
     type: InstrumentType
-    scope: str
+    scope: Scope
     symbol: str
     mint_seq: int
     minted_at: date
@@ -228,12 +365,43 @@ class Instrument:
     issuer_name: str | None = None
     references: list[ExternalReference] = field(default_factory=list)
     figi_resolution: FigiResolution = FigiResolution.NOT_ATTEMPTED
-    superseded_by: str | None = None
+    superseded_by: InstrumentId | None = None
     ticker_history: list[TickerRecord] = field(default_factory=list)
 
     @property
+    def is_resolved(self) -> bool:
+        return self.figi_resolution is FigiResolution.RESOLVED
+
+    @property
     def is_unresolved(self) -> bool:
-        return self.figi_resolution is not FigiResolution.RESOLVED
+        return not self.is_resolved
+
+    def absorb(self, obs: Observation) -> None:
+        """Fold an Observation this Instrument has been identified with into itself."""
+        known = set(self.references)
+        self.references.extend(r for r in obs.references if r not in known)
+        if obs.is_resolved:
+            self.figi_resolution = obs.figi_resolution
+        elif self.figi_resolution is FigiResolution.NOT_ATTEMPTED:
+            self.figi_resolution = obs.figi_resolution
+        self.name = self.name or obs.name
+        self.issuer_name = self.issuer_name or obs.issuer_name
+        self._record_symbol(obs)
+
+    def _record_symbol(self, obs: Observation) -> None:
+        """Append Ticker History when a successor symbol is observed.
+
+        Only forward renames are recorded; a symbol observed before the current record began is
+        an out-of-order sighting and is ignored rather than rewriting history.
+        """
+        if obs.symbol == self.symbol:
+            return
+        current = self.ticker_history[-1]
+        if obs.observed_at < current.valid_from:
+            return
+        self.ticker_history[-1] = replace(current, valid_to=obs.observed_at)
+        self.ticker_history.append(TickerRecord(obs.symbol, self.scope, valid_from=obs.observed_at))
+        self.symbol = obs.symbol
 
 
 @dataclass(frozen=True)
@@ -242,7 +410,7 @@ class IdentityResult:
 
     outcome: Outcome
     instrument: Instrument | None = None
-    superseded: tuple[str, ...] = ()
+    superseded: tuple[InstrumentId, ...] = ()
     review: str | None = None
 
 
@@ -299,22 +467,28 @@ def issuer_qualifier(issuer_name: str | None) -> str | None:
     return "-".join(kept) or None
 
 
-def validate_scope(instrument_type: InstrumentType, scope: str) -> str:
-    """Check a Scope against its authority and return it normalised.
+def _group_values(refs: Iterable[ExternalReference]) -> dict[tuple[int, str, str], set[str]]:
+    """Matchable references bucketed by comparison group. The one walk both matchers need."""
+    grouped: dict[tuple[int, str, str], set[str]] = {}
+    for ref in refs:
+        group = ref.group()
+        if group is not None:
+            grouped.setdefault(group, set()).add(ref.value)
+    return grouped
 
-    >>> validate_scope(InstrumentType.STOCK, "US")
-    'us'
-    >>> validate_scope(InstrumentType.CRYPTO, "eth")
-    'eth'
-    """
-    value = scope.strip().lower()
-    if instrument_type is InstrumentType.CRYPTO:
-        if value not in set(Chain):
-            raise UnknownScope(f"{value!r} is not in the chain vocabulary: {sorted(set(Chain))}")
-        return value
-    if not re.fullmatch(r"[a-z]{2}", value):
-        raise UnknownScope(f"{value!r} is not an ISO 3166-1 alpha-2 country")
-    return value
+
+def _match_keys(refs: Iterable[ExternalReference]) -> set[tuple[int, str, str, str]]:
+    """Every matchable reference as a comparable key."""
+    return {(*group, value) for group, values in _group_values(refs).items() for value in values}
+
+
+def _conflict(left: Iterable[ExternalReference], right: Iterable[ExternalReference]) -> bool:
+    """Whether the two reference sets disagree within a comparison group."""
+    by_group = _group_values(left)
+    return any(
+        group in by_group and bool(values - by_group[group])
+        for group, values in _group_values(right).items()
+    )
 
 
 class InstrumentRegistry:
@@ -327,7 +501,7 @@ class InstrumentRegistry:
 
     def __init__(self, instruments: list[Instrument] | None = None) -> None:
         self._instruments: list[Instrument] = instruments if instruments is not None else []
-        self._by_id: dict[str, Instrument] = {i.id: i for i in self._instruments}
+        self._by_id: dict[InstrumentId, Instrument] = {i.id: i for i in self._instruments}
         self._next_seq: int = max((i.mint_seq for i in self._instruments), default=0) + 1
 
     # -- Read side --
@@ -336,14 +510,19 @@ class InstrumentRegistry:
         """Every Instrument, superseded ones included, in mint order."""
         return sorted(self._instruments, key=lambda i: i.mint_seq)
 
-    def get(self, instrument_id: str) -> Instrument:
-        """Look up by Instrument Id exactly as stored, without chasing Supersession."""
-        return self._by_id[instrument_id]
+    def get(self, instrument_id: InstrumentId | str) -> Instrument:
+        """Look up by Instrument Id exactly as stored, without chasing Supersession.
 
-    def survivor(self, instrument_id: str) -> Instrument:
+        A plain `str` is parsed first, so a value that is not an Instrument Id at all raises
+        `ValueError` or `UnknownScope`, while an id that is well formed but unknown raises
+        `KeyError`. Malformed input and a genuine miss are different failures.
+        """
+        return self._by_id[InstrumentId(instrument_id)]
+
+    def survivor(self, instrument_id: InstrumentId | str) -> Instrument:
         """Chase a Supersession chain to its fixed point."""
-        seen: set[str] = set()
-        current = self._by_id[instrument_id]
+        seen: set[InstrumentId] = set()
+        current = self.get(instrument_id)
         while current.superseded_by is not None:
             if current.id in seen:
                 raise SupersessionCycle(f"supersession cycle through {sorted(seen)}")
@@ -365,7 +544,7 @@ class InstrumentRegistry:
         case -- and is disambiguated by the date, so an overlap on one date is an error.
         """
         wanted = normalize_symbol(symbol)
-        wanted_scope = validate_scope(instrument_type, scope)
+        wanted_scope = Scope(instrument_type, scope)
         found: dict[str, Instrument] = {}
         for inst in self.instruments():
             if inst.type is not instrument_type:
@@ -392,7 +571,7 @@ class InstrumentRegistry:
         Instruments that are both still unresolved, and never merge two Instruments.
         """
         obs = replace(obs, symbol=normalize_symbol(obs.symbol))
-        scope = validate_scope(obs.type, obs.scope)
+        scope = Scope(obs.type, obs.scope)
         matched = self._match_by_reference(obs)
         if matched:
             return self._from_reference_match(obs, scope, matched)
@@ -400,39 +579,31 @@ class InstrumentRegistry:
         if isinstance(symbol_match, IdentityResult):
             return symbol_match
         if symbol_match is not None:
-            self._apply(symbol_match, obs)
+            symbol_match.absorb(obs)
             return IdentityResult(Outcome.MATCHED, symbol_match)
         return IdentityResult(Outcome.MINTED, self._mint(obs, scope))
 
     # -- Matching --
 
-    def _keys(
-        self, refs: list[ExternalReference] | tuple[ExternalReference, ...]
-    ) -> set[tuple[int, str, str, str]]:
-        keys: set[tuple[int, str, str, str]] = set()
-        for ref in refs:
-            group = ref.group()
-            if group is not None:
-                keys.add((*group, ref.value))
-        return keys
-
     def _match_by_reference(self, obs: Observation) -> list[Instrument]:
         """Instruments sharing an External Reference with the Observation, in mint order."""
-        obs_keys = self._keys(obs.references)
+        obs_keys = _match_keys(obs.references)
         if not obs_keys:
             return []
         best: dict[int, list[Instrument]] = {}
         for inst in self.instruments():
-            shared = obs_keys & self._keys(inst.references)
+            shared = obs_keys & _match_keys(inst.references)
             if shared:
                 best.setdefault(min(tier for tier, _, _, _ in shared), []).append(inst)
         # Higher-priority evidence wins outright, but every tier that fired is reported, so a
         # FIGI and a provider id pointing at two Instruments is seen as the Supersession it is.
         return [inst for tier in sorted(best) for inst in best[tier]]
 
-    def _match_by_symbol(self, obs: Observation, scope: str) -> Instrument | IdentityResult | None:
+    def _match_by_symbol(
+        self, obs: Observation, scope: Scope
+    ) -> Instrument | IdentityResult | None:
         """Last-resort tier. Only two unresolved parties may be joined by a symbol."""
-        if obs.figi_resolution is FigiResolution.RESOLVED:
+        if obs.is_resolved:
             return None
         eligible = [
             i
@@ -442,7 +613,7 @@ class InstrumentRegistry:
             and i.scope == scope
             and i.symbol == obs.symbol
             and i.is_unresolved
-            and not self._conflict(obs.references, i.references)
+            and not _conflict(obs.references, i.references)
         ]
         if len(eligible) > 1:
             return IdentityResult(
@@ -452,25 +623,8 @@ class InstrumentRegistry:
             )
         return eligible[0] if eligible else None
 
-    def _conflict(
-        self,
-        left: list[ExternalReference] | tuple[ExternalReference, ...],
-        right: list[ExternalReference] | tuple[ExternalReference, ...],
-    ) -> bool:
-        """Whether the two reference sets disagree within a comparison group."""
-        by_group: dict[tuple[int, str, str], set[str]] = {}
-        for ref in left:
-            group = ref.group()
-            if group is not None:
-                by_group.setdefault(group, set()).add(ref.value)
-        for ref in right:
-            group = ref.group()
-            if group is not None and group in by_group and ref.value not in by_group[group]:
-                return True
-        return False
-
     def _from_reference_match(
-        self, obs: Observation, scope: str, matched: list[Instrument]
+        self, obs: Observation, scope: Scope, matched: list[Instrument]
     ) -> IdentityResult:
         survivors: dict[str, Instrument] = {}
         for inst in matched:
@@ -493,13 +647,13 @@ class InstrumentRegistry:
                     f"{sorted(i.id for i in matched if i.superseded_by is not None)}",
                 )
             for other in alive_list[1:]:
-                if self._conflict(target.references, other.references):
+                if _conflict(target.references, other.references):
                     return IdentityResult(
                         Outcome.FLAGGED,
                         review=f"{target.id} and {other.id} match on one reference but "
                         f"disagree on another",
                     )
-        if self._conflict(obs.references, target.references):
+        if _conflict(obs.references, target.references):
             return IdentityResult(
                 Outcome.FLAGGED,
                 review=f"observation disagrees with {target.id} on an External Reference",
@@ -507,41 +661,14 @@ class InstrumentRegistry:
         # Earliest-minted survives, so the outcome does not depend on processing order.
         for other in alive_list[1:]:
             other.superseded_by = target.id
-        self._apply(target, obs)
+        target.absorb(obs)
         if len(alive_list) > 1:
             return IdentityResult(Outcome.SUPERSEDED, target, tuple(i.id for i in alive_list[1:]))
         return IdentityResult(Outcome.MATCHED, target)
 
     # -- Mutation --
 
-    def _apply(self, inst: Instrument, obs: Observation) -> None:
-        """Fold an Observation into an Instrument it has been identified with."""
-        known = set(inst.references)
-        inst.references.extend(r for r in obs.references if r not in known)
-        if obs.figi_resolution is FigiResolution.RESOLVED:
-            inst.figi_resolution = FigiResolution.RESOLVED
-        elif inst.figi_resolution is FigiResolution.NOT_ATTEMPTED:
-            inst.figi_resolution = obs.figi_resolution
-        inst.name = inst.name or obs.name
-        inst.issuer_name = inst.issuer_name or obs.issuer_name
-        self._record_symbol(inst, obs)
-
-    def _record_symbol(self, inst: Instrument, obs: Observation) -> None:
-        """Append Ticker History when a successor symbol is observed.
-
-        Only forward renames are recorded; a symbol observed before the current record began is
-        an out-of-order sighting and is ignored rather than rewriting history.
-        """
-        if obs.symbol == inst.symbol:
-            return
-        current = inst.ticker_history[-1]
-        if obs.observed_at < current.valid_from:
-            return
-        inst.ticker_history[-1] = replace(current, valid_to=obs.observed_at)
-        inst.ticker_history.append(TickerRecord(obs.symbol, inst.scope, valid_from=obs.observed_at))
-        inst.symbol = obs.symbol
-
-    def _mint(self, obs: Observation, scope: str) -> Instrument:
+    def _mint(self, obs: Observation, scope: Scope) -> Instrument:
         """Mint a new Instrument. The id is fixed here for good -- see ADR-0004."""
         instrument_id = self._mint_id(obs, scope)
         inst = Instrument(
@@ -562,34 +689,104 @@ class InstrumentRegistry:
         self._by_id[inst.id] = inst
         return inst
 
-    def _mint_id(self, obs: Observation, scope: str) -> str:
-        base = f"{obs.type}.{scope}.{obs.symbol.lower()}"
-        if base not in self._by_id:
-            return base
+    def _mint_id(self, obs: Observation, scope: Scope) -> InstrumentId:
+        """Find the first Instrument Id this Observation may claim.
+
+        Ids are never reused, so a superseded Instrument keeps its id out of circulation.
+        """
+        bare = InstrumentId.mint(obs.type, scope, obs.symbol)
+        if bare not in self._by_id:
+            return bare
         # The symbol is taken by an unrelated Instrument: qualify by issuer, else by number.
-        # Ids are never reused, so a superseded Instrument keeps its id out of circulation.
         qualifier = issuer_qualifier(obs.issuer_name)
-        if qualifier and f"{base}_{qualifier}" not in self._by_id:
-            return f"{base}_{qualifier}"
+        if qualifier:
+            by_issuer = InstrumentId.mint(obs.type, scope, obs.symbol, qualifier)
+            if by_issuer not in self._by_id:
+                return by_issuer
         n = 2
-        while f"{base}_{n}" in self._by_id:
+        while (numbered := InstrumentId.mint(obs.type, scope, obs.symbol, str(n))) in self._by_id:
             n += 1
-        return f"{base}_{n}"
+        return numbered
 
 
 ## Tests
 
 
+def test_instrument_id_round_trips_through_its_string_form() -> None:
+    """The readable slug is the stored form; parsing it back must lose nothing."""
+    for text in ("stock.us.fb", "stock.us.fb_proshares", "crypto.eth.usdc", "stock.us.brk-b_2"):
+        parsed = InstrumentId(text)
+        assert parsed == text
+        assert str(parsed) == text
+        assert InstrumentId.mint(parsed.type, parsed.scope, parsed.symbol, parsed.qualifier) == text
+
+
+def test_malformed_instrument_ids_are_rejected_whole() -> None:
+    """A partial parse would be worse than no parse: every part is validated or nothing is."""
+    for bad in (
+        "AAPL",
+        "stock.us",
+        "stock.us.fb.extra",
+        "bond.us.x",
+        "stock.usa.fb",
+        "stock.us._q",
+    ):
+        try:
+            InstrumentId(bad)
+            raise AssertionError(f"{bad!r} should not parse as an Instrument Id")
+        except (ValueError, UnknownScope):
+            pass
+
+
+def test_a_qualifier_is_separated_from_the_symbol() -> None:
+    """A normalised symbol never contains "_", so the first one always starts the Qualifier."""
+    plain = InstrumentId("stock.us.brk-b")
+    assert (plain.symbol, plain.qualifier) == ("BRK-B", None)
+    qualified = InstrumentId("stock.us.brk-b_proshares")
+    assert (qualified.symbol, qualified.qualifier) == ("BRK-B", "proshares")
+    # The id renders its symbol lowercase, but `symbol` means what it means on an Instrument.
+    assert plain.symbol == normalize_symbol("brk.b")
+
+
+def test_ids_and_scopes_survive_copying() -> None:
+    """A str subclass carrying attributes is uncopyable unless it says how to rebuild, and
+    both types end up inside dataclasses that callers will copy and stores will serialize."""
+    for original in (InstrumentId("stock.us.fb_proshares"), Scope(InstrumentType.CRYPTO, "eth")):
+        for restored in (copy.deepcopy(original), pickle.loads(pickle.dumps(original))):
+            assert restored == original
+            assert type(restored) is type(original)
+    assert copy.deepcopy(InstrumentId("crypto.eth.usdc")).scope.kind is ScopeKind.CHAIN
+
+
+def test_lookup_separates_a_malformed_id_from_a_genuine_miss() -> None:
+    reg = InstrumentRegistry()
+    try:
+        reg.get("AAPL")
+        raise AssertionError("a bare symbol is not an Instrument Id")
+    except ValueError:
+        pass
+    try:
+        reg.get("stock.us.nosuch")
+        raise AssertionError("a well-formed but unknown id is a miss")
+    except KeyError:
+        pass
+
+
+def test_scope_reports_its_authority() -> None:
+    assert Scope(InstrumentType.CRYPTO, "eth").kind is ScopeKind.CHAIN
+    assert Scope(InstrumentType.STOCK, "US").kind is ScopeKind.COUNTRY
+
+
 def test_scope_vocabulary_is_closed() -> None:
     for bad in ("ethereum", "1", "polygon"):
         try:
-            validate_scope(InstrumentType.CRYPTO, bad)
+            Scope(InstrumentType.CRYPTO, bad)
             raise AssertionError(f"{bad} should not be a chain")
         except UnknownScope:
             pass
     for bad in ("usa", "u", "nasdaq"):
         try:
-            validate_scope(InstrumentType.STOCK, bad)
+            Scope(InstrumentType.STOCK, bad)
             raise AssertionError(f"{bad} should not be a country")
         except UnknownScope:
             pass

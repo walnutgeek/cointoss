@@ -15,6 +15,7 @@ from cointoss.instrument import (
     AmbiguousSymbol,
     ExternalReference,
     FigiResolution,
+    InstrumentId,
     InstrumentRegistry,
     InstrumentType,
     Observation,
@@ -384,7 +385,7 @@ def test_supersession_chains_are_chased_and_cycles_raise() -> None:
 
     # Deliberately corrupt state: the rules above cannot mint a cycle, so it is written
     # directly to prove that chasing raises instead of spinning.
-    reg.get("stock.us.aaa").superseded_by = "stock.us.bbb"
+    reg.get("stock.us.aaa").superseded_by = InstrumentId("stock.us.bbb")
     with pytest.raises(SupersessionCycle):
         reg.survivor("stock.us.aaa")
 
