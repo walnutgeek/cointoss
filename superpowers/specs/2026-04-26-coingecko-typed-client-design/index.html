@@ -1,0 +1,1167 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Crypto coin portfolio tracker and research platform">
+      
+      
+      
+        <link rel="canonical" href="https://walnutgeek.github.io/cointoss/superpowers/specs/2026-04-26-coingecko-typed-client-design/">
+      
+      
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>CoinGecko Typed Client Design - Cointoss</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../../assets/_mkdocstrings.css">
+    
+    <script>__md_scope=new URL("../../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="teal" data-md-color-accent="teal">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#coingecko-typed-client-design" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../../.." title="Cointoss" class="md-header__button md-logo" aria-label="Cointoss" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Cointoss
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              CoinGecko Typed Client Design
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="teal" data-md-color-accent="teal"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="teal" data-md-color-accent="teal"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/walnutgeek/cointoss" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    walnutgeek/cointoss
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../../.." title="Cointoss" class="md-nav__button md-logo" aria-label="Cointoss" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Cointoss
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/walnutgeek/cointoss" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    walnutgeek/cointoss
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    API Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/core.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    cointoss
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/models.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    cointoss.models
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/sources.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    cointoss.sources
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/pipeline.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    cointoss.pipeline
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/server.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    cointoss.server
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#scope" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Scope
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#response-models" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Response Models
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Response Models">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#coinlistitem" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CoinListItem
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#coinroi" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CoinRoi
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#coinsmarketitem" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CoinsMarketItem
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#coinimage" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CoinImage
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#coinlinks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CoinLinks
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#coindetail" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CoinDetail
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ohlccandle" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        OhlcCandle
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#method-signatures" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Method Signatures
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Method Signatures">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#parameter-handling-convention" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Parameter handling convention
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fetch_coin_list" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        fetch_coin_list
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fetch_coins_markets" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        fetch_coins_markets
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fetch_coin" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        fetch_coin
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fetch_coin_ohlc" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        fetch_coin_ohlc
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#removals" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Removals
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Removals">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#files-deleted" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Files deleted
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#removed-from-coingeckopy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Removed from coingecko.py
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#removed-from-test_coingeckopy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Removed from test_coingecko.py
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#caller-updates" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Caller Updates
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Caller Updates">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#schedulerpy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        scheduler.py
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#clipy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        cli.py
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#test_coingeckopy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        test_coingecko.py
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#not-in-scope" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Not in scope
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="coingecko-typed-client-design">CoinGecko Typed Client Design<a class="headerlink" href="#coingecko-typed-client-design" title="Permanent link">&para;</a></h1>
+<p>Typed Pydantic response models and refactored method signatures for the CoinGecko API client, replacing untyped dict returns and hardcoded defaults.</p>
+<h2 id="scope">Scope<a class="headerlink" href="#scope" title="Permanent link">&para;</a></h2>
+<p>Four CoinGecko API operations:</p>
+<table>
+<thead>
+<tr>
+<th>operationId</th>
+<th>Path</th>
+<th>Method</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>coins-list</code></td>
+<td><code>/coins/list</code></td>
+<td><code>fetch_coin_list</code></td>
+</tr>
+<tr>
+<td><code>coins-markets</code></td>
+<td><code>/coins/markets</code></td>
+<td><code>fetch_coins_markets</code></td>
+</tr>
+<tr>
+<td><code>coins-id</code></td>
+<td><code>/coins/{id}</code></td>
+<td><code>fetch_coin</code></td>
+</tr>
+<tr>
+<td><code>coins-id-ohlc</code></td>
+<td><code>/coins/{id}/ohlc</code></td>
+<td><code>fetch_coin_ohlc</code></td>
+</tr>
+</tbody>
+</table>
+<p>API spec reference: <code>/Users/sergeyk/w/coingecko-api-oas/coingecko-demo.json</code></p>
+<h2 id="response-models">Response Models<a class="headerlink" href="#response-models" title="Permanent link">&para;</a></h2>
+<p>All models live in <code>src/cointoss/sources/coingecko.py</code> alongside <code>CoinGeckoClient</code>. All use <code>pydantic.BaseModel</code> (not <code>DbModel</code>) with <code>model_config = ConfigDict(extra="ignore")</code>.</p>
+<h3 id="coinlistitem">CoinListItem<a class="headerlink" href="#coinlistitem" title="Permanent link">&para;</a></h3>
+<p>For <code>/coins/list</code> response items.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>id: str
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>symbol: str
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>name: str
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>platforms: dict[str, str | None] | None = None
+</code></pre></div>
+<h3 id="coinroi">CoinRoi<a class="headerlink" href="#coinroi" title="Permanent link">&para;</a></h3>
+<p>Nested model for ROI data in market responses.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>times: float
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>currency: str
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>percentage: float
+</code></pre></div>
+<h3 id="coinsmarketitem">CoinsMarketItem<a class="headerlink" href="#coinsmarketitem" title="Permanent link">&para;</a></h3>
+<p>For <code>/coins/markets</code> response items. All numeric fields nullable.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>id: str
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>symbol: str
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>name: str
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>image: str | None = None
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>current_price: float | None = None
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>market_cap: float | None = None
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>market_cap_rank: int | None = None
+<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>fully_diluted_valuation: float | None = None
+<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a>total_volume: float | None = None
+<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a>high_24h: float | None = None
+<a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a>low_24h: float | None = None
+<a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a>price_change_24h: float | None = None
+<a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a>price_change_percentage_24h: float | None = None
+<a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a>market_cap_change_24h: float | None = None
+<a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a>market_cap_change_percentage_24h: float | None = None
+<a id="__codelineno-2-16" name="__codelineno-2-16" href="#__codelineno-2-16"></a>circulating_supply: float | None = None
+<a id="__codelineno-2-17" name="__codelineno-2-17" href="#__codelineno-2-17"></a>total_supply: float | None = None
+<a id="__codelineno-2-18" name="__codelineno-2-18" href="#__codelineno-2-18"></a>max_supply: float | None = None
+<a id="__codelineno-2-19" name="__codelineno-2-19" href="#__codelineno-2-19"></a>ath: float | None = None
+<a id="__codelineno-2-20" name="__codelineno-2-20" href="#__codelineno-2-20"></a>ath_change_percentage: float | None = None
+<a id="__codelineno-2-21" name="__codelineno-2-21" href="#__codelineno-2-21"></a>ath_date: str | None = None
+<a id="__codelineno-2-22" name="__codelineno-2-22" href="#__codelineno-2-22"></a>atl: float | None = None
+<a id="__codelineno-2-23" name="__codelineno-2-23" href="#__codelineno-2-23"></a>atl_change_percentage: float | None = None
+<a id="__codelineno-2-24" name="__codelineno-2-24" href="#__codelineno-2-24"></a>atl_date: str | None = None
+<a id="__codelineno-2-25" name="__codelineno-2-25" href="#__codelineno-2-25"></a>roi: CoinRoi | None = None
+<a id="__codelineno-2-26" name="__codelineno-2-26" href="#__codelineno-2-26"></a>last_updated: str | None = None
+</code></pre></div>
+<h3 id="coinimage">CoinImage<a class="headerlink" href="#coinimage" title="Permanent link">&para;</a></h3>
+<p>Nested model for coin image URLs.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>thumb: str | None = None
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>small: str | None = None
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>large: str | None = None
+</code></pre></div>
+<h3 id="coinlinks">CoinLinks<a class="headerlink" href="#coinlinks" title="Permanent link">&para;</a></h3>
+<p>Nested model for coin links. Selectively modeled — common fields only.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>homepage: list[str] | None = None
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>whitepaper: list[str] | None = None
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>blockchain_site: list[str] | None = None
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>official_forum_url: list[str] | None = None
+<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>twitter_screen_name: str | None = None
+<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>telegram_channel_identifier: str | None = None
+<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a>subreddit_url: str | None = None
+<a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a>repos_url: dict[str, list[str]] | None = None
+</code></pre></div>
+<h3 id="coindetail">CoinDetail<a class="headerlink" href="#coindetail" title="Permanent link">&para;</a></h3>
+<p>For <code>/coins/{id}</code> response. Selective modeling — commonly used fields typed, rest available via raw dict or re-fetch.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>id: str
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>symbol: str
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>name: str
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>web_slug: str | None = None
+<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>asset_platform_id: str | None = None
+<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>platforms: dict[str, str | None] | None = None
+<a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>block_time_in_minutes: int | None = None
+<a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a>hashing_algorithm: str | None = None
+<a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a>categories: list[str] | None = None
+<a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a>preview_listing: bool | None = None
+<a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a>market_cap_rank: int | None = None
+<a id="__codelineno-5-12" name="__codelineno-5-12" href="#__codelineno-5-12"></a>genesis_date: str | None = None
+<a id="__codelineno-5-13" name="__codelineno-5-13" href="#__codelineno-5-13"></a>country_origin: str | None = None
+<a id="__codelineno-5-14" name="__codelineno-5-14" href="#__codelineno-5-14"></a>sentiment_votes_up_percentage: float | None = None
+<a id="__codelineno-5-15" name="__codelineno-5-15" href="#__codelineno-5-15"></a>sentiment_votes_down_percentage: float | None = None
+<a id="__codelineno-5-16" name="__codelineno-5-16" href="#__codelineno-5-16"></a>watchlist_portfolio_users: int | None = None
+<a id="__codelineno-5-17" name="__codelineno-5-17" href="#__codelineno-5-17"></a>description: dict[str, str] | None = None
+<a id="__codelineno-5-18" name="__codelineno-5-18" href="#__codelineno-5-18"></a>links: CoinLinks | None = None
+<a id="__codelineno-5-19" name="__codelineno-5-19" href="#__codelineno-5-19"></a>image: CoinImage | None = None
+<a id="__codelineno-5-20" name="__codelineno-5-20" href="#__codelineno-5-20"></a>market_data: dict[str, Any] | None = None
+</code></pre></div>
+<p><code>market_data</code> stays as <code>dict[str, Any]</code> because it contains prices in every supported currency (deeply nested, large). Callers access it as <code>detail.market_data["current_price"]["usd"]</code>.</p>
+<h3 id="ohlccandle">OhlcCandle<a class="headerlink" href="#ohlccandle" title="Permanent link">&para;</a></h3>
+<p>For <code>/coins/{id}/ohlc</code> response items. The API returns arrays <code>[timestamp, open, high, low, close]</code> — a <code>model_validator(mode="before")</code> converts from list to object.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>timestamp: int
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>open: float
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>high: float
+<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>low: float
+<a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>close: float
+</code></pre></div>
+<h2 id="method-signatures">Method Signatures<a class="headerlink" href="#method-signatures" title="Permanent link">&para;</a></h2>
+<h3 id="parameter-handling-convention">Parameter handling convention<a class="headerlink" href="#parameter-handling-convention" title="Permanent link">&para;</a></h3>
+<ul>
+<li>All API parameters become method parameters.</li>
+<li>Required API params are positional with defaults where sensible (e.g., <code>vs_currency="usd"</code>).</li>
+<li>Optional API params default to <code>None</code> and are keyword-only (after <code>*</code>).</li>
+<li>When a param is <code>None</code>, it is excluded from the query string entirely, letting the API use its own default.</li>
+<li>API default values are documented in the method docstring.</li>
+<li>A private helper <code>_build_params(**kwargs)</code> drops <code>None</code> values, converts bools to lowercase strings, and converts everything else to <code>str</code>.</li>
+</ul>
+<h3 id="fetch_coin_list">fetch_coin_list<a class="headerlink" href="#fetch_coin_list" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">fetch_coin_list</span><span class="p">(</span>
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>    <span class="bp">self</span><span class="p">,</span>
+<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>    <span class="o">*</span><span class="p">,</span>
+<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a>    <span class="n">include_platform</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="n">CoinListItem</span><span class="p">]:</span>
+<a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;Fetch the full list of coins from /coins/list.</span>
+<a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a>
+<a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a><span class="sd">    Args:</span>
+<a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a><span class="sd">        include_platform: Include platform contract addresses.</span>
+<a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a><span class="sd">            API default: false.</span>
+<a id="__codelineno-7-11" name="__codelineno-7-11" href="#__codelineno-7-11"></a><span class="sd">    &quot;&quot;&quot;</span>
+</code></pre></div>
+<h3 id="fetch_coins_markets">fetch_coins_markets<a class="headerlink" href="#fetch_coins_markets" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">fetch_coins_markets</span><span class="p">(</span>
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>    <span class="bp">self</span><span class="p">,</span>
+<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>    <span class="n">vs_currency</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;usd&quot;</span><span class="p">,</span>
+<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a>    <span class="o">*</span><span class="p">,</span>
+<a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a>    <span class="n">ids</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a>    <span class="n">names</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a>    <span class="n">symbols</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a>    <span class="n">include_tokens</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a>    <span class="n">category</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<a id="__codelineno-8-10" name="__codelineno-8-10" href="#__codelineno-8-10"></a>    <span class="n">order</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<a id="__codelineno-8-11" name="__codelineno-8-11" href="#__codelineno-8-11"></a>    <span class="n">per_page</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<a id="__codelineno-8-12" name="__codelineno-8-12" href="#__codelineno-8-12"></a>    <span class="n">page</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<a id="__codelineno-8-13" name="__codelineno-8-13" href="#__codelineno-8-13"></a>    <span class="n">sparkline</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<a id="__codelineno-8-14" name="__codelineno-8-14" href="#__codelineno-8-14"></a>    <span class="n">price_change_percentage</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<a id="__codelineno-8-15" name="__codelineno-8-15" href="#__codelineno-8-15"></a>    <span class="n">locale</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<a id="__codelineno-8-16" name="__codelineno-8-16" href="#__codelineno-8-16"></a>    <span class="n">precision</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<a id="__codelineno-8-17" name="__codelineno-8-17" href="#__codelineno-8-17"></a>    <span class="n">include_rehypothecated</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<a id="__codelineno-8-18" name="__codelineno-8-18" href="#__codelineno-8-18"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="n">CoinsMarketItem</span><span class="p">]:</span>
+<a id="__codelineno-8-19" name="__codelineno-8-19" href="#__codelineno-8-19"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;Fetch coin market data from /coins/markets.</span>
+<a id="__codelineno-8-20" name="__codelineno-8-20" href="#__codelineno-8-20"></a>
+<a id="__codelineno-8-21" name="__codelineno-8-21" href="#__codelineno-8-21"></a><span class="sd">    Args:</span>
+<a id="__codelineno-8-22" name="__codelineno-8-22" href="#__codelineno-8-22"></a><span class="sd">        vs_currency: Target currency of market data. API default: usd.</span>
+<a id="__codelineno-8-23" name="__codelineno-8-23" href="#__codelineno-8-23"></a><span class="sd">        ids: Coin IDs, comma-separated.</span>
+<a id="__codelineno-8-24" name="__codelineno-8-24" href="#__codelineno-8-24"></a><span class="sd">        names: Coin names, comma-separated.</span>
+<a id="__codelineno-8-25" name="__codelineno-8-25" href="#__codelineno-8-25"></a><span class="sd">        symbols: Coin symbols, comma-separated.</span>
+<a id="__codelineno-8-26" name="__codelineno-8-26" href="#__codelineno-8-26"></a><span class="sd">        include_tokens: For symbol lookups: &quot;top&quot; or &quot;all&quot;.</span>
+<a id="__codelineno-8-27" name="__codelineno-8-27" href="#__codelineno-8-27"></a><span class="sd">        category: Filter by category slug.</span>
+<a id="__codelineno-8-28" name="__codelineno-8-28" href="#__codelineno-8-28"></a><span class="sd">        order: Sort order. API default: market_cap_desc.</span>
+<a id="__codelineno-8-29" name="__codelineno-8-29" href="#__codelineno-8-29"></a><span class="sd">        per_page: Results per page (1-250). API default: 100.</span>
+<a id="__codelineno-8-30" name="__codelineno-8-30" href="#__codelineno-8-30"></a><span class="sd">        page: Page number. API default: 1.</span>
+<a id="__codelineno-8-31" name="__codelineno-8-31" href="#__codelineno-8-31"></a><span class="sd">        sparkline: Include 7-day sparkline. API default: false.</span>
+<a id="__codelineno-8-32" name="__codelineno-8-32" href="#__codelineno-8-32"></a><span class="sd">        price_change_percentage: Price change timeframes, comma-separated</span>
+<a id="__codelineno-8-33" name="__codelineno-8-33" href="#__codelineno-8-33"></a><span class="sd">            (1h, 24h, 7d, 14d, 30d, 200d, 1y).</span>
+<a id="__codelineno-8-34" name="__codelineno-8-34" href="#__codelineno-8-34"></a><span class="sd">        locale: Localization language. API default: en.</span>
+<a id="__codelineno-8-35" name="__codelineno-8-35" href="#__codelineno-8-35"></a><span class="sd">        precision: Decimal places for price (&quot;full&quot; or &quot;0&quot;-&quot;18&quot;).</span>
+<a id="__codelineno-8-36" name="__codelineno-8-36" href="#__codelineno-8-36"></a><span class="sd">        include_rehypothecated: Include rehypothecated tokens. API default: false.</span>
+<a id="__codelineno-8-37" name="__codelineno-8-37" href="#__codelineno-8-37"></a><span class="sd">    &quot;&quot;&quot;</span>
+</code></pre></div>
+<h3 id="fetch_coin">fetch_coin<a class="headerlink" href="#fetch_coin" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">fetch_coin</span><span class="p">(</span>
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>    <span class="bp">self</span><span class="p">,</span>
+<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a>    <span class="n">coin_id</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
+<a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a>    <span class="o">*</span><span class="p">,</span>
+<a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a>    <span class="n">localization</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a>    <span class="n">tickers</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a>    <span class="n">market_data</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<a id="__codelineno-9-8" name="__codelineno-9-8" href="#__codelineno-9-8"></a>    <span class="n">community_data</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<a id="__codelineno-9-9" name="__codelineno-9-9" href="#__codelineno-9-9"></a>    <span class="n">developer_data</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<a id="__codelineno-9-10" name="__codelineno-9-10" href="#__codelineno-9-10"></a>    <span class="n">sparkline</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<a id="__codelineno-9-11" name="__codelineno-9-11" href="#__codelineno-9-11"></a>    <span class="n">include_categories_details</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<a id="__codelineno-9-12" name="__codelineno-9-12" href="#__codelineno-9-12"></a>    <span class="n">dex_pair_format</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<a id="__codelineno-9-13" name="__codelineno-9-13" href="#__codelineno-9-13"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">CoinDetail</span><span class="p">:</span>
+<a id="__codelineno-9-14" name="__codelineno-9-14" href="#__codelineno-9-14"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;Fetch coin detail from /coins/{id}.</span>
+<a id="__codelineno-9-15" name="__codelineno-9-15" href="#__codelineno-9-15"></a>
+<a id="__codelineno-9-16" name="__codelineno-9-16" href="#__codelineno-9-16"></a><span class="sd">    Args:</span>
+<a id="__codelineno-9-17" name="__codelineno-9-17" href="#__codelineno-9-17"></a><span class="sd">        coin_id: CoinGecko coin ID.</span>
+<a id="__codelineno-9-18" name="__codelineno-9-18" href="#__codelineno-9-18"></a><span class="sd">        localization: Include localized languages. API default: true.</span>
+<a id="__codelineno-9-19" name="__codelineno-9-19" href="#__codelineno-9-19"></a><span class="sd">        tickers: Include tickers data. API default: true.</span>
+<a id="__codelineno-9-20" name="__codelineno-9-20" href="#__codelineno-9-20"></a><span class="sd">        market_data: Include market data. API default: true.</span>
+<a id="__codelineno-9-21" name="__codelineno-9-21" href="#__codelineno-9-21"></a><span class="sd">        community_data: Include community data. API default: true.</span>
+<a id="__codelineno-9-22" name="__codelineno-9-22" href="#__codelineno-9-22"></a><span class="sd">        developer_data: Include developer data. API default: true.</span>
+<a id="__codelineno-9-23" name="__codelineno-9-23" href="#__codelineno-9-23"></a><span class="sd">        sparkline: Include 7-day sparkline. API default: false.</span>
+<a id="__codelineno-9-24" name="__codelineno-9-24" href="#__codelineno-9-24"></a><span class="sd">        include_categories_details: Include category details. API default: false.</span>
+<a id="__codelineno-9-25" name="__codelineno-9-25" href="#__codelineno-9-25"></a><span class="sd">        dex_pair_format: DEX pair format: &quot;contract_address&quot; or &quot;symbol&quot;.</span>
+<a id="__codelineno-9-26" name="__codelineno-9-26" href="#__codelineno-9-26"></a><span class="sd">            API default: contract_address.</span>
+<a id="__codelineno-9-27" name="__codelineno-9-27" href="#__codelineno-9-27"></a><span class="sd">    &quot;&quot;&quot;</span>
+</code></pre></div>
+<h3 id="fetch_coin_ohlc">fetch_coin_ohlc<a class="headerlink" href="#fetch_coin_ohlc" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">fetch_coin_ohlc</span><span class="p">(</span>
+<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>    <span class="bp">self</span><span class="p">,</span>
+<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a>    <span class="n">coin_id</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
+<a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a>    <span class="n">vs_currency</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;usd&quot;</span><span class="p">,</span>
+<a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a>    <span class="n">days</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;30&quot;</span><span class="p">,</span>
+<a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a>    <span class="o">*</span><span class="p">,</span>
+<a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a>    <span class="n">precision</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<a id="__codelineno-10-8" name="__codelineno-10-8" href="#__codelineno-10-8"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="n">OhlcCandle</span><span class="p">]:</span>
+<a id="__codelineno-10-9" name="__codelineno-10-9" href="#__codelineno-10-9"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;Fetch OHLC candle data from /coins/{id}/ohlc.</span>
+<a id="__codelineno-10-10" name="__codelineno-10-10" href="#__codelineno-10-10"></a>
+<a id="__codelineno-10-11" name="__codelineno-10-11" href="#__codelineno-10-11"></a><span class="sd">    Args:</span>
+<a id="__codelineno-10-12" name="__codelineno-10-12" href="#__codelineno-10-12"></a><span class="sd">        coin_id: CoinGecko coin ID.</span>
+<a id="__codelineno-10-13" name="__codelineno-10-13" href="#__codelineno-10-13"></a><span class="sd">        vs_currency: Target currency. API default: usd.</span>
+<a id="__codelineno-10-14" name="__codelineno-10-14" href="#__codelineno-10-14"></a><span class="sd">        days: Data up to N days ago (1, 7, 14, 30, 90, 180, 365).</span>
+<a id="__codelineno-10-15" name="__codelineno-10-15" href="#__codelineno-10-15"></a><span class="sd">        precision: Decimal places for price (&quot;full&quot; or &quot;0&quot;-&quot;18&quot;).</span>
+<a id="__codelineno-10-16" name="__codelineno-10-16" href="#__codelineno-10-16"></a><span class="sd">    &quot;&quot;&quot;</span>
+</code></pre></div>
+<h2 id="removals">Removals<a class="headerlink" href="#removals" title="Permanent link">&para;</a></h2>
+<h3 id="files-deleted">Files deleted<a class="headerlink" href="#files-deleted" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>src/cointoss/pipeline.py</code></li>
+<li><code>tests/test_pipeline.py</code></li>
+</ul>
+<h3 id="removed-from-coingeckopy">Removed from <code>coingecko.py</code><a class="headerlink" href="#removed-from-coingeckopy" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>RateLimiter</code> class (and its <code>dataclass</code>, <code>time</code> imports)</li>
+<li><code>ENDPOINTS_URL_TO_ID</code> dict</li>
+<li><code>DOCS_URL</code> constant</li>
+<li><code>fetch_coin_detail</code> method (replaced by <code>fetch_coin</code>)</li>
+<li><code>fetch_price_history</code> method (unused)</li>
+<li><code>fetch_top_coins</code> method (replaced by <code>fetch_coins_markets</code>)</li>
+<li><code>fetch_coin_list</code> old implementation (replaced by typed version)</li>
+</ul>
+<h3 id="removed-from-test_coingeckopy">Removed from <code>test_coingecko.py</code><a class="headerlink" href="#removed-from-test_coingeckopy" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>RateLimiter</code> import</li>
+<li><code>test_rate_limiter_allows_within_budget</code></li>
+<li><code>test_rate_limiter_blocks_at_budget</code></li>
+</ul>
+<h2 id="caller-updates">Caller Updates<a class="headerlink" href="#caller-updates" title="Permanent link">&para;</a></h2>
+<h3 id="schedulerpy"><code>scheduler.py</code><a class="headerlink" href="#schedulerpy" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Remove <code>from cointoss.pipeline import ...</code></li>
+<li>Remove <code>RateLimiter</code> import and all usage</li>
+<li><code>CoinGeckoClient()</code> constructor no longer takes <code>rate_limiter</code></li>
+<li><code>fetch_top_coins_task</code>: call <code>self.client.fetch_coins_markets(per_page=50)</code> directly, upsert <code>Coin</code> and <code>CoinPrice</code> records inline</li>
+<li><code>fetch_details_task</code>: call <code>self.client.fetch_coin(coin_id)</code> directly, upsert <code>Coin</code> records inline</li>
+<li>Remove <code>rate_limiter</code> field from <code>FetchScheduler</code></li>
+</ul>
+<h3 id="clipy"><code>cli.py</code><a class="headerlink" href="#clipy" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Remove <code>from cointoss.pipeline import run_fetch_top_coins</code></li>
+<li><code>fetch</code> command: call <code>client.fetch_coins_markets()</code> directly, upsert coins/prices inline, same logic as current <code>run_fetch_top_coins</code> but using typed model attributes</li>
+</ul>
+<h3 id="test_coingeckopy"><code>test_coingecko.py</code><a class="headerlink" href="#test_coingeckopy" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Update <code>test_fetch_coin_list</code> to assert on <code>CoinListItem</code> instances</li>
+<li>Update <code>test_fetch_coin_detail</code> to test <code>fetch_coin</code> returning <code>CoinDetail</code></li>
+<li>Add tests for <code>fetch_coins_markets</code> and <code>fetch_coin_ohlc</code></li>
+</ul>
+<h2 id="not-in-scope">Not in scope<a class="headerlink" href="#not-in-scope" title="Permanent link">&para;</a></h2>
+<ul>
+<li><code>fetch_price_history</code> / <code>coins-id-market-chart</code> — removed, not replaced</li>
+<li>Onchain/DEX API endpoints (those are in <code>onchain-demo.json</code>)</li>
+<li><code>RateLimiter</code> replacement — removed without replacement</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../../..", "features": ["navigation.sections", "navigation.expand", "navigation.top", "search.highlight", "search.suggest", "content.code.copy"], "search": "../../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>
