@@ -31,8 +31,8 @@ classifiers = [
 
 dependencies = [
     "woodglue",
-    "lythonic",
-    "yfinance>=1.4.1"
+    "lythonic>=0.0.25",
+    "yfinance>=1.4.1",
 ]
 
 [project.optional-dependencies]

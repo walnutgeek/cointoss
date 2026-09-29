@@ -808,23 +808,14 @@ class Store:
 
         The unresolved queue is this predicate, not a table: a member with no pin is the same
         fact as a member waiting to be resolved, and recording it twice invites disagreement.
-
-        The null test is applied in Python rather than in the query. `lythonic.state` renders
-        an equality filter as `field = ?`, which no row satisfies when the value is NULL, and
-        it offers no null-aware operator. Revisit if this ever reads enough rows to matter.
         """
-        filters: dict[str, Any] = {}
+        filters: dict[str, Any] = {"instrument": None, "removed_in_revision": None}
         if name is not None:
             definition_id = self._universe_definition_id(name)
             if definition_id is None:
                 return []
             filters["definition"] = definition_id
-        rows = UniverseMemberRow.select(self.conn, **filters)
-        return [
-            self._member_from(row)
-            for row in rows
-            if row.instrument is None and row.removed_in_revision is None
-        ]
+        return [self._member_from(row) for row in UniverseMemberRow.select(self.conn, **filters)]
 
     def _universe_definition_id(self, name: str) -> int | None:
         rows = UniverseDefinitionRow.select(self.conn, name=name)
