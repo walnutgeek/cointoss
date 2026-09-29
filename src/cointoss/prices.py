@@ -26,14 +26,18 @@ from __future__ import annotations
 
 import math
 from collections.abc import Sequence
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from enum import StrEnum
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from pydantic import BaseModel, ConfigDict, model_validator
 
 from cointoss import FrameData
 from cointoss.instrument import InstrumentId
+
+if TYPE_CHECKING:
+    # Type-only so the pure mapping module does not drag in the HTTP stack the adapter needs.
+    from cointoss.sources.coingecko import MarketChart
 
 __all__ = [
     "PRICE_FIELDS",
@@ -46,6 +50,7 @@ __all__ = [
     "MissingColumn",
     "PriceError",
     "Restatement",
+    "bars_from_market_chart",
     "bars_from_yahoo",
     "detect_restatements",
     "split_factor_after",
@@ -238,6 +243,11 @@ def _as_float(value: Any) -> float | None:
     return None if math.isnan(number) else number
 
 
+def _utc_day(timestamp_ms: int) -> date:
+    """The UTC calendar date a CoinGecko millisecond timestamp falls in."""
+    return datetime.fromtimestamp(timestamp_ms / 1000, tz=UTC).date()
+
+
 def bars_from_yahoo(
     instrument_id: InstrumentId,
     frame: FrameData,
@@ -388,3 +398,44 @@ def detect_restatements(
             )
         )
     return changes
+
+
+def bars_from_market_chart(
+    instrument_id: InstrumentId,
+    payload: MarketChart,
+    fetched_at: datetime,
+) -> list[Bar]:
+    """Map one CoinGecko market chart payload into one close-only Bar per UTC day.
+
+    The endpoint is close-only, so `open`, `high` and `low` stay null. So does `adj_close`:
+    CoinGecko applies no dividend adjustment, and ADR-0009 keeps the field null rather than
+    mirroring `close` so that equal by coincidence and equal by definition do not look alike.
+
+    The three series are aligned by UTC day rather than by position, since nothing in the
+    payload promises they are parallel. A day with a price but no volume point yields a bar with
+    a null volume; a volume point on a day with no price yields nothing, because a Bar needs a
+    close.
+
+    Within one day the last point wins. The API spaces points hourly for short windows and
+    appends a trailing point at the current time, so the final day of a 365-day fetch carries
+    both its 00:00 point and a partial-day one. The latest price is the better close for a day
+    still in progress, and the module holds no clock with which to tell a partial day from a
+    finished one, so that bar is emitted and a later re-fetch overwrites it.
+
+    Only the window the payload covers is mapped. The free tier stops at 365 days
+    (`cointoss.sources.coingecko.MARKET_CHART_MAX_DAYS`), and asking for more raises there
+    rather than arriving here as a short result.
+    """
+    volume_by_day = {_utc_day(p.timestamp): p.value for p in payload.total_volumes}
+    close_by_day: dict[date, float] = {_utc_day(p.timestamp): p.value for p in payload.prices}
+    return [
+        Bar(
+            instrument_id=instrument_id,
+            source="coingecko",
+            bar_date=bar_date,
+            close=close,
+            volume=volume_by_day.get(bar_date),
+            fetched_at=fetched_at,
+        )
+        for bar_date, close in sorted(close_by_day.items())
+    ]

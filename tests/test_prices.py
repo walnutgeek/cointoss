@@ -24,9 +24,11 @@ from cointoss.prices import (
     CorporateActionKind,
     MalformedValue,
     MissingColumn,
+    bars_from_market_chart,
     bars_from_yahoo,
     detect_restatements,
 )
+from cointoss.sources.coingecko import MarketChart
 
 NVDA = InstrumentId("stock.us.nvda")
 FETCHED = datetime(2024, 7, 1, 12, 0)
@@ -35,10 +37,18 @@ SPLIT_DATE = date(2024, 6, 10)
 
 FIXTURE = Path(__file__).parent / "data" / "yahoo_nvda_2024_split.json"
 
+BTC = InstrumentId("crypto.btc.btc")
+MARKET_CHART_FIXTURE = Path(__file__).parent / "data" / "coingecko_bitcoin_market_chart_365d.json"
+
 
 def yahoo_frame() -> FrameData:
     """The recorded frame, in the shape `cointoss.sources.yahoofinance.get_prices` returns."""
     return FrameData.model_validate(json.loads(FIXTURE.read_text()))
+
+
+def market_chart() -> MarketChart:
+    """The recorded market chart tail, in the shape `fetch_market_chart` returns."""
+    return MarketChart.model_validate(json.loads(MARKET_CHART_FIXTURE.read_text()))
 
 
 def split(value: float = 10.0, when: date = SPLIT_DATE) -> CorporateAction:
@@ -304,3 +314,74 @@ def test_consecutive_splits_compound():
     )
 
     assert detect_restatements(first, incoming, actions) == []
+
+
+def test_market_chart_yields_close_only_bars():
+    """CoinGecko carries a close and a volume; the candle fields stay null, not mirrored."""
+    bars = bars_from_market_chart(BTC, market_chart(), FETCHED)
+
+    assert {b.source for b in bars} == {"coingecko"}
+    assert {b.instrument_id for b in bars} == {BTC}
+    assert {b.fetched_at for b in bars} == {FETCHED}
+    for bar in bars:
+        assert (bar.open, bar.high, bar.low, bar.adj_close) == (None, None, None, None)
+        assert bar.volume is not None
+
+    first = bars[0]
+    assert first.bar_date == date(2026, 9, 23)
+    assert first.close == pytest.approx(86183.29442787907)
+    assert first.volume == pytest.approx(43496653159.936775)
+
+
+def test_adjusted_close_is_null_not_a_copy_of_close():
+    """ADR-0009: equal by coincidence and equal by definition must not look alike."""
+    bars = bars_from_market_chart(BTC, market_chart(), FETCHED)
+
+    assert all(b.adj_close is None for b in bars)
+
+
+def test_one_bar_per_utc_day_with_the_last_point_winning():
+    """The recorded tail ends with both a 00:00 point and a partial-day one for the same date."""
+    payload = market_chart()
+    bars = bars_from_market_chart(BTC, payload, FETCHED)
+
+    days = [b.bar_date for b in bars]
+    assert days == sorted(days)
+    assert len(days) == len(set(days))
+    # Eight points, two of which share 2026-09-29, so seven bars.
+    assert len(payload.prices) == 8
+    assert len(bars) == 7
+    last = bars[-1]
+    assert last.bar_date == date(2026, 9, 29)
+    assert last.close == pytest.approx(84011.80548571255)
+
+
+def test_volume_is_matched_by_day_not_by_position():
+    """The three series are aligned on their UTC day; a day with no volume point gets a null."""
+    payload = market_chart()
+    trimmed = payload.model_copy(update={"total_volumes": payload.total_volumes[:2]})
+
+    bars = bars_from_market_chart(BTC, trimmed, FETCHED)
+
+    assert [b.volume is None for b in bars] == [False, False, True, True, True, True, True]
+
+
+def test_a_volume_without_a_price_yields_no_bar():
+    """A Bar needs a close, so a stray volume point does not conjure one."""
+    payload = market_chart()
+    prices_only_first = payload.model_copy(update={"prices": payload.prices[:1]})
+
+    bars = bars_from_market_chart(BTC, prices_only_first, FETCHED)
+
+    assert [b.bar_date for b in bars] == [date(2026, 9, 23)]
+
+
+def test_market_chart_bars_compare_as_two_vintages():
+    """A re-fetched close-only bar restates through the same path a Yahoo bar does."""
+    bars = bars_from_market_chart(BTC, market_chart(), FETCHED)
+    stored = bars[0]
+    incoming = stored.model_copy(update={"close": stored.close * 1.02, "fetched_at": REFETCHED})
+
+    detected = detect_restatements(stored, incoming, [])
+
+    assert [r.field for r in detected] == ["close"]

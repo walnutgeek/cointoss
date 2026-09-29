@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -12,8 +13,12 @@ from cointoss.sources.coingecko import (
     CoinGeckoClient,
     CoinListItem,
     CoinsMarketItem,
+    MarketChart,
+    MarketChartRangeUnavailable,
     OhlcCandle,
 )
+
+MARKET_CHART_FIXTURE = Path(__file__).parent / "data" / "coingecko_bitcoin_market_chart_365d.json"
 
 
 def _mock_tornado_fetch(expected: object) -> AsyncMock:
@@ -102,6 +107,33 @@ async def test_fetch_coin_ohlc():
     assert result[0].timestamp == 1709395200000
     assert result[0].open == 61942
     assert result[0].close == 61845
+
+
+@pytest.mark.asyncio
+async def test_fetch_market_chart_parses_three_series():
+    """fetch_market_chart should parse each [ts, value] pair into a MarketChartPoint."""
+    expected = json.loads(MARKET_CHART_FIXTURE.read_text())
+    with patch(
+        "cointoss.sources.coingecko.AsyncHTTPClient", return_value=_mock_tornado_fetch(expected)
+    ):
+        client = CoinGeckoClient()
+        result = await client.fetch_market_chart("bitcoin", days=365)
+    assert isinstance(result, MarketChart)
+    assert len(result.prices) == len(result.market_caps) == len(result.total_volumes) == 8
+    first = result.prices[0]
+    assert first.timestamp == 1790121600000
+    assert first.value == pytest.approx(86183.29442787907)
+    assert first.dt.isoformat() == "2026-09-23T00:00:00+00:00"
+    assert result.total_volumes[0].value == pytest.approx(43496653159.936775)
+
+
+@pytest.mark.asyncio
+async def test_fetch_market_chart_refuses_windows_the_free_tier_will_not_serve():
+    """days=max is HTTP 401 without a paid key, so it is refused before the request is made."""
+    client = CoinGeckoClient()
+    for days in ("max", 366, 0):
+        with pytest.raises(MarketChartRangeUnavailable):
+            await client.fetch_market_chart("bitcoin", days=days)
 
 
 def test_build_params_drops_none():
