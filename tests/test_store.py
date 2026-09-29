@@ -17,6 +17,7 @@ except where the ticket's guarantee is about decomposition itself.
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from contextlib import closing
 from datetime import UTC, date, datetime
@@ -65,6 +66,13 @@ from cointoss.store import (
     SchemaVersion,
     Store,
     TickerRecordRow,
+    UnknownInstrument,
+)
+from cointoss.universe import (
+    MemberRole,
+    UniverseDefinition,
+    UniverseMemberRecord,
+    UniverseParameters,
 )
 
 
@@ -557,3 +565,249 @@ def test_a_risk_model_persists_without_any_declarations(db_path: Path):
         store.save_risk_model(model)
     with Store(db_path) as store:
         assert store.load_risk_model("sample-model") == model
+
+
+# -- Universe Definitions and their members, ADR-0007 --
+
+
+def stored_pair(store: Store) -> tuple[InstrumentId, InstrumentId]:
+    """Two Instruments in the store, so a member has something real to pin to."""
+    registry = InstrumentRegistry()
+    meta = minted(registry, sighting("FB", date(2012, 5, 18), figi=META_FIGI))
+    other = minted(
+        registry,
+        sighting("FB", date(2023, 6, 1), figi=PROSHARES_FIGI, issuer_name="ProShares Trust"),
+    )
+    store.save_instruments([meta, other])
+    return meta.id, other.id
+
+
+def manual_definition(name: str = "watchlist") -> UniverseDefinition:
+    """A stock universe: no rule at all."""
+    return UniverseDefinition.create(name, UniverseParameters(), date(2024, 1, 1))
+
+
+def test_a_universe_definition_round_trips(db_path: Path):
+    with Store(db_path) as store:
+        store.save_universe(manual_definition())
+    with Store(db_path) as store:
+        assert store.load_universe("watchlist") == manual_definition()
+
+
+def test_an_unknown_universe_loads_as_nothing(db_path: Path):
+    with Store(db_path) as store:
+        assert store.load_universe("never-defined") is None
+        assert store.load_universe_members("never-defined") == []
+
+
+def test_a_rank_band_survives_a_reopen(db_path: Path):
+    banded = UniverseDefinition.create(
+        "majors", UniverseParameters(enter_rank=100, exit_rank=120), date(2024, 1, 1)
+    )
+    with Store(db_path) as store:
+        store.save_universe(banded)
+    with Store(db_path) as store:
+        reloaded = store.load_universe("majors")
+        assert reloaded is not None
+        assert reloaded.parameters.enter_rank == 100
+        assert reloaded.parameters.exit_rank == 120
+
+
+def test_every_revision_keeps_the_band_it_was_edited_to(db_path: Path):
+    banded = UniverseDefinition.create(
+        "majors", UniverseParameters(enter_rank=100, exit_rank=120), date(2024, 1, 1)
+    ).edited(date(2024, 6, 1), enter_rank=50)
+    with Store(db_path) as store:
+        store.save_universe(banded)
+        reloaded = store.load_universe("majors")
+        assert reloaded is not None
+        assert reloaded.revision == 2
+        assert reloaded.parameters_at(1).enter_rank == 100
+        assert reloaded.parameters_at(2).enter_rank == 50
+        assert reloaded.revisions[1].changed == ("enter_rank",)
+
+
+def test_a_member_keeps_the_symbol_as_it_was_typed(db_path: Path):
+    with Store(db_path) as store:
+        pinned, _ = stored_pair(store)
+        record = UniverseMemberRecord(
+            role=MemberRole.INCLUSION,
+            source=Source.YAHOO,
+            symbol_as_typed="fb",
+            instrument_id=pinned,
+        )
+        store.save_universe(manual_definition(), [record])
+        assert store.load_universe_members("watchlist") == [record]
+
+
+def test_an_unresolved_member_is_stored_and_visible(db_path: Path):
+    unresolved = UniverseMemberRecord(
+        role=MemberRole.INCLUSION, source=Source.YAHOO, symbol_as_typed="NOSUCH"
+    )
+    with Store(db_path) as store:
+        store.save_universe(manual_definition(), [unresolved])
+        assert store.load_universe_members("watchlist") == [unresolved]
+        assert store.unresolved_members("watchlist") == [unresolved]
+
+
+def test_an_unresolved_member_reaches_no_parameters(db_path: Path):
+    unresolved = UniverseMemberRecord(
+        role=MemberRole.INCLUSION, source=Source.YAHOO, symbol_as_typed="NOSUCH"
+    )
+    with Store(db_path) as store:
+        store.save_universe(manual_definition(), [unresolved])
+        reloaded = store.load_universe("watchlist")
+        assert reloaded is not None
+        assert reloaded.parameters.inclusions == frozenset()
+
+
+def test_an_absent_member_differs_from_an_unresolved_one(db_path: Path):
+    with Store(db_path) as store:
+        store.save_universe(manual_definition())
+        assert store.load_universe_members("watchlist") == []
+        assert store.unresolved_members("watchlist") == []
+
+
+def test_removing_and_re_adding_one_ticker_leaves_two_records(db_path: Path):
+    with Store(db_path) as store:
+        pinned, _ = stored_pair(store)
+        removed = UniverseMemberRecord(
+            role=MemberRole.INCLUSION,
+            source=Source.YAHOO,
+            symbol_as_typed="fb",
+            instrument_id=pinned,
+            added_in_revision=1,
+            removed_in_revision=2,
+        )
+        re_added = UniverseMemberRecord(
+            role=MemberRole.INCLUSION,
+            source=Source.YAHOO,
+            symbol_as_typed="fb",
+            instrument_id=pinned,
+            added_in_revision=3,
+        )
+        store.save_universe(manual_definition(), [removed, re_added])
+        assert store.load_universe_members("watchlist") == [removed, re_added]
+
+
+def test_a_member_removed_in_an_earlier_revision_is_gone_from_the_projection(db_path: Path):
+    edited = manual_definition().edited(date(2024, 3, 1), enter_rank=10, exit_rank=20)
+    with Store(db_path) as store:
+        pinned, _ = stored_pair(store)
+        record = UniverseMemberRecord(
+            role=MemberRole.INCLUSION,
+            source=Source.YAHOO,
+            symbol_as_typed="fb",
+            instrument_id=pinned,
+            added_in_revision=1,
+            removed_in_revision=2,
+        )
+        store.save_universe(edited, [record])
+        reloaded = store.load_universe("watchlist")
+        assert reloaded is not None
+        assert reloaded.parameters_at(1).inclusions == frozenset({pinned})
+        assert reloaded.parameters_at(2).inclusions == frozenset()
+
+
+def test_a_removed_member_is_not_in_the_unresolved_queue(db_path: Path):
+    record = UniverseMemberRecord(
+        role=MemberRole.INCLUSION,
+        source=Source.YAHOO,
+        symbol_as_typed="NOSUCH",
+        added_in_revision=1,
+        removed_in_revision=2,
+    )
+    with Store(db_path) as store:
+        store.save_universe(manual_definition(), [record])
+        assert store.unresolved_members("watchlist") == []
+
+
+def test_the_unresolved_queue_spans_every_definition(db_path: Path):
+    unresolved = UniverseMemberRecord(
+        role=MemberRole.INCLUSION, source=Source.YAHOO, symbol_as_typed="NOSUCH"
+    )
+    with Store(db_path) as store:
+        store.save_universe(manual_definition("one"), [unresolved])
+        store.save_universe(manual_definition("two"), [unresolved])
+        assert len(store.unresolved_members()) == 2
+        assert len(store.unresolved_members("one")) == 1
+
+
+def test_inclusions_and_exclusions_are_told_apart_by_role(db_path: Path):
+    with Store(db_path) as store:
+        kept, dropped = stored_pair(store)
+        records = [
+            UniverseMemberRecord(
+                role=MemberRole.INCLUSION,
+                source=Source.YAHOO,
+                symbol_as_typed="fb",
+                instrument_id=kept,
+            ),
+            UniverseMemberRecord(
+                role=MemberRole.EXCLUSION,
+                source=Source.YAHOO,
+                symbol_as_typed="fb2",
+                instrument_id=dropped,
+            ),
+        ]
+        store.save_universe(manual_definition(), records)
+        reloaded = store.load_universe("watchlist")
+        assert reloaded is not None
+        assert reloaded.parameters.inclusions == frozenset({kept})
+        assert reloaded.parameters.exclusions == frozenset({dropped})
+
+
+def test_a_member_pinned_to_an_unstored_instrument_is_refused(db_path: Path):
+    record = UniverseMemberRecord(
+        role=MemberRole.INCLUSION,
+        source=Source.YAHOO,
+        symbol_as_typed="fb",
+        instrument_id=InstrumentId("stock.us.nothing"),
+    )
+    with Store(db_path) as store:
+        with pytest.raises(UnknownInstrument):
+            store.save_universe(manual_definition(), [record])
+
+
+def test_an_instrument_both_included_and_excluded_warns(
+    db_path: Path, caplog: pytest.LogCaptureFixture
+):
+    with Store(db_path) as store:
+        contested, _ = stored_pair(store)
+        records = [
+            UniverseMemberRecord(
+                role=MemberRole.INCLUSION,
+                source=Source.YAHOO,
+                symbol_as_typed="fb",
+                instrument_id=contested,
+            ),
+            UniverseMemberRecord(
+                role=MemberRole.EXCLUSION,
+                source=Source.COINGECKO,
+                symbol_as_typed="fb",
+                instrument_id=contested,
+            ),
+        ]
+        with caplog.at_level(logging.WARNING, logger="cointoss.store"):
+            store.save_universe(manual_definition(), records)
+        assert "both included and excluded" in caplog.text
+        assert str(contested) in caplog.text
+        reloaded = store.load_universe("watchlist")
+        assert reloaded is not None
+        assert reloaded.parameters.exclusions == frozenset({contested})
+
+
+def test_no_warning_when_the_inclusion_is_removed(db_path: Path, caplog: pytest.LogCaptureFixture):
+    with Store(db_path) as store:
+        contested, _ = stored_pair(store)
+        records = [
+            UniverseMemberRecord(
+                role=MemberRole.EXCLUSION,
+                source=Source.COINGECKO,
+                symbol_as_typed="fb",
+                instrument_id=contested,
+            ),
+        ]
+        with caplog.at_level(logging.WARNING, logger="cointoss.store"):
+            store.save_universe(manual_definition(), records)
+        assert "both included and excluded" not in caplog.text

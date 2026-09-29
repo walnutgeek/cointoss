@@ -30,6 +30,7 @@ Later tickets add their tables to `TABLES` and nothing else changes.
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from collections.abc import Callable
 from datetime import UTC, date, datetime
@@ -83,6 +84,9 @@ from cointoss.universe import (
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
+log = logging.getLogger(__name__)
+
+
 __all__ = [
     "INDEXES",
     "MIGRATIONS",
@@ -104,7 +108,6 @@ __all__ = [
     "Store",
     "StoreError",
     "UnknownInstrument",
-    "UnknownUniverse",
     "TickerRecordRow",
     "UniverseDefinitionRow",
     "UniverseMemberRow",
@@ -122,10 +125,6 @@ class SchemaTooNew(StoreError):
 
 class MigrationGap(StoreError):
     """No ordered path of migration steps leads from the stored version to this one."""
-
-
-class UnknownUniverse(StoreError):
-    """No Universe Definition of that name is stored."""
 
 
 class UnknownInstrument(StoreError):
@@ -735,6 +734,30 @@ class Store:
         for record in members:
             self._save_universe_member(definition_id, record)
         self.conn.commit()
+        self._warn_on_contradicting_members(definition)
+
+    def _warn_on_contradicting_members(self, definition: UniverseDefinition) -> None:
+        """Warn where an Instrument is both included and excluded at the current revision.
+
+        Exclusions are applied last, so the Instrument is dropped and the Inclusion has no
+        effect. That is unambiguous to the code and ambiguous to a reader, who cannot tell a
+        deliberate override from a forgotten one. Removing the Inclusion states the same
+        outcome and silences the warning.
+        """
+        records = self.load_universe_members(definition.name)
+        revision = definition.revision
+        contested = sorted(
+            resolved_members(records, MemberRole.INCLUSION, revision)
+            & resolved_members(records, MemberRole.EXCLUSION, revision)
+        )
+        if contested:
+            log.warning(
+                "%s revision %d: %s both included and excluded, so excluded; "
+                "remove the Inclusion to settle it",
+                definition.name,
+                revision,
+                ", ".join(contested),
+            )
 
     def load_universe(self, name: str) -> UniverseDefinition | None:
         """Rebuild a Definition, its Inclusions and Exclusions projected from the member rows.
@@ -785,23 +808,23 @@ class Store:
 
         The unresolved queue is this predicate, not a table: a member with no pin is the same
         fact as a member waiting to be resolved, and recording it twice invites disagreement.
+
+        The null test is applied in Python rather than in the query. `lythonic.state` renders
+        an equality filter as `field = ?`, which no row satisfies when the value is NULL, and
+        it offers no null-aware operator. Revisit if this ever reads enough rows to matter.
         """
-        filters: dict[str, Any] = {"instrument": None}
+        filters: dict[str, Any] = {}
         if name is not None:
             definition_id = self._universe_definition_id(name)
             if definition_id is None:
                 return []
             filters["definition"] = definition_id
         rows = UniverseMemberRow.select(self.conn, **filters)
-        return [self._member_from(row) for row in rows if row.removed_in_revision is None]
-
-    def pin_member(self, name: str, record: UniverseMemberRecord) -> None:
-        """Attach an Instrument to a member that was stored unresolved."""
-        definition_id = self._universe_definition_id(name)
-        if definition_id is None:
-            raise UnknownUniverse(f"no Universe Definition named {name!r}")
-        self._save_universe_member(definition_id, record)
-        self.conn.commit()
+        return [
+            self._member_from(row)
+            for row in rows
+            if row.instrument is None and row.removed_in_revision is None
+        ]
 
     def _universe_definition_id(self, name: str) -> int | None:
         rows = UniverseDefinitionRow.select(self.conn, name=name)
