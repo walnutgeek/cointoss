@@ -51,14 +51,50 @@ The collection of known Instruments, and the authority that turns an observation
 _Avoid_: catalog, directory, master, book
 
 **Ticker History**:
-The record of which symbols an Instrument traded under, and between which dates. Resolves symbols supplied by people and documents at a point in time. Not a means of establishing identity.
+The record of which symbols an Instrument traded under at which source, and between which dates. Resolves symbols supplied by people and documents at a point in time. Not a means of establishing identity, and not vendor-neutral: two sources may name one Instrument differently at the same moment.
 _Avoid_: alias, rename, symbol mapping
+
+**Identity Source**:
+The source whose account of what an Instrument is and what it is called is taken as authoritative.
+_Avoid_: primary source, master source
+
+**Price Sources**:
+The ordered preference of sources supplying an Instrument's Bars. The first holding a Bar for a date supplies it; the rest are fallback.
+_Avoid_: data feed, provider list
 
 ### Scoping and Classification
 
 **Universe Series**:
-A Series of instrument lists that defines the scope for data gathering and research. Construction may be rule-based or manual.
+A Series of instrument lists that defines the scope for data gathering and research. Records what a Universe Definition produced, never how.
 _Avoid_: Watchlist, List, Screen, Instrument Set
+
+**Universe Definition**:
+A named, editable recipe for producing a Universe Series. Revisions accumulate and are never removed.
+_Avoid_: universe model, spec, screen, config
+
+**Universe Parameters**:
+The recipe held by a Universe Definition at one revision: an optional rank rule, an Inclusion set, and an Exclusion set.
+_Avoid_: rule, criteria, settings
+
+**Universe Definition Revision**:
+One recorded edit to a Universe Definition, numbered in sequence.
+_Avoid_: version, change
+
+**Inclusion**:
+A member pinned into a Universe Definition regardless of what its rule produces. Standing policy, not a one-day act.
+_Avoid_: whitelist, manual add, override
+
+**Exclusion**:
+A member held out of a Universe Definition regardless of what its rule produces, until a later revision removes it.
+_Avoid_: blacklist, ban, suppression
+
+**Universe Membership**:
+One Instrument's time-bounded stretch inside a Universe Series. The recorded form of membership; the Universe Series is its projection.
+_Avoid_: constituent row, holding, entry
+
+**Evaluation Run**:
+One execution of a Universe Definition against source data: what it produced, under which revision, and whether anything changed. Evidence the job ran, not a record of what is true.
+_Avoid_: snapshot, job, sync
 
 **Exposure Series**:
 A named Series of exposure matrices over a fixed target axis, relating instruments to the things they are exposed to.
@@ -67,6 +103,20 @@ _Avoid_: classification, tagging, category system
 **Exposure Semantics**:
 The declared meaning of the values in an Exposure Series: a percentage, a currency value, or an unscaled score.
 _Avoid_: weight semantics, units, scale
+
+### Price History
+
+**Bar**:
+One Instrument's open, high, low, close and volume for one session date from one source. Stored as fetched; two sources disagreeing about a date each keep their own Bar.
+_Avoid_: candle, quote, price point, tick
+
+**Corporate Action**:
+A dividend or split recorded against an Instrument on a date. The only record of why a stored price history changed.
+_Avoid_: event, adjustment, split factor
+
+**Restatement**:
+A re-fetch that changed an already-stored Bar in a way no Corporate Action explains.
+_Avoid_: correction, revision, fixup
 
 ### Risk
 
@@ -83,7 +133,7 @@ The recipe held by a Risk Model at one revision: a universe reference, a lookbac
 _Avoid_: config, settings, spec
 
 **Revision Stamp**:
-The Risk Model revision a declared covariance was produced under, recorded on it at declaration. What keeps an entry interpretable after the model has been edited.
+The recipe revision a Series entry was produced under, recorded on it at the time: the Risk Model revision on a declared covariance, the Universe Definition revision on a Universe Series entry. What keeps an entry interpretable after the recipe has been edited.
 _Avoid_: version tag, provenance
 
 **Covariance Series**:

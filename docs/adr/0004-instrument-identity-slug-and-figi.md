@@ -1,6 +1,6 @@
 # Instrument Identity: Immutable Slug Anchored on Composite FIGI
 
-Status: accepted. Supersedes the Instrument-identity portion of ADR-0001; that ADR's Portfolio, Trade, and Snapshot decisions stand.
+Status: accepted, amended by ADR-0009. Supersedes the Instrument-identity portion of ADR-0001; that ADR's Portfolio, Trade, and Snapshot decisions stand.
 
 Context: ADR-0001 called for a "thin stable Instrument" with an id, a symbol, provider refs, and alias history, without saying what makes the id stable. Tickers change (FB became META), freed tickers are reused by unrelated issuers, and crypto symbols collide across chains. The identifier must survive all three. FIGI is an OMG standard published as open data under MIT in perpetuity, with a free API, and is explicitly stable across ticker changes and corporate actions - but its crypto coverage is roughly 8,000 assets against the tens of thousands that exist, and synthetic instruments (`what_if` holdings, the future lot-as-instrument direction) will never have one.
 
@@ -14,6 +14,8 @@ Decision:
 - A FIGI resolution attempt is mandatory when an instrument is created. Falling back to symbol-keyed identity is permitted, but the instrument is flagged unresolved and retried, because third-party coverage lags.
 - When a later resolution reveals two existing instruments are one, the relation is recorded as supersession and resolved on read. The earliest-minted instrument survives; nothing already stored is rewritten. Automatic when the FIGI evidence is unambiguous, flagged for review when it conflicts.
 - ADR-0001's "alias history" becomes `Ticker History`: a time-bounded record of which symbols an instrument traded under and when. It resolves symbols supplied by people and documents at a date; it does not establish identity.
+- Amended by ADR-0009: a Ticker History record is attributed to the source that reported the symbol, and is no longer vendor-neutral. Yahoo says `BRK-B` where most other places say `BRK.B`, and both are current at once, which a single symbol in force per date cannot represent. No canonical vendor-neutral ticker is claimed, because the only authority that could supply one is the exchange and cointoss ingests from neither. `Instrument.symbol` is correspondingly a denormalised display value read from a designated `identity_source`, not a fact.
+- Amended by ADR-0009: `Instrument` carries `identity_source` and an ordered `price_sources`. A stable provider slug such as a CoinGecko `id` is an External Reference, not a Ticker History record - it is identity and never changes, whereas a ticker is a lease. A CoinGecko `symbol` is a lease and is recorded as Ticker History like any other.
 - No `Issuer` entity yet. Grouping share classes of one company is expressed as an `ExposureSeries`, which is already time-versioned and so handles spinoffs and mergers correctly.
 
 Considered Options:

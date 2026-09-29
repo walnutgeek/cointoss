@@ -22,3 +22,4 @@ site/
 node_modules/
 data/
 !tests/data/
+.claude/worktrees/

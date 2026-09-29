@@ -4,11 +4,13 @@ Where cointoss is, where it is going, and what has to be decided before it gets 
 as directions change. Decisions that survive belong in `docs/adr/`; vocabulary belongs in
 `CONTEXT.md`. This file holds the parts that are still moving.
 
-Last updated: 2026-09-03, at `bb873c6`.
+Last updated: 2026-09-27, at `2e72c9d`.
 
 ## Where we are
 
-Four ADRs designed and implemented in one pass. 112 tests, lint clean, no open issues.
+Four ADRs designed and implemented in one pass. 112 tests, lint clean, no open issues. Three further
+ADRs - 0007, 0008, 0009 - are designed and unimplemented: they settle persistence and are the
+subject of the next build step.
 
 ### Built
 
@@ -26,14 +28,17 @@ Four ADRs designed and implemented in one pass. 112 tests, lint clean, no open i
 Everything that makes it a system rather than a library:
 
 - **No persistence.** Every module above is storage-agnostic and in-memory by design. That was
-  right for getting the rules correct, and it means nothing is written down yet.
+  right for getting the rules correct, and it means nothing is written down yet. Designed in
+  ADR-0008; `cointoss.store` does not exist.
 - **No ingest layer.** Nothing constructs an `Observation` from a source row, so ADR-0004's
   "a FIGI attempt is mandatory at instrument creation" has no home to be enforced in.
 - **No price storage.** `get_prices` returns a `FrameData` that is cached and then discarded.
+  Designed in ADR-0009. CoinGecko's `market_chart` endpoint, which ADR-0009 needs for coins Yahoo
+  does not carry, is not in the adapter.
 - **No returns.** Nothing turns prices into returns, so no covariance can be computed; the only
   way one enters the system today is a vendor import.
 - **No universe construction.** `UniverseSeries` records what something else produced. Nothing
-  produces anything.
+  produces anything. Designed in ADR-0007; `UniverseDefinition` does not exist.
 - **No portfolio.** ADR-0001's `Portfolio`, `Trade`, `Position` and `PortfolioSnapshot` are
   designed and unimplemented.
 - **No running instance.** `cointoss.cli:main` prints `TBD`. There is no `lyth.yaml`, no
@@ -82,82 +87,60 @@ an ingest layer, price storage, and returns.
 
 Each step is independently useful and leaves the system working.
 
-1. **Persistence for what exists.** Give `Instrument`, `UniverseSeries`, `ExposureSeries`,
-   `RiskModel` and `CovarianceSeries` somewhere to live via `lythonic.state`. Nothing else can
-   accumulate until state does.
-2. **Ingest.** One path from a source row to an `Observation` to an `InstrumentRegistry`,
-   enforcing the mandatory-FIGI-attempt invariant and driving the unresolved retry queue.
-3. **Source universes.** `UniverseSeries` per source, appended by the ingest run.
-4. **The instance.** `lyth.yaml`, a real CLI, cron triggers on the ingest DAGs, woodglue
-   serving. First point at which data accumulates unattended.
-5. **Price storage.** Bars per instrument per date, from `get_prices` and CoinGecko OHLC.
+1. **Persistence for what exists.** Build `cointoss.store` to ADR-0008: one `cointoss.db`, explicit
+   pragmas, `SchemaVersion`, surrogate keys with alternative keys, membership and Ticker History as
+   intervals, matrices as row-per-entry payloads. Nothing else can accumulate until state does.
+2. **Universe Definitions.** ADR-0007's recipe, revision log, Inclusions and Exclusions, pinned
+   members, and the evaluator that turns a Definition plus source data into a Universe Series entry
+   and an Evaluation Run.
+3. **Ingest.** One path from a source row to an `Observation` to an `InstrumentRegistry`, enforcing
+   the mandatory-FIGI-attempt invariant and driving the unresolved retry queue. Pinning a manual
+   member is one of its entry points.
+4. **The instance.** `lyth.yaml`, a real CLI, cron triggers on the ingest and evaluation DAGs,
+   woodglue serving. First point at which data accumulates unattended.
+5. **Price storage.** ADR-0009's Bars, Corporate Actions and Restatements, from `get_prices` and
+   CoinGecko `market_chart`. Needs `market_chart` added to the CoinGecko adapter first.
 6. **Returns.** Whatever representation the estimator needs.
 7. **The estimator.** Closes ADR-0005's gap so a covariance can be computed rather than only
    imported.
 8. **Portfolio.** ADR-0001's `Trade` as system of record, `Position`, `PortfolioSnapshot`.
-9. **The FIGI mapping cache.** ADR-0006's `(universe_name, as_of)` key. Unblocked since #2;
-   until it lands, instrument creation hits a live OpenFIGI call on every ingest.
+9. **The FIGI mapping cache.** ADR-0006's `(universe_name, as_of)` key. Unblocked since #3; until it
+   lands, instrument creation hits a live OpenFIGI call on every ingest.
 
-## Open decisions
+## Settled in grilling
 
-To settle in grilling before building. Roughly in dependency order — the storage ones gate
-almost everything else.
+Storage, universes and price history were grilled on 2026-09-27 and closed. The reasoning lives in
+the ADRs; what follows is only the index, so nothing here is re-litigated from memory.
 
-### Storage
+- **Blob or table, and where the append boundary sits** - ADR-0008. Different answers per Series
+  type, and the value type stops being the storage unit.
+- **One database or several** - ADR-0008. One `cointoss.db`; split only if a backfill actually
+  blocks.
+- **Migrations** - ADR-0008. cointoss's own `SchemaVersion`, plus a durable/rebuildable split so
+  only hand-authored tables ever need one.
+- **Is a source universe a `UniverseSeries`?** - ADR-0007. The word covered two concepts. A
+  Universe Definition is the recipe; a Universe Series is what it produced.
+- **Adjusted or unadjusted** - ADR-0009. The question was malformed: Yahoo's "unadjusted" OHLC is
+  already split-adjusted and raw is unobtainable. Splits leave returns invariant, so the worry was
+  misplaced; dividends do not, so `close` and `adj_close` are both stored.
+- **What is a bar, and vendor disagreement** - ADR-0009. Session date in the venue's own calendar,
+  keyed by source so disagreement is recorded rather than resolved.
 
-- **Blob or table?** Series types serialize themselves, so a Series could be one row with a
-  JSON payload. That is trivial to build and unqueryable: "which universes contained AAPL in
-  2024" needs SQL over decomposed rows. Which reads win, and is the answer the same for
-  `UniverseSeries`, `ExposureSeries` and `CovarianceSeries`?
-- **Where does the append boundary sit?** All three Series types are immutable values whose
-  `append` returns a new whole Series. Loading, appending and rewriting a ten-year daily Series
-  to add one entry is absurd. So either storage grows a row-level append that bypasses the
-  value type, or the value type stops being the storage unit. This is the sharpest question on
-  the list.
-- **One database or several?** lythonic already separates `cache.db`, `dags.db` and
-  `triggers.db`. Does domain state get its own, and does price history get its own beyond that?
-- **Migrations.** `lythonic.state` has `Schema`; what happens when a model changes.
+## Still open
 
-### Ingest
-
-- **Is a source universe a `UniverseSeries`?** A "universe of what Yahoo lists" is source
-  coverage; a research scope is a curated question. They may be the same type, or the same word
-  covering two different concepts — the exact confusion the grilling session that produced
-  ADR-0003 was called to fix. Worth checking rather than assuming.
-- **What triggers a full ticker sweep** versus an incremental one, and how does a delisting
-  reach the universe? Absence from a source is not the same fact as a delisting.
-- **Where does the mandatory FIGI attempt live**, concretely, now that ADR-0004 makes it an
-  ingest-orchestration invariant the identity module cannot enforce.
-- **How does the unresolved retry queue get run?** A cron trigger over
-  `InstrumentRegistry.unresolved()`, and at what cadence given OpenFIGI's coverage lag.
-
-### Price history
-
-- **Adjusted or unadjusted, or both?** This one is load-bearing rather than a detail. ADR-0005
-  exists because adjusted history is rewritten by corporate actions; a covariance is declared
-  precisely so it survives that rewrite. If prices are stored adjusted-as-of-fetch, the same
-  rewrite silently changes stored history too, and the reproducibility ADR-0005 buys is undone
-  one layer below it. Storing unadjusted prices plus a corporate action record is the
-  reconstructable option, and is more work.
-- **What is a bar?** OHLCV per instrument per date, presumably, but Yahoo and CoinGecko do not
-  agree on fields, timezones, or what a day is for a 24/7 market.
-- **Vendor disagreement.** Two sources for one instrument giving different closes. First writer
-  wins, per-source rows, or a declared primary?
-
-### Returns
-
-- **What is the representation?** A `FrameData`, a `KeyedVector` per date, a new Series type, or
-  something the estimator owns privately and nothing else sees.
-- **Is it stored or derived?** Derived is honest and recomputable; stored is fast and, given the
-  adjusted-price problem above, may be the only stable record of what a return actually was.
-- **Simple or log returns**, and what happens across a gap, a halt, or a chain split.
-
-### Portfolio
-
-- Largely settled by ADR-0001 and not yet contradicted. The open part is lot-based tax
-  accounting, which ADR-0001 defers with "lot as synthetic Instrument" as the sketch — worth
-  testing against the identity model now that identity actually exists, since a synthetic
-  instrument would need an Instrument Id and a Scope under ADR-0004's grammar.
+- **Delisting versus absence.** Absence from a source is not the same fact as a delisting, and
+  nothing yet distinguishes them. ADR-0007 drops an instrument from membership either way. This
+  needs settling before #3.
+- **Full sweep versus incremental.** What triggers each, and at what cadence the unresolved retry
+  queue runs given OpenFIGI's coverage lag.
+- **Returns.** Representation (`FrameData`, a `KeyedVector` per date, a new Series type, or
+  something the estimator owns privately); stored or derived; simple or log; and what happens
+  across a gap, a halt, or a chain split.
+- **Lot-based tax accounting.** ADR-0001 defers it with "lot as synthetic Instrument" as the
+  sketch - worth testing against ADR-0004's grammar now that identity exists, since a synthetic
+  instrument would need an Instrument Id and a Scope.
+- **Exact arithmetic.** ADR-0008 stores prices as `float` because `lythonic.state` registers no
+  `Decimal`. Fine for returns; revisit if `Trade` accounting ever needs a ledger.
 
 ## Parked
 
@@ -177,4 +160,12 @@ Recorded so they are not rediscovered as new:
   degrades to its string form exactly where the type safety would matter most. Fixing it
   properly means asking whether `Universe` should be generic over its key type — a lythonic
   question, not a cointoss one.
-- **Rule-based universe construction.** Screens and index constituents. Deferred by #2.
+- **Rule-based universe construction beyond market-cap rank.** Screens on fundamentals, index
+  constituents. ADR-0007's recipe has room for one rule and deliberately offers only the rank band.
+- **Review queue for universe changes.** Rule proposes, human approves. ADR-0007 notes it is
+  strictly buildable on top of what was decided, since `UniverseSeries.change()` already yields the
+  diff such a queue would show.
+- **Bitemporal price history.** ADR-0009 keeps one vintage plus `fetched_at` and a Restatement log.
+  Revisit if a restatement ever turns out to matter.
+- **Exchange calendars.** ADR-0009 stores no session time, so bars on one date are not
+  contemporaneous across venues. A lead-lag correction needs a calendar table, not a bar column.
