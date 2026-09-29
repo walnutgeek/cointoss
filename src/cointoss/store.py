@@ -71,6 +71,14 @@ from cointoss.risk import (
     RiskParameters,
 )
 from cointoss.series import DatedMatrix, ExposureSemantics, ExposureSeries
+from cointoss.universe import (
+    MemberRole,
+    UniverseDefinition,
+    UniverseDefinitionRevision,
+    UniverseMemberRecord,
+    UniverseParameters,
+    resolved_members,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -95,7 +103,12 @@ __all__ = [
     "SchemaVersion",
     "Store",
     "StoreError",
+    "UnknownInstrument",
+    "UnknownUniverse",
     "TickerRecordRow",
+    "UniverseDefinitionRow",
+    "UniverseMemberRow",
+    "UniverseRevisionRow",
 ]
 
 
@@ -109,6 +122,14 @@ class SchemaTooNew(StoreError):
 
 class MigrationGap(StoreError):
     """No ordered path of migration steps leads from the stored version to this one."""
+
+
+class UnknownUniverse(StoreError):
+    """No Universe Definition of that name is stored."""
+
+
+class UnknownInstrument(StoreError):
+    """A member pins an Instrument Id the store does not hold."""
 
 
 class Persistence(StrEnum):
@@ -290,6 +311,77 @@ class CovarianceEntryRow(DbModel["CovarianceEntryRow"]):
         return "CovarianceEntry"
 
 
+class UniverseDefinitionRow(DbModel["UniverseDefinitionRow"]):
+    """A Universe Definition's identity. Its recipe lives in its revisions and member rows."""
+
+    universe_definition_id: int = Field(default=-1, description="(PK)")
+    name: str = Field(description="(AK) Universe Definition name")
+
+    @classmethod
+    @override
+    def get_table_name(cls) -> str:
+        return "UniverseDefinition"
+
+
+class UniverseRevisionRow(DbModel["UniverseRevisionRow"]):
+    """One recorded edit to a Universe Definition.
+
+    Only the rank rule is stored here. Inclusions and Exclusions are member rows, and the sets
+    on `UniverseParameters` are their resolved projection -- storing both would be two places
+    for one fact, and the member rows are the ones that carry provenance.
+    """
+
+    universe_revision_id: int = Field(default=-1, description="(PK)")
+    definition: int = Field(
+        description="(FK:UniverseDefinition.universe_definition_id)(AK) Definition edited"
+    )
+    revision: int = Field(description="(AK) Position in the revision sequence")
+    changed_at: date = Field(description="Date the edit was made")
+    changed: str = Field(description="Fields the edit touched, comma separated")
+    enter_rank: int | None = Field(default=None, description="Rank at which a member is admitted")
+    exit_rank: int | None = Field(default=None, description="Rank past which a member is dropped")
+
+    @classmethod
+    @override
+    def get_table_name(cls) -> str:
+        return "UniverseRevision"
+
+
+class UniverseMemberRow(DbModel["UniverseMemberRow"]):
+    """One hand-pinned member, in the words it was typed in.
+
+    Versioned by revision rather than by date -- the same interval trick as membership, one
+    axis over -- so a revision need not copy the whole override set. Removal sets
+    `removed_in_revision` instead of deleting, which is why the natural key carries
+    `added_in_revision`: removing and re-adding one ticker is two records, not one rewritten.
+
+    `instrument` is null while resolution has not succeeded. That null is the whole unresolved
+    queue: there is no second table, because a second place to record the same fact is a second
+    place for it to be wrong.
+    """
+
+    universe_member_id: int = Field(default=-1, description="(PK)")
+    definition: int = Field(
+        description="(FK:UniverseDefinition.universe_definition_id)(AK) Definition it belongs to"
+    )
+    role: MemberRole = Field(description="(AK) Whether the member is forced in or held out")
+    source: Source = Field(description="(AK) Source the symbol was typed against")
+    symbol_as_typed: str = Field(description="(AK) Symbol exactly as the researcher wrote it")
+    added_in_revision: int = Field(description="(AK) Revision the member was added in")
+    instrument: int | None = Field(
+        default=None,
+        description="(FK:Instrument.instrument_row_id) Instrument pinned at edit time",
+    )
+    removed_in_revision: int | None = Field(
+        default=None, description="Revision the member was removed in"
+    )
+
+    @classmethod
+    @override
+    def get_table_name(cls) -> str:
+        return "UniverseMember"
+
+
 # Every table in the database, with the classification that decides whether a schema change
 # must migrate it or may drop and backfill it. Later tickets add their tables here; this
 # mapping is both the schema and the ADR-0008 classification, so the two cannot drift.
@@ -298,6 +390,9 @@ TABLES: dict[type[DbModel[Any]], Persistence] = {
     InstrumentRow: Persistence.DURABLE,
     InstrumentReferenceRow: Persistence.DURABLE,
     TickerRecordRow: Persistence.DURABLE,
+    UniverseDefinitionRow: Persistence.DURABLE,
+    UniverseRevisionRow: Persistence.DURABLE,
+    UniverseMemberRow: Persistence.DURABLE,
     ExposureEntryRow: Persistence.DURABLE,
     RiskModelRow: Persistence.DURABLE,
     RiskModelRevisionRow: Persistence.DURABLE,
@@ -609,6 +704,141 @@ class Store:
                 raise SupersessionCycle(f"supersession cycle through {sorted(seen)}")
             seen.add(current)
             current = InstrumentId(row.superseded_by)
+
+    def save_universe(
+        self, definition: UniverseDefinition, members: Iterable[UniverseMemberRecord] = ()
+    ) -> None:
+        """Persist a Definition, its revision log and its pinned members.
+
+        The member records are the system of record for Inclusions and Exclusions; the sets on
+        `UniverseParameters` are their resolved projection and are not written separately. A
+        member whose `instrument_id` is None is stored with a null pin rather than rejected, so
+        a cold registry delays membership instead of blocking the edit.
+        """
+        definition_id = self._universe_definition_id(definition.name)
+        if definition_id is None:
+            row = UniverseDefinitionRow(name=definition.name)
+            row.save(self.conn)
+            definition_id = row.universe_definition_id
+        held = {r.revision for r in UniverseRevisionRow.select(self.conn, definition=definition_id)}
+        for revision in definition.revisions:
+            if revision.revision in held:
+                continue
+            UniverseRevisionRow(
+                definition=definition_id,
+                revision=revision.revision,
+                changed_at=revision.changed_at,
+                changed=",".join(revision.changed),
+                enter_rank=revision.parameters.enter_rank,
+                exit_rank=revision.parameters.exit_rank,
+            ).save(self.conn)
+        for record in members:
+            self._save_universe_member(definition_id, record)
+        self.conn.commit()
+
+    def load_universe(self, name: str) -> UniverseDefinition | None:
+        """Rebuild a Definition, its Inclusions and Exclusions projected from the member rows.
+
+        Each revision's parameters are assembled from that revision's rank rule and the members
+        in force at it, so the reconstructed Definition says what it said at the time rather
+        than what it says now.
+        """
+        definition_id = self._universe_definition_id(name)
+        if definition_id is None:
+            return None
+        records = self.load_universe_members(name)
+        rows = sorted(
+            UniverseRevisionRow.select(self.conn, definition=definition_id),
+            key=lambda r: r.revision,
+        )
+        return UniverseDefinition(
+            name=name,
+            revisions=tuple(
+                UniverseDefinitionRevision(
+                    revision=row.revision,
+                    changed_at=row.changed_at,
+                    changed=tuple(f for f in row.changed.split(",") if f),
+                    parameters=UniverseParameters(
+                        enter_rank=row.enter_rank,
+                        exit_rank=row.exit_rank,
+                        inclusions=resolved_members(records, MemberRole.INCLUSION, row.revision),
+                        exclusions=resolved_members(records, MemberRole.EXCLUSION, row.revision),
+                    ),
+                )
+                for row in rows
+            ),
+        )
+
+    def load_universe_members(self, name: str) -> list[UniverseMemberRecord]:
+        """Every member record ever added to a Definition, removed ones included."""
+        definition_id = self._universe_definition_id(name)
+        if definition_id is None:
+            return []
+        rows = sorted(
+            UniverseMemberRow.select(self.conn, definition=definition_id),
+            key=lambda r: (r.added_in_revision, r.symbol_as_typed),
+        )
+        return [self._member_from(row) for row in rows]
+
+    def unresolved_members(self, name: str | None = None) -> list[UniverseMemberRecord]:
+        """Members still awaiting an Instrument, across one Definition or all of them.
+
+        The unresolved queue is this predicate, not a table: a member with no pin is the same
+        fact as a member waiting to be resolved, and recording it twice invites disagreement.
+        """
+        filters: dict[str, Any] = {"instrument": None}
+        if name is not None:
+            definition_id = self._universe_definition_id(name)
+            if definition_id is None:
+                return []
+            filters["definition"] = definition_id
+        rows = UniverseMemberRow.select(self.conn, **filters)
+        return [self._member_from(row) for row in rows if row.removed_in_revision is None]
+
+    def pin_member(self, name: str, record: UniverseMemberRecord) -> None:
+        """Attach an Instrument to a member that was stored unresolved."""
+        definition_id = self._universe_definition_id(name)
+        if definition_id is None:
+            raise UnknownUniverse(f"no Universe Definition named {name!r}")
+        self._save_universe_member(definition_id, record)
+        self.conn.commit()
+
+    def _universe_definition_id(self, name: str) -> int | None:
+        rows = UniverseDefinitionRow.select(self.conn, name=name)
+        return rows[0].universe_definition_id if rows else None
+
+    def _save_universe_member(self, definition_id: int, record: UniverseMemberRecord) -> None:
+        """Insert or update one member row by its natural key. Does not commit."""
+        instrument_row_id: int | None = None
+        if record.instrument_id is not None:
+            row = self._instrument_row(record.instrument_id)
+            if row is None:
+                raise UnknownInstrument(f"{record.instrument_id} is not stored")
+            instrument_row_id = row.instrument_row_id
+        UniverseMemberRow(
+            definition=definition_id,
+            role=record.role,
+            source=record.source,
+            symbol_as_typed=record.symbol_as_typed,
+            added_in_revision=record.added_in_revision,
+            instrument=instrument_row_id,
+            removed_in_revision=record.removed_in_revision,
+        ).save(self.conn)
+
+    def _member_from(self, row: UniverseMemberRow) -> UniverseMemberRecord:
+        instrument_id: InstrumentId | None = None
+        if row.instrument is not None:
+            stored = InstrumentRow.load_by_id(self.conn, row.instrument)
+            if stored is not None:
+                instrument_id = InstrumentId(stored.instrument_id)
+        return UniverseMemberRecord(
+            role=row.role,
+            source=row.source,
+            symbol_as_typed=row.symbol_as_typed,
+            instrument_id=instrument_id,
+            added_in_revision=row.added_in_revision,
+            removed_in_revision=row.removed_in_revision,
+        )
 
     def save_exposure_series(self, series: ExposureSeries) -> None:
         """Write every entry of an Exposure Series that is not already stored.

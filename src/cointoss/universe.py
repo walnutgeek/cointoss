@@ -31,7 +31,7 @@ from typing import Any, ClassVar
 
 from pydantic import BaseModel, ConfigDict, model_validator
 
-from cointoss.instrument import InstrumentId
+from cointoss.instrument import InstrumentId, Source
 
 __all__ = [
     "MemberRole",
@@ -126,7 +126,7 @@ class UniverseMemberRecord(BaseModel):
     model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True)
 
     role: MemberRole
-    source: str
+    source: Source
     symbol_as_typed: str
     instrument_id: InstrumentId | None = None
     added_in_revision: int = 1

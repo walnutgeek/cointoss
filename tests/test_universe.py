@@ -16,7 +16,7 @@ from datetime import date
 
 import pytest
 
-from cointoss.instrument import InstrumentId
+from cointoss.instrument import InstrumentId, Source
 from cointoss.universe import (
     MemberRole,
     RaggedRule,
@@ -262,7 +262,7 @@ def test_a_duplicated_ranking_entry_counts_at_its_best_rank() -> None:
 def test_a_member_record_keeps_the_symbol_as_typed_alongside_what_it_pinned_to() -> None:
     record = UniverseMemberRecord(
         role=MemberRole.INCLUSION,
-        source="yahoo",
+        source=Source.YAHOO,
         symbol_as_typed="BRK-B",
         instrument_id=InstrumentId("stock.us.brk_b"),
     )
@@ -276,11 +276,13 @@ def test_an_unresolved_member_is_visibly_unresolved_and_never_reaches_the_parame
     records = [
         UniverseMemberRecord(
             role=MemberRole.INCLUSION,
-            source="yahoo",
+            source=Source.YAHOO,
             symbol_as_typed="AAPL",
             instrument_id=AAPL,
         ),
-        UniverseMemberRecord(role=MemberRole.INCLUSION, source="yahoo", symbol_as_typed="NOSUCH"),
+        UniverseMemberRecord(
+            role=MemberRole.INCLUSION, source=Source.YAHOO, symbol_as_typed="NOSUCH"
+        ),
     ]
     assert records[1].is_resolved is False
     resolved = resolved_members(records, MemberRole.INCLUSION, 1)
@@ -292,7 +294,7 @@ def test_removing_and_re_adding_one_ticker_stays_two_recorded_events() -> None:
     records = [
         UniverseMemberRecord(
             role=MemberRole.INCLUSION,
-            source="yahoo",
+            source=Source.YAHOO,
             symbol_as_typed="AAPL",
             instrument_id=AAPL,
             added_in_revision=1,
@@ -300,7 +302,7 @@ def test_removing_and_re_adding_one_ticker_stays_two_recorded_events() -> None:
         ),
         UniverseMemberRecord(
             role=MemberRole.INCLUSION,
-            source="yahoo",
+            source=Source.YAHOO,
             symbol_as_typed="AAPL",
             instrument_id=AAPL,
             added_in_revision=3,
@@ -314,10 +316,16 @@ def test_removing_and_re_adding_one_ticker_stays_two_recorded_events() -> None:
 def test_the_projection_separates_the_two_roles() -> None:
     records = [
         UniverseMemberRecord(
-            role=MemberRole.INCLUSION, source="cg", symbol_as_typed="xrp", instrument_id=XRP
+            role=MemberRole.INCLUSION,
+            source=Source.COINGECKO,
+            symbol_as_typed="xrp",
+            instrument_id=XRP,
         ),
         UniverseMemberRecord(
-            role=MemberRole.EXCLUSION, source="cg", symbol_as_typed="wbtc", instrument_id=WBTC
+            role=MemberRole.EXCLUSION,
+            source=Source.COINGECKO,
+            symbol_as_typed="wbtc",
+            instrument_id=WBTC,
         ),
     ]
     parameters = UniverseParameters(
