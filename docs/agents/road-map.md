@@ -4,13 +4,17 @@ Where cointoss is, where it is going, and what has to be decided before it gets 
 as directions change. Decisions that survive belong in `docs/adr/`; vocabulary belongs in
 `CONTEXT.md`. This file holds the parts that are still moving.
 
-Last updated: 2026-09-27, at `2e72c9d`.
+Last updated: 2026-09-29, at `d508fd0`.
+
+In progress: the persistence layer, GitHub issue #5. Eight of its twelve tickets are done;
+`docs/superpowers/plans/2026-09-29-persistence-layer-handoff.md` carries the state and what is
+left.
 
 ## Where we are
 
-Four ADRs designed and implemented in one pass. 112 tests, lint clean, no open issues. Three further
-ADRs - 0007, 0008, 0009 - are designed and unimplemented: they settle persistence and are the
-subject of the next build step.
+Seven ADRs. 237 tests, lint clean. ADR-0007, 0008 and 0009 settle persistence and are two thirds
+built: `cointoss.universe`, `cointoss.prices` and `cointoss.store` exist, identity and universe
+definitions persist, and four tickets remain on issue #5.
 
 ### Built
 
@@ -21,24 +25,27 @@ subject of the next build step.
 | `cointoss.risk` | `RiskModel` with a revision log, `CovarianceSeries` declared and never recomputed. Exact-date lookup. ADR-0005. |
 | `cointoss.sources.openfigi` | OpenFIGI v3 batch mapping. Uncached, deliberately. ADR-0006. |
 | `cointoss.sources.yahoofinance` | `get_info`, `get_prices`, `lookup`. Cached. |
-| `cointoss.sources.coingecko` | Coin list, markets, detail, OHLC. Cached. |
+| `cointoss.sources.coingecko` | Coin list, markets, detail, OHLC, market chart. Cached. |
+| `cointoss.universe` | `UniverseDefinition` with a revision log, Inclusions and Exclusions, pure rank-band evaluation. ADR-0007. |
+| `cointoss.prices` | `Bar`, `CorporateAction`, `Restatement`, source mapping, split-aware restatement detection. ADR-0009. |
+| `cointoss.store` | The only module that touches SQL. Ten tables, enforced pragmas, `SchemaVersion`. ADR-0008. |
 
 ### Not built
 
 Everything that makes it a system rather than a library:
 
-- **No persistence.** Every module above is storage-agnostic and in-memory by design. That was
-  right for getting the rules correct, and it means nothing is written down yet. Designed in
-  ADR-0008; `cointoss.store` does not exist.
+- **Partial persistence.** Identity, Ticker History, Universe Definitions, members, and Exposure
+  and Covariance entries are stored. Membership intervals, Evaluation Runs and Bars are not:
+  issues #12, #13 and #16.
 - **No ingest layer.** Nothing constructs an `Observation` from a source row, so ADR-0004's
-  "a FIGI attempt is mandatory at instrument creation" has no home to be enforced in.
-- **No price storage.** `get_prices` returns a `FrameData` that is cached and then discarded.
-  Designed in ADR-0009. CoinGecko's `market_chart` endpoint, which ADR-0009 needs for coins Yahoo
-  does not carry, is not in the adapter.
+  "a FIGI attempt is mandatory at instrument creation" has no home to be enforced in. Issue #14
+  builds the narrow slice that pinning a typed ticker needs; scheduled sweeps stay out.
+- **No price storage.** `cointoss.prices` maps a source payload into Bars, and nothing writes them
+  down yet: issue #16. `market_chart` is in the adapter.
 - **No returns.** Nothing turns prices into returns, so no covariance can be computed; the only
   way one enters the system today is a vendor import.
-- **No universe construction.** `UniverseSeries` records what something else produced. Nothing
-  produces anything. Designed in ADR-0007; `UniverseDefinition` does not exist.
+- **No universe accumulation.** A Definition evaluates to a membership, and nothing records the
+  result over time: issue #12.
 - **No portfolio.** ADR-0001's `Portfolio`, `Trade`, `Position` and `PortfolioSnapshot` are
   designed and unimplemented.
 - **No running instance.** `cointoss.cli:main` prints `TBD`. There is no `lyth.yaml`, no
@@ -87,12 +94,13 @@ an ingest layer, price storage, and returns.
 
 Each step is independently useful and leaves the system working.
 
-1. **Persistence for what exists.** Build `cointoss.store` to ADR-0008: one `cointoss.db`, explicit
-   pragmas, `SchemaVersion`, surrogate keys with alternative keys, membership and Ticker History as
-   intervals, matrices as row-per-entry payloads. Nothing else can accumulate until state does.
-2. **Universe Definitions.** ADR-0007's recipe, revision log, Inclusions and Exclusions, pinned
-   members, and the evaluator that turns a Definition plus source data into a Universe Series entry
-   and an Evaluation Run.
+1. **Persistence for what exists.** `cointoss.store` to ADR-0008. Mostly done: identity, Ticker
+   History, Universe Definitions, members, and matrix entries all persist. Membership intervals
+   and Evaluation Runs remain, with the append-equivalence guard that keeps the store's
+   diff-and-close honest against `UniverseSeries.append`. Issues #12 and #13.
+2. **Universe Definitions.** ADR-0007's recipe, revision log, Inclusions and Exclusions and the
+   pure evaluator are done. Pinning a typed ticker, which is where the mandatory FIGI attempt
+   lands, is issue #14.
 3. **Ingest.** One path from a source row to an `Observation` to an `InstrumentRegistry`, enforcing
    the mandatory-FIGI-attempt invariant and driving the unresolved retry queue. Pinning a manual
    member is one of its entry points.
