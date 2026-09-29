@@ -24,6 +24,9 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import pytest
+from lythonic.exposure import ExposureMatrixBuilder
+from lythonic.symmetric import SymmetricMatrixBuilder
+from lythonic.universe import Universe
 
 from cointoss.instrument import (
     AmbiguousSymbol,
@@ -38,11 +41,21 @@ from cointoss.instrument import (
     Source,
     SupersessionCycle,
 )
+from cointoss.risk import (
+    CovarianceSeries,
+    DateOccupied,
+    Estimator,
+    ReturnFrequency,
+    RiskModel,
+    RiskParameters,
+)
+from cointoss.series import ExposureSemantics, ExposureSeries
 from cointoss.store import (
     MIGRATIONS,
     SCHEMA,
     SCHEMA_VERSION,
     TABLES,
+    ExposureEntryRow,
     InstrumentReferenceRow,
     InstrumentRow,
     Migration,
@@ -422,3 +435,125 @@ def test_a_supersession_cycle_is_refused_rather_than_looped_on(db_path: Path):
         store.save_instruments(registry.instruments())
         with pytest.raises(SupersessionCycle):
             store.resolve_symbol(Source.YAHOO, "META", date(2024, 3, 1))
+
+
+# -- Exposure and Covariance entries, ADR-0008 --
+
+
+def exposure_series(name: str = "sector") -> ExposureSeries:
+    """A two-entry Series over a fixed Target axis."""
+    first = ExposureMatrixBuilder(targets=["tech", "energy"])
+    first.set_exposure("stock.us.aapl", "tech", 1.0)
+    second = ExposureMatrixBuilder(targets=["tech", "energy"])
+    second.set_exposure("stock.us.aapl", "tech", 0.6)
+    second.set_exposure("stock.us.aapl", "energy", 0.4)
+    return (
+        ExposureSeries(
+            name=name, targets=Universe(["tech", "energy"]), semantics=ExposureSemantics.PERCENT
+        )
+        .append(date(2024, 1, 1), first.build())
+        .append(date(2024, 4, 1), second.build())
+    )
+
+
+def covariance_series(name: str = "vendor-model") -> CovarianceSeries:
+    """A one-entry Series under an external estimator."""
+    builder = SymmetricMatrixBuilder()
+    builder.set_diagonal({"stock.us.aapl": 0.04, "stock.us.msft": 0.09})
+    builder.set_value("stock.us.aapl", "stock.us.msft", 0.02)
+    parameters = RiskParameters(estimator=Estimator.EXTERNAL, source="vendor")
+    series = CovarianceSeries(model=RiskModel.create(name, parameters, date(2024, 1, 1)))
+    return series.declare(date(2024, 3, 31), builder.build())
+
+
+def test_an_exposure_series_round_trips_whole(db_path: Path):
+    with Store(db_path) as store:
+        store.save_exposure_series(exposure_series())
+    with Store(db_path) as store:
+        assert store.load_exposure_series("sector") == exposure_series()
+
+
+def test_an_unknown_exposure_series_loads_as_nothing(db_path: Path):
+    with Store(db_path) as store:
+        assert store.load_exposure_series("never-declared") is None
+
+
+def test_an_exposure_matrix_is_one_row_per_date_not_one_per_cell(db_path: Path):
+    with Store(db_path) as store:
+        store.save_exposure_series(exposure_series())
+        assert len(ExposureEntryRow.select(store.conn, series_name="sector")) == 2
+
+
+def test_re_saving_an_exposure_series_adds_nothing(db_path: Path):
+    with Store(db_path) as store:
+        store.save_exposure_series(exposure_series())
+        store.save_exposure_series(exposure_series())
+        assert len(ExposureEntryRow.select(store.conn, series_name="sector")) == 2
+
+
+def test_a_different_matrix_on_an_occupied_exposure_date_is_refused(db_path: Path):
+    other = ExposureMatrixBuilder(targets=["tech", "energy"])
+    other.set_exposure("stock.us.aapl", "energy", 1.0)
+    replacement = ExposureSeries(
+        name="sector", targets=Universe(["tech", "energy"]), semantics=ExposureSemantics.PERCENT
+    ).append(date(2024, 1, 1), other.build())
+    with Store(db_path) as store:
+        store.save_exposure_series(exposure_series())
+        with pytest.raises(DateOccupied):
+            store.save_exposure_series(replacement)
+
+
+def test_a_covariance_series_round_trips_with_its_model(db_path: Path):
+    with Store(db_path) as store:
+        store.save_covariance_series(covariance_series())
+    with Store(db_path) as store:
+        assert store.load_covariance_series("vendor-model") == covariance_series()
+
+
+def test_a_declared_covariance_keeps_its_revision_stamp(db_path: Path):
+    with Store(db_path) as store:
+        store.save_covariance_series(covariance_series())
+        reloaded = store.load_covariance_series("vendor-model")
+        assert reloaded is not None
+        assert reloaded.revision_at(date(2024, 3, 31)) == 1
+        assert reloaded.parameters_at(date(2024, 3, 31)).source == "vendor"
+
+
+def test_an_edited_risk_model_keeps_every_revision(db_path: Path):
+    edited = covariance_series().edit_model(date(2024, 6, 1), source="other-vendor")
+    with Store(db_path) as store:
+        store.save_covariance_series(edited)
+        reloaded = store.load_covariance_series("vendor-model")
+        assert reloaded is not None
+        assert reloaded.model.revision == 2
+        assert reloaded.model.parameters_at(1).source == "vendor"
+        assert reloaded.model.parameters_at(2).source == "other-vendor"
+
+
+def test_an_unknown_covariance_series_loads_as_nothing(db_path: Path):
+    with Store(db_path) as store:
+        assert store.load_covariance_series("never-declared") is None
+
+
+def test_a_different_matrix_on_an_occupied_covariance_date_is_refused(db_path: Path):
+    builder = SymmetricMatrixBuilder()
+    builder.set_diagonal({"stock.us.aapl": 0.05, "stock.us.msft": 0.09})
+    parameters = RiskParameters(estimator=Estimator.EXTERNAL, source="vendor")
+    replacement = CovarianceSeries(
+        model=RiskModel.create("vendor-model", parameters, date(2024, 1, 1))
+    ).declare(date(2024, 3, 31), builder.build())
+    with Store(db_path) as store:
+        store.save_covariance_series(covariance_series())
+        with pytest.raises(DateOccupied):
+            store.save_covariance_series(replacement)
+
+
+def test_a_risk_model_persists_without_any_declarations(db_path: Path):
+    parameters = RiskParameters(
+        estimator=Estimator.SAMPLE, universe="midcap", lookback=250, frequency=ReturnFrequency.DAILY
+    )
+    model = RiskModel.create("sample-model", parameters, date(2024, 1, 1))
+    with Store(db_path) as store:
+        store.save_risk_model(model)
+    with Store(db_path) as store:
+        assert store.load_risk_model("sample-model") == model

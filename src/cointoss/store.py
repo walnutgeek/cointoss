@@ -38,7 +38,10 @@ from pathlib import Path
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, NamedTuple, Self
 
+from lythonic.exposure import ExposureMatrix
 from lythonic.state import DbModel, Schema, execute_sql
+from lythonic.symmetric import SymmetricMatrix
+from lythonic.universe import Universe
 from pydantic import Field
 from typing_extensions import override
 
@@ -57,6 +60,17 @@ from cointoss.instrument import (
     TickerRecord,
     normalize_symbol,
 )
+from cointoss.risk import (
+    CovarianceSeries,
+    DateOccupied,
+    DeclaredCovariance,
+    Estimator,
+    ReturnFrequency,
+    RiskModel,
+    RiskModelRevision,
+    RiskParameters,
+)
+from cointoss.series import DatedMatrix, ExposureSemantics, ExposureSeries
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -67,12 +81,16 @@ __all__ = [
     "SCHEMA",
     "SCHEMA_VERSION",
     "TABLES",
+    "CovarianceEntryRow",
+    "ExposureEntryRow",
     "Index",
     "InstrumentReferenceRow",
     "InstrumentRow",
     "Migration",
     "MigrationGap",
     "Persistence",
+    "RiskModelRevisionRow",
+    "RiskModelRow",
     "SchemaTooNew",
     "SchemaVersion",
     "Store",
@@ -187,6 +205,91 @@ class TickerRecordRow(DbModel["TickerRecordRow"]):
         return "TickerRecord"
 
 
+class ExposureEntryRow(DbModel["ExposureEntryRow"]):
+    """One dated entry of an Exposure Series, matrix and all.
+
+    ADR-0008 stores a matrix whole rather than as one row per cell. The cross-cutting query
+    that earns decomposition -- which universes held an instrument -- has no counterpart here;
+    nobody asks which matrices had a given cell above a threshold, and an N-by-N matrix spread
+    over N-squared-over-two rows per date is how a small database becomes a large one.
+
+    The Series header repeats on every entry. There are few of them, and it keeps an entry
+    self-describing: its declared semantics travel with the matrix they give meaning to.
+    """
+
+    exposure_entry_id: int = Field(default=-1, description="(PK)")
+    series_name: str = Field(description="(AK) Exposure Series this entry belongs to")
+    as_of: date = Field(description="(AK) Date the matrix came into force")
+    targets: str = Field(description="Fixed Target axis, comma separated")
+    semantics: ExposureSemantics = Field(description="Declared meaning of the values")
+    rows_sum_to_one: bool = Field(description="Whether rows are constrained to sum to one")
+    matrix: ExposureMatrix = Field(description="The matrix itself, stored whole as JSON")
+
+    @classmethod
+    @override
+    def get_table_name(cls) -> str:
+        return "ExposureEntry"
+
+
+class RiskModelRow(DbModel["RiskModelRow"]):
+    """A Risk Model's identity. Its recipe lives entirely in its revisions."""
+
+    risk_model_id: int = Field(default=-1, description="(PK)")
+    name: str = Field(description="(AK) Risk Model name")
+
+    @classmethod
+    @override
+    def get_table_name(cls) -> str:
+        return "RiskModel"
+
+
+class RiskModelRevisionRow(DbModel["RiskModelRevisionRow"]):
+    """One recorded edit to a Risk Model, holding the whole recipe in force after it.
+
+    The revision log is persisted because a Covariance Series holds its Risk Model rather than
+    merely naming it, and because ADR-0005's Revision Stamp is uninterpretable without the
+    parameters it points at. `RiskParameters` is decomposed into columns rather than stored as
+    a payload: it is a flat, closed set of five fields, and a stamp resolving to a recipe is
+    the one thing a reader of an old entry actually needs to query.
+    """
+
+    risk_model_revision_id: int = Field(default=-1, description="(PK)")
+    model: int = Field(description="(FK:RiskModel.risk_model_id)(AK) Model the edit belongs to")
+    revision: int = Field(description="(AK) Position in the revision sequence")
+    changed_at: date = Field(description="Date the edit was made")
+    changed: str = Field(description="Fields the edit touched, comma separated")
+    estimator: Estimator = Field(description="Estimator in force after the edit")
+    universe: str | None = Field(default=None, description="Universe reference")
+    lookback: int | None = Field(default=None, description="Lookback, in return periods")
+    frequency: ReturnFrequency | None = Field(default=None, description="Return frequency")
+    source: str | None = Field(default=None, description="Source, for an external estimator")
+
+    @classmethod
+    @override
+    def get_table_name(cls) -> str:
+        return "RiskModelRevision"
+
+
+class CovarianceEntryRow(DbModel["CovarianceEntryRow"]):
+    """One declared covariance: a matrix, a date, and the revision it was declared under.
+
+    `revision` is ADR-0005's Revision Stamp. It is a plain integer rather than a foreign key to
+    `RiskModelRevision`, because the pair `(model, revision)` already resolves there and a
+    second path to the same fact is a second thing that can disagree.
+    """
+
+    covariance_entry_id: int = Field(default=-1, description="(PK)")
+    model: int = Field(description="(FK:RiskModel.risk_model_id)(AK) Model that declared it")
+    as_of: date = Field(description="(AK) Date the covariance is declared for")
+    revision: int = Field(description="Risk Model revision it was produced under")
+    matrix: SymmetricMatrix = Field(description="The matrix itself, stored whole as JSON")
+
+    @classmethod
+    @override
+    def get_table_name(cls) -> str:
+        return "CovarianceEntry"
+
+
 # Every table in the database, with the classification that decides whether a schema change
 # must migrate it or may drop and backfill it. Later tickets add their tables here; this
 # mapping is both the schema and the ADR-0008 classification, so the two cannot drift.
@@ -195,6 +298,10 @@ TABLES: dict[type[DbModel[Any]], Persistence] = {
     InstrumentRow: Persistence.DURABLE,
     InstrumentReferenceRow: Persistence.DURABLE,
     TickerRecordRow: Persistence.DURABLE,
+    ExposureEntryRow: Persistence.DURABLE,
+    RiskModelRow: Persistence.DURABLE,
+    RiskModelRevisionRow: Persistence.DURABLE,
+    CovarianceEntryRow: Persistence.DURABLE,
 }
 
 SCHEMA = Schema(list(TABLES))
@@ -502,6 +609,142 @@ class Store:
                 raise SupersessionCycle(f"supersession cycle through {sorted(seen)}")
             seen.add(current)
             current = InstrumentId(row.superseded_by)
+
+    def save_exposure_series(self, series: ExposureSeries) -> None:
+        """Write every entry of an Exposure Series that is not already stored.
+
+        Entries already held are left alone rather than rewritten, so a re-save is a no-op and
+        an entry on an occupied date is refused. That matches `ExposureSeries` itself, whose
+        `_check_dates` treats two entries claiming one date as an error rather than a
+        replacement.
+        """
+        targets = ",".join(series.targets)
+        for entry in series.entries:
+            stored = ExposureEntryRow.select(self.conn, series_name=series.name, as_of=entry.as_of)
+            if stored:
+                if stored[0].matrix != entry.matrix:
+                    raise DateOccupied(f"{series.name}: {entry.as_of} is already declared")
+                continue
+            ExposureEntryRow(
+                series_name=series.name,
+                as_of=entry.as_of,
+                targets=targets,
+                semantics=series.semantics,
+                rows_sum_to_one=series.rows_sum_to_one,
+                matrix=entry.matrix,
+            ).save(self.conn)
+        self.conn.commit()
+
+    def load_exposure_series(self, name: str) -> ExposureSeries | None:
+        """Rebuild an Exposure Series from its rows. A Series with no entries is unknowable."""
+        rows = sorted(ExposureEntryRow.select(self.conn, series_name=name), key=lambda r: r.as_of)
+        if not rows:
+            return None
+        header = rows[0]
+        return ExposureSeries(
+            name=name,
+            targets=Universe(header.targets.split(",")) if header.targets else Universe(()),
+            semantics=header.semantics,
+            rows_sum_to_one=header.rows_sum_to_one,
+            entries=tuple(DatedMatrix(as_of=r.as_of, matrix=r.matrix) for r in rows),
+        )
+
+    def save_covariance_series(self, series: CovarianceSeries) -> None:
+        """Write a Covariance Series: its Risk Model, the revision log, and the declarations.
+
+        The model is persisted whole because `CovarianceSeries` holds a `RiskModel` rather than
+        naming one, and because a Revision Stamp resolves to nothing without the log behind it.
+        """
+        model_id = self._save_risk_model(series.model)
+        for entry in series.entries:
+            stored = CovarianceEntryRow.select(self.conn, model=model_id, as_of=entry.as_of)
+            if stored:
+                if stored[0].matrix != entry.matrix or stored[0].revision != entry.revision:
+                    raise DateOccupied(f"{series.model.name}: {entry.as_of} is already declared")
+                continue
+            CovarianceEntryRow(
+                model=model_id,
+                as_of=entry.as_of,
+                revision=entry.revision,
+                matrix=entry.matrix,
+            ).save(self.conn)
+        self.conn.commit()
+
+    def load_covariance_series(self, name: str) -> CovarianceSeries | None:
+        """Rebuild a Covariance Series, model and revision log included."""
+        model = self.load_risk_model(name)
+        if model is None:
+            return None
+        model_id = self._risk_model_id(name)
+        rows = sorted(CovarianceEntryRow.select(self.conn, model=model_id), key=lambda r: r.as_of)
+        return CovarianceSeries(
+            model=model,
+            entries=tuple(
+                DeclaredCovariance(as_of=r.as_of, revision=r.revision, matrix=r.matrix)
+                for r in rows
+            ),
+        )
+
+    def save_risk_model(self, model: RiskModel) -> None:
+        """Persist a Risk Model and its revision log on its own, without any declarations."""
+        self._save_risk_model(model)
+        self.conn.commit()
+
+    def load_risk_model(self, name: str) -> RiskModel | None:
+        """Rebuild a Risk Model from its revision rows, in revision order."""
+        model_id = self._risk_model_id(name)
+        if model_id is None:
+            return None
+        rows = sorted(
+            RiskModelRevisionRow.select(self.conn, model=model_id), key=lambda r: r.revision
+        )
+        return RiskModel(
+            name=name,
+            revisions=tuple(
+                RiskModelRevision(
+                    revision=r.revision,
+                    changed_at=r.changed_at,
+                    changed=tuple(f for f in r.changed.split(",") if f),
+                    parameters=RiskParameters(
+                        estimator=r.estimator,
+                        universe=r.universe,
+                        lookback=r.lookback,
+                        frequency=r.frequency,
+                        source=r.source,
+                    ),
+                )
+                for r in rows
+            ),
+        )
+
+    def _risk_model_id(self, name: str) -> int | None:
+        rows = RiskModelRow.select(self.conn, name=name)
+        return rows[0].risk_model_id if rows else None
+
+    def _save_risk_model(self, model: RiskModel) -> int:
+        """Upsert the model row and append revisions not yet stored. Does not commit."""
+        model_id = self._risk_model_id(model.name)
+        if model_id is None:
+            row = RiskModelRow(name=model.name)
+            row.save(self.conn)
+            model_id = row.risk_model_id
+        held = {r.revision for r in RiskModelRevisionRow.select(self.conn, model=model_id)}
+        for revision in model.revisions:
+            if revision.revision in held:
+                continue
+            parameters = revision.parameters
+            RiskModelRevisionRow(
+                model=model_id,
+                revision=revision.revision,
+                changed_at=revision.changed_at,
+                changed=",".join(revision.changed),
+                estimator=parameters.estimator,
+                universe=parameters.universe,
+                lookback=parameters.lookback,
+                frequency=parameters.frequency,
+                source=parameters.source,
+            ).save(self.conn)
+        return model_id
 
     def close(self) -> None:
         self.conn.close()
