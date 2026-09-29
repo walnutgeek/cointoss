@@ -18,6 +18,18 @@ log = logging.getLogger(__name__)
 
 BASE_URL = "https://api.coingecko.com/api/v3"
 
+MARKET_CHART_MAX_DAYS = 365
+"""How far back `/coins/{id}/market_chart` reaches without a paid key.
+
+Measured: `days=max` answers HTTP 401 Unauthorized on the free tier. The ceiling is enforced
+before the request rather than discovered as a 401, and never quietly clipped to 365, because a
+window silently shortened to a year looks like a coin that simply has no older history.
+"""
+
+
+class MarketChartRangeUnavailable(ValueError):
+    """More market chart history was asked for than the free tier serves."""
+
 
 # -- Response models --
 
@@ -140,6 +152,41 @@ class OhlcCandle(BaseModel):
         return data  # pyright: ignore[reportUnknownVariableType]
 
 
+class MarketChartPoint(BaseModel):
+    """One `[ts, value]` pair. `timestamp` is milliseconds since epoch (CoinGecko convention)."""
+
+    model_config: ClassVar[ConfigDict] = ConfigDict(extra="ignore")
+    timestamp: int
+    value: float
+
+    @property
+    def dt(self) -> datetime:
+        """Timestamp as a UTC datetime."""
+        return datetime.fromtimestamp(self.timestamp / 1000, tz=UTC)
+
+    @model_validator(mode="before")
+    @classmethod
+    def from_list(cls, data: Any) -> Any:
+        # CoinGecko returns each market chart series as [ts, value] arrays
+        if isinstance(data, list) and len(data) == 2:  # pyright: ignore[reportUnknownArgumentType]
+            return {"timestamp": data[0], "value": data[1]}  # pyright: ignore[reportUnknownVariableType]
+        return data  # pyright: ignore[reportUnknownVariableType]
+
+
+class MarketChart(BaseModel):
+    """Three parallel series over one time range: price, market cap and traded volume.
+
+    Measured against the live API, the three carry identical timestamps, but nothing in the
+    payload guarantees that, so they are kept as three series rather than zipped into one row
+    type here. `cointoss.prices.bars_from_market_chart` aligns them by UTC day.
+    """
+
+    model_config: ClassVar[ConfigDict] = ConfigDict(extra="ignore")
+    prices: list[MarketChartPoint] = []
+    market_caps: list[MarketChartPoint] = []
+    total_volumes: list[MarketChartPoint] = []
+
+
 # -- Helpers --
 
 
@@ -153,6 +200,25 @@ def _build_params(**kwargs: Any) -> dict[str, str]:
             else:
                 params[k] = str(v)
     return params
+
+
+def _checked_days(days: str | int) -> str:
+    """The `days` window, refused rather than silently clipped when it exceeds the free tier.
+
+    `days=max` is HTTP 401 without a paid key, so asking for it is a configuration mistake
+    worth naming at the call site instead of a 401 raised from inside the HTTP layer.
+    """
+    if isinstance(days, str) and not days.isdigit():
+        raise MarketChartRangeUnavailable(
+            f"market_chart days={days!r} needs a paid key; "
+            f"the free tier serves at most {MARKET_CHART_MAX_DAYS} days"
+        )
+    window = int(days)
+    if window < 1 or window > MARKET_CHART_MAX_DAYS:
+        raise MarketChartRangeUnavailable(
+            f"market_chart days={window} is outside 1..{MARKET_CHART_MAX_DAYS} on the free tier"
+        )
+    return str(window)
 
 
 # -- Client --
@@ -344,3 +410,43 @@ class CoinGeckoClient(NamespaceFragment):
         )
         data = await self._get(f"/coins/{coin_id}/ohlc", params or None)
         return [OhlcCandle.model_validate(item) for item in data]
+
+    @require_cache
+    @nsnode(tags=["api"])
+    async def fetch_market_chart(
+        self,
+        coin_id: str,
+        vs_currency: str = "usd",
+        days: str | int = MARKET_CHART_MAX_DAYS,
+        *,
+        interval: str | None = None,
+        precision: str | None = None,
+    ) -> MarketChart:
+        """Fetch price, market cap and volume series from /coins/{id}/market_chart.
+
+        The only CoinGecko endpoint that yields daily points with volume; `/coins/{id}/ohlc` is
+        4-hourly below 90 days and 4-daily above it and carries no volume at all. Measured,
+        `days=365` returns 366 points spaced 24 hours apart on 00:00 UTC plus a trailing point
+        at the current time. Granularity is chosen by the API from `days`: hourly below 90 days,
+        daily at 90 and above.
+
+        Rate-limited hard enough to throttle on a second immediate call, so construct the client
+        with `rpm` when fetching more than one coin.
+
+        Args:
+            coin_id: CoinGecko coin ID.
+            vs_currency: Target currency. API default: usd.
+            days: Data up to N days ago, 1 to 365. Larger windows and `max` need a paid key and
+                raise `MarketChartRangeUnavailable` rather than being clipped or 401ing.
+            interval: Force a data interval ("5m", "hourly", "daily"). Paid tiers only; omit it
+                to take the automatic granularity.
+            precision: Decimal places for price ("full" or "0"-"18").
+        """
+        params = _build_params(
+            vs_currency=vs_currency,
+            days=_checked_days(days),
+            interval=interval,
+            precision=precision,
+        )
+        data = await self._get(f"/coins/{coin_id}/market_chart", params or None)
+        return MarketChart.model_validate(data)
