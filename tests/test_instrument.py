@@ -1,8 +1,9 @@
 """Identity rules of ADR-0004, driven through the public seam of `cointoss.instrument`.
 
 Every test here is a sequence of observations with asserted outcomes: Instrument Ids,
-Supersession relations, FIGI Resolution states and date-resolved symbols. Nothing below
-reaches into minting internals, normalisation helpers or the shape of the collection.
+Supersession relations, FIGI Resolution states, source-attributed Ticker History and
+date-resolved symbols. Nothing below reaches into minting internals, normalisation helpers
+or the shape of the collection.
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ from cointoss.instrument import (
     InstrumentType,
     Observation,
     Outcome,
+    Source,
     SupersessionCycle,
 )
 
@@ -47,8 +49,9 @@ def stock(
     scope: str = "us",
     name: str | None = None,
     resolution: FigiResolution | None = None,
+    source: Source = Source.YAHOO,
 ) -> Observation:
-    """Build a listed-equity observation."""
+    """Build a listed-equity observation. Yahoo unless the test is about source attribution."""
     refs: list[ExternalReference] = []
     if figi:
         refs.append(ExternalReference.composite_figi(figi))
@@ -63,6 +66,7 @@ def stock(
         symbol=symbol,
         scope=scope,
         observed_at=observed_at,
+        source=source,
         name=name,
         issuer_name=issuer_name,
         references=tuple(refs),
@@ -79,8 +83,9 @@ def token(
     figi: str | None = None,
     provider: tuple[str, str] | None = None,
     issuer_name: str | None = None,
+    source: Source = Source.COINGECKO,
 ) -> Observation:
-    """Build a crypto observation."""
+    """Build a crypto observation. CoinGecko unless the test is about source attribution."""
     refs: list[ExternalReference] = []
     if figi:
         refs.append(ExternalReference.asset_figi(figi))
@@ -93,6 +98,7 @@ def token(
         symbol=symbol,
         scope=scope,
         observed_at=observed_at,
+        source=source,
         issuer_name=issuer_name,
         references=tuple(refs),
         figi_resolution=FigiResolution.RESOLVED if figi else FigiResolution.NOT_FOUND,
@@ -108,6 +114,8 @@ def identity_state(reg: InstrumentRegistry) -> IdentityState:
             i.scope,
             i.symbol,
             i.figi_resolution,
+            i.identity_source,
+            i.price_sources,
             i.superseded_by,
             i.issuer_name,
             tuple(i.references),
@@ -164,16 +172,20 @@ def test_symbol_resolution_is_scoped_by_date() -> None:
     reg.observe(stock("META", date(2022, 6, 9), figi=META_FIGI, issuer_name="Meta Platforms Inc"))
     reg.observe(stock("FB", date(2023, 6, 1), figi="BBG01HKJ0000", issuer_name="ProShares Trust"))
 
-    before = reg.resolve_symbol(InstrumentType.STOCK, "FB", "us", date(2021, 3, 1))
+    before = reg.resolve_symbol(Source.YAHOO, InstrumentType.STOCK, "FB", "us", date(2021, 3, 1))
     assert before is not None
     assert before.id == "stock.us.fb"
 
-    after = reg.resolve_symbol(InstrumentType.STOCK, "FB", "us", date(2024, 3, 1))
+    after = reg.resolve_symbol(Source.YAHOO, InstrumentType.STOCK, "FB", "us", date(2024, 3, 1))
     assert after is not None
     assert after.id == "stock.us.fb_proshares"
 
-    assert reg.resolve_symbol(InstrumentType.STOCK, "FB", "us", date(2010, 1, 1)) is None
-    meta_now = reg.resolve_symbol(InstrumentType.STOCK, "META", "us", date(2024, 3, 1))
+    assert (
+        reg.resolve_symbol(Source.YAHOO, InstrumentType.STOCK, "FB", "us", date(2010, 1, 1)) is None
+    )
+    meta_now = reg.resolve_symbol(
+        Source.YAHOO, InstrumentType.STOCK, "META", "us", date(2024, 3, 1)
+    )
     assert meta_now is not None
     assert meta_now.id == "stock.us.fb"
 
@@ -455,7 +467,7 @@ def test_ambiguous_symbol_at_a_date_raises() -> None:
     reg.observe(stock("FB", date(2012, 5, 18), figi=META_FIGI, issuer_name="Facebook Inc"))
     reg.observe(stock("FB", date(2013, 1, 1), figi="BBG00OVERLAP", issuer_name="ProShares Trust"))
     with pytest.raises(AmbiguousSymbol):
-        reg.resolve_symbol(InstrumentType.STOCK, "FB", "us", date(2015, 1, 1))
+        reg.resolve_symbol(Source.YAHOO, InstrumentType.STOCK, "FB", "us", date(2015, 1, 1))
 
 
 def test_a_late_arriving_older_sighting_does_not_rewrite_ticker_history() -> None:
@@ -468,3 +480,111 @@ def test_a_late_arriving_older_sighting_does_not_rewrite_ticker_history() -> Non
     assert stale.instrument is not None
     assert stale.instrument.symbol == "META"
     assert [r.symbol for r in stale.instrument.ticker_history] == ["FB", "META"]
+
+
+def test_mint_defaults_sources_from_the_instrument_type() -> None:
+    """Where a name and where Bars come from are properties of the Instrument, not fetch rules."""
+    reg = InstrumentRegistry()
+    equity = reg.observe(stock("AAPL", date(2020, 1, 1), figi="BBG000B9XRY4")).instrument
+    coin = reg.observe(token("BTC", "native", date(2013, 1, 1), figi="BBG00BTC0001")).instrument
+    assert equity is not None and coin is not None
+    assert equity.identity_source is Source.YAHOO
+    assert equity.price_sources == (Source.YAHOO,)
+    assert coin.identity_source is Source.COINGECKO
+    assert coin.price_sources == (Source.YAHOO, Source.COINGECKO)
+
+
+def test_two_sources_name_one_instrument_at_once() -> None:
+    """Yahoo calls it BTC-USD and CoinGecko calls it BTC; both are current, neither is canonical."""
+    reg = InstrumentRegistry()
+    reg.observe(
+        token(
+            "BTC",
+            "native",
+            date(2013, 1, 1),
+            figi="BBG00BTC0001",
+            provider=("coingecko", "bitcoin"),
+        )
+    )
+    also = reg.observe(
+        token("BTC-USD", "native", date(2014, 1, 1), figi="BBG00BTC0001", source=Source.YAHOO)
+    )
+    assert also.outcome is Outcome.MATCHED
+    assert also.instrument is not None
+    # The display symbol follows the Identity Source, so Yahoo's name does not rename the coin.
+    assert also.instrument.symbol == "BTC"
+    assert [(r.source, r.symbol, r.valid_to) for r in also.instrument.ticker_history] == [
+        (Source.COINGECKO, "BTC", None),
+        (Source.YAHOO, "BTC-USD", None),
+    ]
+
+    as_of = date(2020, 1, 1)
+    yahoo_name = reg.resolve_symbol(Source.YAHOO, InstrumentType.CRYPTO, "BTC-USD", "native", as_of)
+    gecko_name = reg.resolve_symbol(Source.COINGECKO, InstrumentType.CRYPTO, "BTC", "native", as_of)
+    assert yahoo_name is not None and gecko_name is not None
+    assert yahoo_name.id == "crypto.native.btc"
+    assert gecko_name.id == "crypto.native.btc"
+    # Neither source answers for the other's name.
+    assert reg.resolve_symbol(Source.YAHOO, InstrumentType.CRYPTO, "BTC", "native", as_of) is None
+    assert (
+        reg.resolve_symbol(Source.COINGECKO, InstrumentType.CRYPTO, "BTC-USD", "native", as_of)
+        is None
+    )
+
+
+def test_a_rename_at_one_source_leaves_another_sources_record_current() -> None:
+    """Sources lease symbols independently: one vendor's rename says nothing about another's."""
+    reg = InstrumentRegistry()
+    reg.observe(
+        token("BTC", "native", date(2013, 1, 1), figi="BBG00BTC0001", provider=("coingecko", "x"))
+    )
+    reg.observe(
+        token("BTC-USD", "native", date(2014, 1, 1), figi="BBG00BTC0001", source=Source.YAHOO)
+    )
+    renamed = reg.observe(
+        token("XBT", "native", date(2021, 1, 1), figi="BBG00BTC0001", provider=("coingecko", "x"))
+    )
+    assert renamed.instrument is not None
+    assert renamed.instrument.symbol == "XBT"
+    yahoo_records = renamed.instrument.ticker_history_from(Source.YAHOO)
+    gecko_records = renamed.instrument.ticker_history_from(Source.COINGECKO)
+    assert [(r.symbol, r.valid_to) for r in yahoo_records] == [("BTC-USD", None)]
+    assert [(r.symbol, r.valid_to) for r in gecko_records] == [
+        ("BTC", date(2021, 1, 1)),
+        ("XBT", None),
+    ]
+
+    # The old CoinGecko name still resolves before the rename, and the Yahoo name throughout.
+    before = reg.resolve_symbol(
+        Source.COINGECKO, InstrumentType.CRYPTO, "BTC", "native", date(2015, 1, 1)
+    )
+    assert before is not None and before.id == "crypto.native.btc"
+    assert (
+        reg.resolve_symbol(
+            Source.COINGECKO, InstrumentType.CRYPTO, "BTC", "native", date(2022, 1, 1)
+        )
+        is None
+    )
+    still = reg.resolve_symbol(
+        Source.YAHOO, InstrumentType.CRYPTO, "BTC-USD", "native", date(2022, 1, 1)
+    )
+    assert still is not None and still.id == "crypto.native.btc"
+
+
+def test_a_coingecko_coin_id_is_a_reference_and_never_ticker_history() -> None:
+    """A stable provider slug is identity; a ticker is a lease. They are not the same record."""
+    reg = InstrumentRegistry()
+    coin = reg.observe(
+        token(
+            "USDC", "eth", date(2020, 1, 1), contract=USDC_ETH, provider=("coingecko", "usd-coin")
+        )
+    ).instrument
+    assert coin is not None
+    assert ExternalReference.provider_id("coingecko", "usd-coin") in coin.references
+    assert [r.symbol for r in coin.ticker_history] == ["USDC"]
+    # The slug is not a symbol, so it resolves as nothing under any source.
+    for source in Source:
+        assert (
+            reg.resolve_symbol(source, InstrumentType.CRYPTO, "usd-coin", "eth", date(2021, 1, 1))
+            is None
+        )

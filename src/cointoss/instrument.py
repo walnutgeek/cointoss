@@ -15,6 +15,13 @@ can never be reminted under another.
 Instrument Id grammar: `{type}.{scope}.{symbol}[_{qualifier}]`. Symbols are normalised to
 alphanumerics separated by `-`, so the first `_` in the third part always starts the Qualifier.
 
+Source attribution (the ADR-0004 amendment): a symbol is one source's lease on a name, so
+every Ticker History record names the source that reported it and every symbol lookup takes
+one. An Instrument states the Identity Source its displayed name and symbol come from and the
+ordered Price Sources its Bars should come from, both defaulted from its type when it is
+minted. A stable provider slug such as a CoinGecko `id` is an External Reference instead --
+it is identity and never changes, whereas a ticker is a lease.
+
 Note for the next reader: `stock.us.fb` denotes Meta permanently, because the id is minted from
 the symbol first seen and never changed. This reads backwards and is the deliberate price of
 immutable readable ids -- see ADR-0004.
@@ -47,9 +54,12 @@ __all__ = [
     "ReferenceKind",
     "Scope",
     "ScopeKind",
+    "Source",
     "SupersessionCycle",
     "TickerRecord",
     "UnknownScope",
+    "default_identity_source",
+    "default_price_sources",
 ]
 
 
@@ -88,6 +98,50 @@ class Chain(StrEnum):
     ARB = "arb"
     OP = "op"
     BASE = "base"
+
+
+class Source(StrEnum):
+    """Controlled vocabulary for the sources cointoss ingests from.
+
+    Deliberately small and closed, like `Chain`: a source is named in stored Ticker History,
+    in an Instrument's Identity Source and Price Sources, and later on every Bar, so adding
+    one is a code change rather than a free-text value drifting into the data.
+    """
+
+    YAHOO = "yahoo"
+    COINGECKO = "coingecko"
+
+
+# ADR-0004's amendment, as defaults rather than rules in the fetch code. Yahoo names and
+# prices listed equities. CoinGecko names coins, because it covers the long tail Yahoo does
+# not, but Yahoo's bars are preferred where it carries the coin at all.
+_DEFAULT_IDENTITY_SOURCE: dict[InstrumentType, Source] = {
+    InstrumentType.STOCK: Source.YAHOO,
+    InstrumentType.CRYPTO: Source.COINGECKO,
+}
+
+_DEFAULT_PRICE_SOURCES: dict[InstrumentType, tuple[Source, ...]] = {
+    InstrumentType.STOCK: (Source.YAHOO,),
+    InstrumentType.CRYPTO: (Source.YAHOO, Source.COINGECKO),
+}
+
+
+def default_identity_source(instrument_type: InstrumentType) -> Source:
+    """The Identity Source an Instrument of this type is minted with.
+
+    >>> default_identity_source(InstrumentType.CRYPTO)
+    <Source.COINGECKO: 'coingecko'>
+    """
+    return _DEFAULT_IDENTITY_SOURCE[instrument_type]
+
+
+def default_price_sources(instrument_type: InstrumentType) -> tuple[Source, ...]:
+    """The ordered Price Sources an Instrument of this type is minted with.
+
+    >>> default_price_sources(InstrumentType.CRYPTO)
+    (<Source.YAHOO: 'yahoo'>, <Source.COINGECKO: 'coingecko'>)
+    """
+    return _DEFAULT_PRICE_SOURCES[instrument_type]
 
 
 class FigiResolution(StrEnum):
@@ -309,8 +363,14 @@ class ExternalReference:
 
 @dataclass(frozen=True)
 class TickerRecord:
-    """One time-bounded stretch of Ticker History. `valid_to` None means current."""
+    """One time-bounded stretch of Ticker History, as reported by one source.
 
+    `valid_to` None means current. Records are not vendor-neutral: Yahoo's `BRK-B` and another
+    source's `BRK.B` are two current records for one Instrument, which is why `source` is part
+    of the record and of every lookup against it.
+    """
+
+    source: Source
     symbol: str
     scope: str
     valid_from: date
@@ -324,6 +384,9 @@ class TickerRecord:
 class Observation:
     """A normalised sighting of an asset from some source.
 
+    `source` is required: a sighting with no stated source cannot be recorded as Ticker
+    History, since the symbol it carries is only that source's name for the asset.
+
     `figi_resolution` is the outcome the caller obtained, not something this module can compel.
     An anchor FIGI reference and a `RESOLVED` state must agree.
     """
@@ -332,6 +395,7 @@ class Observation:
     symbol: str
     scope: str
     observed_at: date
+    source: Source
     name: str | None = None
     issuer_name: str | None = None
     references: tuple[ExternalReference, ...] = ()
@@ -353,7 +417,12 @@ class Observation:
 
 @dataclass
 class Instrument:
-    """The canonical, stable identity for a tradable asset."""
+    """The canonical, stable identity for a tradable asset.
+
+    `symbol` and `name` are the denormalised display values read from `identity_source`; they
+    are that source's account of the asset, not facts. `price_sources` is an ordered
+    preference, first holder of a Bar for a date wins.
+    """
 
     id: InstrumentId
     type: InstrumentType
@@ -361,12 +430,20 @@ class Instrument:
     symbol: str
     mint_seq: int
     minted_at: date
+    identity_source: Source
+    price_sources: tuple[Source, ...]
     name: str | None = None
     issuer_name: str | None = None
     references: list[ExternalReference] = field(default_factory=list)
     figi_resolution: FigiResolution = FigiResolution.NOT_ATTEMPTED
     superseded_by: InstrumentId | None = None
     ticker_history: list[TickerRecord] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if not self.price_sources:
+            raise ValueError(f"{self.id} has no Price Sources: an empty preference names nothing")
+        if len(set(self.price_sources)) != len(self.price_sources):
+            raise ValueError(f"{self.id} repeats a Price Source: {self.price_sources}")
 
     @property
     def is_resolved(self) -> bool:
@@ -375,6 +452,10 @@ class Instrument:
     @property
     def is_unresolved(self) -> bool:
         return not self.is_resolved
+
+    def ticker_history_from(self, source: Source) -> list[TickerRecord]:
+        """This Instrument's Ticker History as reported by one source, oldest first."""
+        return [r for r in self.ticker_history if r.source is source]
 
     def absorb(self, obs: Observation) -> None:
         """Fold an Observation this Instrument has been identified with into itself."""
@@ -389,19 +470,28 @@ class Instrument:
         self._record_symbol(obs)
 
     def _record_symbol(self, obs: Observation) -> None:
-        """Append Ticker History when a successor symbol is observed.
+        """Record Ticker History under the source that reported the symbol.
 
-        Only forward renames are recorded; a symbol observed before the current record began is
-        an out-of-order sighting and is ignored rather than rewriting history.
+        Each source has its own chain of records, so a symbol current at one source neither
+        closes nor contradicts another source's. Only forward renames are recorded; a symbol
+        observed before that source's current record began is an out-of-order sighting and is
+        ignored rather than rewriting history.
+
+        The display `symbol` follows the Identity Source alone, so a second source naming the
+        asset differently does not rename the Instrument.
         """
-        if obs.symbol == self.symbol:
-            return
-        current = self.ticker_history[-1]
-        if obs.observed_at < current.valid_from:
-            return
-        self.ticker_history[-1] = replace(current, valid_to=obs.observed_at)
-        self.ticker_history.append(TickerRecord(obs.symbol, self.scope, valid_from=obs.observed_at))
-        self.symbol = obs.symbol
+        latest = [i for i, r in enumerate(self.ticker_history) if r.source is obs.source]
+        if latest:
+            index = latest[-1]
+            current = self.ticker_history[index]
+            if obs.symbol == current.symbol or obs.observed_at < current.valid_from:
+                return
+            self.ticker_history[index] = replace(current, valid_to=obs.observed_at)
+        self.ticker_history.append(
+            TickerRecord(obs.source, obs.symbol, self.scope, valid_from=obs.observed_at)
+        )
+        if obs.source is self.identity_source:
+            self.symbol = obs.symbol
 
 
 @dataclass(frozen=True)
@@ -535,13 +625,23 @@ class InstrumentRegistry:
         return [i for i in self.instruments() if i.is_unresolved and i.superseded_by is None]
 
     def resolve_symbol(
-        self, instrument_type: InstrumentType, symbol: str, scope: str, as_of: date
+        self,
+        source: Source,
+        instrument_type: InstrumentType,
+        symbol: str,
+        scope: str,
+        as_of: date,
     ) -> Instrument | None:
-        """Resolve a symbol supplied by a person or a document, as of a date.
+        """Resolve a symbol supplied by a person or a document, as reported by one source.
 
-        The date is required: defaulting it would silently mis-resolve historical statements.
-        Overlapping Ticker History across Instruments is expected -- that is the reused-ticker
-        case -- and is disambiguated by the date, so an overlap on one date is an error.
+        The source is required and is not a hint: a symbol recorded under one source does not
+        resolve under another, because vendors name the same asset differently and neither
+        name is canonical. A broker CSV must be read against the source that wrote it.
+
+        The date is required too: defaulting it would silently mis-resolve historical
+        statements. Overlapping Ticker History across Instruments is expected -- that is the
+        reused-ticker case -- and is disambiguated by the date, so an overlap within one source
+        on one date is an error.
         """
         wanted = normalize_symbol(symbol)
         wanted_scope = Scope(instrument_type, scope)
@@ -551,14 +651,16 @@ class InstrumentRegistry:
                 continue
             if any(
                 r.symbol == wanted and r.scope == wanted_scope and r.covers(as_of)
-                for r in inst.ticker_history
+                for r in inst.ticker_history_from(source)
             ):
                 alive = self.survivor(inst.id)
                 found[alive.id] = alive
         if not found:
             return None
         if len(found) > 1:
-            raise AmbiguousSymbol(f"{wanted} in {wanted_scope} on {as_of}: {sorted(found)}")
+            raise AmbiguousSymbol(
+                f"{wanted} in {wanted_scope} at {source} on {as_of}: {sorted(found)}"
+            )
         return next(iter(found.values()))
 
     # -- Write side --
@@ -669,7 +771,12 @@ class InstrumentRegistry:
     # -- Mutation --
 
     def _mint(self, obs: Observation, scope: Scope) -> Instrument:
-        """Mint a new Instrument. The id is fixed here for good -- see ADR-0004."""
+        """Mint a new Instrument. The id is fixed here for good -- see ADR-0004.
+
+        Identity Source and Price Sources default from the instrument type. They are stored on
+        the Instrument rather than recomputed, so a later change to the defaults cannot silently
+        restate where an existing Instrument's name and Bars come from.
+        """
         instrument_id = self._mint_id(obs, scope)
         inst = Instrument(
             id=instrument_id,
@@ -679,10 +786,14 @@ class InstrumentRegistry:
             mint_seq=self._next_seq,
             minted_at=obs.observed_at,
             name=obs.name,
+            identity_source=default_identity_source(obs.type),
+            price_sources=default_price_sources(obs.type),
             issuer_name=obs.issuer_name,
             references=list(obs.references),
             figi_resolution=obs.figi_resolution,
-            ticker_history=[TickerRecord(obs.symbol, scope, valid_from=obs.observed_at)],
+            ticker_history=[
+                TickerRecord(obs.source, obs.symbol, scope, valid_from=obs.observed_at)
+            ],
         )
         self._next_seq += 1
         self._instruments.append(inst)
@@ -803,9 +914,37 @@ def test_observation_requires_figi_state_and_references_to_agree() -> None:
                 symbol="AAPL",
                 scope="us",
                 observed_at=date(2020, 1, 1),
+                source=Source.YAHOO,
                 references=refs,
                 figi_resolution=resolution,
             )
             raise AssertionError("mismatched FIGI Resolution should be rejected")
+        except ValueError:
+            pass
+
+
+def test_source_defaults_follow_the_instrument_type() -> None:
+    """Yahoo names and prices equities; CoinGecko names coins and backs Yahoo up on prices."""
+    assert default_identity_source(InstrumentType.STOCK) is Source.YAHOO
+    assert default_price_sources(InstrumentType.STOCK) == (Source.YAHOO,)
+    assert default_identity_source(InstrumentType.CRYPTO) is Source.COINGECKO
+    assert default_price_sources(InstrumentType.CRYPTO) == (Source.YAHOO, Source.COINGECKO)
+
+
+def test_price_sources_must_be_a_usable_preference() -> None:
+    """An empty or repeating preference names nothing, so it is refused at construction."""
+    for price_sources in ((), (Source.YAHOO, Source.YAHOO)):
+        try:
+            Instrument(
+                id=InstrumentId("stock.us.aapl"),
+                type=InstrumentType.STOCK,
+                scope=Scope(InstrumentType.STOCK, "us"),
+                symbol="AAPL",
+                mint_seq=1,
+                minted_at=date(2020, 1, 1),
+                identity_source=Source.YAHOO,
+                price_sources=price_sources,
+            )
+            raise AssertionError(f"{price_sources} should not be accepted as Price Sources")
         except ValueError:
             pass
