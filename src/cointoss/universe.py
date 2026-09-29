@@ -27,9 +27,9 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 from datetime import date
 from enum import StrEnum
-from typing import Annotated, Any, ClassVar
+from typing import Any, ClassVar
 
-from pydantic import BaseModel, ConfigDict, PlainSerializer, PlainValidator, model_validator
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from cointoss.instrument import InstrumentId
 
@@ -48,7 +48,6 @@ __all__ = [
 
 # `InstrumentId` is a validating `str` subclass from a module that knows nothing about pydantic.
 # Annotating it here keeps the parsing rules on the type itself rather than restating them.
-_Id = Annotated[InstrumentId, PlainValidator(InstrumentId), PlainSerializer(str, return_type=str)]
 
 
 class UniverseError(Exception):
@@ -85,8 +84,8 @@ class UniverseParameters(BaseModel):
 
     enter_rank: int | None = None
     exit_rank: int | None = None
-    inclusions: frozenset[_Id] = frozenset()
-    exclusions: frozenset[_Id] = frozenset()
+    inclusions: frozenset[InstrumentId] = frozenset()
+    exclusions: frozenset[InstrumentId] = frozenset()
 
     @model_validator(mode="after")
     def _validate(self) -> UniverseParameters:
@@ -129,7 +128,7 @@ class UniverseMemberRecord(BaseModel):
     role: MemberRole
     source: str
     symbol_as_typed: str
-    instrument_id: _Id | None = None
+    instrument_id: InstrumentId | None = None
     added_in_revision: int = 1
     removed_in_revision: int | None = None
 

@@ -294,6 +294,23 @@ class InstrumentId(str):
         base = f"{instrument_type}.{scope}.{symbol.lower()}"
         return cls(f"{base}_{qualifier}" if qualifier else base)
 
+    @classmethod
+    def __get_pydantic_core_schema__(cls, source: Any, handler: Any) -> Any:
+        """Let Pydantic carry an `InstrumentId` without it degrading to `str`.
+
+        Without this a model field annotated `InstrumentId` fails at class construction,
+        because the custom one-argument `__new__` is not a schema Pydantic can infer. Values
+        are validated by construction on the way in and serialised as the slug on the way out.
+        """
+        from pydantic_core import core_schema
+
+        return core_schema.no_info_plain_validator_function(
+            _coerce_instrument_id,
+            serialization=core_schema.plain_serializer_function_ser_schema(
+                str.__str__, return_schema=core_schema.str_schema()
+            ),
+        )
+
     def __reduce__(self) -> tuple[Any, tuple[str]]:
         """Rebuild by reparsing the slug, which is the whole of the value."""
         return (InstrumentId, (str.__str__(self),))
@@ -311,6 +328,15 @@ _MATCH_GROUPS: dict[ReferenceKind, tuple[int, str]] = {
     ReferenceKind.CONTRACT: (2, "contract"),
     ReferenceKind.PROVIDER_ID: (3, "provider"),
 }
+
+
+def _coerce_instrument_id(value: Any) -> InstrumentId:
+    """Accept an `InstrumentId` as-is and parse anything string-shaped."""
+    if isinstance(value, InstrumentId):
+        return value
+    if isinstance(value, str):
+        return InstrumentId(value)
+    raise TypeError(f"expected an Instrument Id or its string form, got {type(value).__name__}")
 
 
 @dataclass(frozen=True, order=True)

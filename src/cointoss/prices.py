@@ -28,9 +28,9 @@ import math
 from collections.abc import Sequence
 from datetime import date, datetime
 from enum import StrEnum
-from typing import Annotated, Any, ClassVar
+from typing import Any, ClassVar
 
-from pydantic import BaseModel, ConfigDict, PlainSerializer, PlainValidator, model_validator
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from cointoss import FrameData
 from cointoss.instrument import InstrumentId
@@ -42,7 +42,6 @@ __all__ = [
     "BarKeyMismatch",
     "CorporateAction",
     "CorporateActionKind",
-    "InstrumentIdField",
     "MalformedValue",
     "MissingColumn",
     "PriceError",
@@ -64,15 +63,6 @@ PRICE_FIELDS = ("open", "high", "low", "close", "adj_close")
 """The Bar fields a split rescales downward. `volume` rescales upward and is handled apart."""
 
 
-def _coerce_instrument_id(value: Any) -> InstrumentId:
-    return value if isinstance(value, InstrumentId) else InstrumentId(str(value))
-
-
-InstrumentIdField = Annotated[
-    InstrumentId,
-    PlainValidator(_coerce_instrument_id),
-    PlainSerializer(str, return_type=str),
-]
 """`InstrumentId` as a Pydantic field.
 
 The type declares no core schema of its own and `cointoss.instrument` owns it, so the parsing
@@ -138,7 +128,7 @@ class Bar(BaseModel):
 
     model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True)
 
-    instrument_id: InstrumentIdField
+    instrument_id: InstrumentId
     source: str
     bar_date: date
     open: float | None = None
@@ -186,7 +176,7 @@ class CorporateAction(BaseModel):
 
     model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True)
 
-    instrument_id: InstrumentIdField
+    instrument_id: InstrumentId
     source: str
     action_date: date
     kind: CorporateActionKind
@@ -211,7 +201,7 @@ class Restatement(BaseModel):
 
     model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True)
 
-    instrument_id: InstrumentIdField
+    instrument_id: InstrumentId
     source: str
     bar_date: date
     field: str
