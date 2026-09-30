@@ -6,9 +6,11 @@ and a trimmed Bitcoin `market_chart` tail -- mapped through `cointoss.prices` an
 and `restatements_for`, and look at rows only where the guarantee is about storage itself: that
 an overlapping re-fetch leaves no duplicate.
 
-The partial-day tests replay what a daily CoinGecko job actually sees: the fetch on one day
-ends with a point at the current time, and the next day's fetch replaces it with that day's
-00:00 point. The change is the day finishing, and must not be filed as a Restatement.
+The re-fetch tests replay what a daily CoinGecko job actually sees: the fetch on one day ends
+with a point at the current time, and the next day's fetch has dropped it. A CoinGecko bar is
+the day's 00:00 point (#18), so the trailing point never reaches a bar and the re-fetch
+restates nothing. A Yahoo bar fetched during its own session is provisional instead, and its
+replacement is the day finishing, not a Restatement.
 """
 
 from __future__ import annotations
@@ -330,8 +332,8 @@ def test_split_already_on_file_explains_a_later_rescale(db_path: Path):
         assert store.upsert_bars(bars) == []
 
 
-def test_partial_day_bar_completing_is_not_a_restatement(db_path: Path):
-    """The trailing "now" point is replaced next day by the 00:00 point; that is not a rewrite."""
+def test_a_daily_market_chart_refetch_is_not_a_restatement(db_path: Path):
+    """The trailing "now" point is gone next day; the 00:00 point it sat beside was the bar."""
     first = market_chart()
     second = next_day_chart(first, close=83900.0, volume=4.0e10)
     btc_id = InstrumentId("crypto.native.btc")
@@ -347,6 +349,19 @@ def test_partial_day_bar_completing_is_not_a_restatement(db_path: Path):
     assert finished.close == pytest.approx(83479.2543356063)
     assert finished.fetched_at == CG_NEXT_DAY
     assert read[-1].bar_date == date(2026, 9, 30)
+
+
+def test_a_provisional_bar_completing_is_not_a_restatement(db_path: Path):
+    """A Yahoo bar fetched during its session is replaced by the finished one, unreported."""
+    with Store(db_path) as store:
+        nvda = stock(store)
+        day = date(2024, 6, 12)
+        store.upsert_bars([bar(nvda, Source.YAHOO, day, 120.0, datetime(2024, 6, 12, 15, 0))])
+        written = store.upsert_bars([bar(nvda, Source.YAHOO, day, 125.2)])
+        (held,) = store.bars_for(nvda, day, day)
+
+    assert written == []
+    assert held.close == 125.2
 
 
 def test_a_finished_bar_changing_is_still_a_restatement(db_path: Path):

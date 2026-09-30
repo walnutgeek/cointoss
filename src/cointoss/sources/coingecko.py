@@ -26,6 +26,9 @@ before the request rather than discovered as a 401, and never quietly clipped to
 window silently shortened to a year looks like a coin that simply has no older history.
 """
 
+MARKETS_MAX_PER_PAGE = 250
+"""The most coins one `/coins/markets` page returns; a wider listing is paged."""
+
 
 class MarketChartRangeUnavailable(ValueError):
     """More market chart history was asked for than the free tier serves."""

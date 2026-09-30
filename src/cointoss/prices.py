@@ -322,10 +322,14 @@ def bars_from_yahoo(
 def is_provisional(bar: Bar) -> bool:
     """Whether the bar was fetched before its session could be known to have closed.
 
-    A bar fetched on or before its own session date may describe a day still in progress:
-    CoinGecko's `market_chart` appends a trailing point at the current time, and Yahoo serves
-    the running session intraday. Its values are expected to move once the day finishes, so a
-    later re-fetch replacing it is the day completing, not a Restatement.
+    A bar fetched on or before its own session date may describe a day still in progress: Yahoo
+    serves the running session intraday. Its values are expected to move once the day finishes,
+    so a later re-fetch replacing it is the day completing, not a Restatement.
+
+    A CoinGecko bar is the exception. Its bar for a date is the price at that date's 00:00 UTC
+    -- the label CoinGecko puts on its own daily point, and what the daily sweep snapshots just
+    after midnight (#18) -- so it is final from the moment that day begins, and provisional only
+    if fetched before it.
 
     Judged on the UTC calendar, because no session time is stored (ADR-0009). That is exact for
     a crypto bar, whose session is the UTC day, and conservative for a listed venue, whose
@@ -335,15 +339,23 @@ def is_provisional(bar: Bar) -> bool:
     A naive `fetched_at` is read as UTC.
 
     >>> bar = Bar(
-    ...     instrument_id=InstrumentId("crypto.native.btc"), source=Source.COINGECKO,
-    ...     bar_date=date(2026, 9, 29), close=84011.8, fetched_at=datetime(2026, 9, 29, 8, 0),
+    ...     instrument_id=InstrumentId("stock.us.nvda"), source=Source.YAHOO,
+    ...     bar_date=date(2026, 9, 29), close=118.4, fetched_at=datetime(2026, 9, 29, 21, 0),
     ... )
     >>> is_provisional(bar)
     True
     >>> is_provisional(bar.model_copy(update={"fetched_at": datetime(2026, 9, 30, 0, 5)}))
     False
+    >>> snapshot = bar.model_copy(
+    ...     update={"source": Source.COINGECKO, "fetched_at": datetime(2026, 9, 29, 0, 5)}
+    ... )
+    >>> is_provisional(snapshot)
+    False
     """
-    return as_utc(bar.fetched_at).date() <= bar.bar_date
+    fetched_on = as_utc(bar.fetched_at).date()
+    if bar.source is Source.COINGECKO:
+        return fetched_on < bar.bar_date
+    return fetched_on <= bar.bar_date
 
 
 def as_utc(moment: datetime) -> datetime:
@@ -460,18 +472,25 @@ def bars_from_market_chart(
     a null volume; a volume point on a day with no price yields nothing, because a Bar needs a
     close.
 
-    Within one day the last point wins. The API spaces points hourly for short windows and
-    appends a trailing point at the current time, so the final day of a 365-day fetch carries
-    both its 00:00 point and a partial-day one. The latest price is the better close for a day
-    still in progress, and the module holds no clock with which to tell a partial day from a
-    finished one, so that bar is emitted and a later re-fetch overwrites it.
+    Within one day the first point wins. A CoinGecko bar for a date is the price at that date's
+    00:00 UTC, the point CoinGecko itself labels with the date and the one the daily sweep
+    snapshots (#18). The API appends a trailing point at the current time, so the final day of a
+    365-day fetch carries both its 00:00 point and a later one, and short windows space points
+    hourly; taking the first keeps the 00:00 point in both cases, so the bar does not depend on
+    `days` or on the time of the fetch, and `is_provisional` can treat it as final. The one
+    exception is the first day of an hourly window, which starts at the fetch time `days` back
+    and has no 00:00 point; a backfill that must match the sweep asks for 90 days or more.
 
     Only the window the payload covers is mapped. The free tier stops at 365 days
     (`cointoss.sources.coingecko.MARKET_CHART_MAX_DAYS`), and asking for more raises there
     rather than arriving here as a short result.
     """
-    volume_by_day = {_utc_day(p.timestamp): p.value for p in payload.total_volumes}
-    close_by_day: dict[date, float] = {_utc_day(p.timestamp): p.value for p in payload.prices}
+    volume_by_day: dict[date, float] = {}
+    for point in payload.total_volumes:
+        volume_by_day.setdefault(_utc_day(point.timestamp), point.value)
+    close_by_day: dict[date, float] = {}
+    for point in payload.prices:
+        close_by_day.setdefault(_utc_day(point.timestamp), point.value)
     return [
         Bar(
             instrument_id=instrument_id,

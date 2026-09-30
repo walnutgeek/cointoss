@@ -353,8 +353,11 @@ def test_adjusted_close_is_null_not_a_copy_of_close():
     assert all(b.adj_close is None for b in bars)
 
 
-def test_one_bar_per_utc_day_with_the_last_point_winning():
-    """The recorded tail ends with both a 00:00 point and a partial-day one for the same date."""
+def test_one_bar_per_utc_day_with_the_first_point_winning():
+    """The recorded tail ends with both a 00:00 point and a partial-day one for the same date.
+
+    The 00:00 point is the date's bar (#18), so the later point is ignored.
+    """
     payload = market_chart()
     bars = bars_from_market_chart(BTC, payload, FETCHED)
 
@@ -366,7 +369,8 @@ def test_one_bar_per_utc_day_with_the_last_point_winning():
     assert len(bars) == 7
     last = bars[-1]
     assert last.bar_date == date(2026, 9, 29)
-    assert last.close == pytest.approx(84011.80548571255)
+    assert last.close == pytest.approx(83479.2543356063)
+    assert last.volume == pytest.approx(41541721154.86327)
 
 
 def test_volume_is_matched_by_day_not_by_position():

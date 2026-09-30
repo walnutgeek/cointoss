@@ -115,7 +115,7 @@ One Instrument's open, high, low, close and volume for one session date from one
 _Avoid_: candle, quote, price point, tick
 
 **Provisional Bar**:
-A Bar fetched on or before its own session date, judged on the UTC calendar, so possibly describing a day still in progress. Its replacement by a later fetch is the day finishing, not a Restatement.
+A Bar fetched on or before its own session date, judged on the UTC calendar, so possibly describing a day still in progress. Its replacement by a later fetch is the day finishing, not a Restatement. A CoinGecko Bar is the price at its date's 00:00 UTC, so it is final once that day has begun.
 _Avoid_: partial bar, live bar, intraday bar
 
 **Corporate Action**:

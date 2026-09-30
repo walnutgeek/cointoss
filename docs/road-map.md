@@ -25,14 +25,14 @@ price history all persist, and every read folds supersession.
 | `cointoss.universe` | `UniverseDefinition` with a revision log, Inclusions and Exclusions, pure rank-band evaluation. ADR-0007. |
 | `cointoss.prices` | `Bar`, `CorporateAction`, `Restatement`, source mapping, split-aware restatement detection. ADR-0009. |
 | `cointoss.store` | The only module that touches SQL. Sixteen tables, enforced pragmas, `SchemaVersion`. Membership by date or Instrument, bars resolved through Price Sources. ADR-0008. |
-| `cointoss.ingest` | Pinning a typed ticker: the mandatory FIGI attempt, resolve or mint, retrying an unresolved Instrument. ADR-0004. |
+| `cointoss.ingest` | Pinning a typed ticker: the mandatory FIGI attempt, resolve or mint, retrying an unresolved Instrument. ADR-0004. The daily market sweep (#19): CoinGecko `markets` to Instruments, membership and snapshot bars. |
 
 ### Not built
 
 Everything that makes it a system rather than a library:
 
-- **No ingest sweep.** `cointoss.ingest` covers pinning a typed ticker and retrying one
-  unresolved Instrument. Nothing yet turns a source listing into Observations on a schedule, and
+- **No scheduled sweep.** `cointoss.ingest.sweep` turns a CoinGecko `markets` listing into
+  Instruments, membership and bars (#19), but nothing runs it on a schedule yet (#21), and
   nothing runs the retry queue.
 - **No returns.** Nothing turns prices into returns, so no covariance can be computed; the only
   way one enters the system today is a vendor import.
@@ -136,9 +136,9 @@ the ADRs; what follows is only the index, so nothing here is re-litigated from m
   D is roughly D-1's close; Yahoo's bar closes at the end of D. `bars_for` falling back between
   them splices series offset by a day. ADR-0009's "agree on what a crypto day is" holds for the
   label only. Settle before Yahoo crypto bars are ingested alongside CoinGecko.
-- **A fixed `days` for `market_chart`.** The bar for a date depends on `days` (hourly versus
-  daily points), so overlapping fetches with different `days` file a Restatement on every
-  overlapping date. Ingest must pick one.
+- **A fixed `days` for `market_chart`.** Mostly settled by #19: a CoinGecko bar is the date's
+  first (00:00) point, so hourly and daily windows agree, except on the first day of an hourly
+  window, which has no 00:00 point. A backfill should ask for 90 days or more.
 - **Backfills.** `record_membership` refuses a `when` earlier than the latest Evaluation Run, so
   evaluating a past date after a later one is not supported (ADR-0008 amendment).
 - **Unfolded reads.** `corporate_actions_for`, `restatements_for` and the action lookup in

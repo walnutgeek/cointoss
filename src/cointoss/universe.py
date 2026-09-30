@@ -24,7 +24,7 @@ caller.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import date, datetime
 from enum import StrEnum
 from typing import Any, ClassVar
@@ -339,13 +339,15 @@ def _populated(parameters: UniverseParameters) -> list[str]:
 
 def evaluate(
     parameters: UniverseParameters,
-    ranked: Sequence[InstrumentId],
+    ranked: Sequence[InstrumentId] | Mapping[InstrumentId, int],
     previous: Iterable[InstrumentId] = (),
 ) -> frozenset[InstrumentId]:
     """The membership a recipe produces from one ranked list and the membership before it.
 
     `ranked` is ordered by descending market cap, so position 1 is the largest; where an id
-    appears twice its best rank is the one that counts. `previous` is the membership from the
+    appears twice its best rank is the one that counts. A mapping gives each id its rank outright,
+    for a source whose ranks are not its list positions: an id skipped or held back upstream then
+    leaves a gap rather than promoting everything below it. `previous` is the membership from the
     last Series entry, which is what makes the band hysteretic: an id already in the universe
     survives while its rank is better than `exit_rank`, and an id not in it is admitted only at
     `enter_rank` or better. An id absent from `ranked` entirely is out of the rule's reach
@@ -364,10 +366,15 @@ def evaluate(
     [InstrumentId('crypto.native.btc'), InstrumentId('crypto.native.eth')]
     >>> evaluate(band, [btc, sol], previous={eth})
     frozenset({InstrumentId('crypto.native.btc')})
+    >>> evaluate(band, {eth: 2, sol: 3})
+    frozenset()
     """
     rank: dict[InstrumentId, int] = {}
-    for position, instrument_id in enumerate(ranked, start=1):
-        rank.setdefault(instrument_id, position)
+    if isinstance(ranked, Mapping):
+        rank.update(ranked)
+    else:
+        for position, instrument_id in enumerate(ranked, start=1):
+            rank.setdefault(instrument_id, position)
 
     members: set[InstrumentId] = set()
     enter, leave = parameters.enter_rank, parameters.exit_rank
