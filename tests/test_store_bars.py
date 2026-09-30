@@ -431,3 +431,16 @@ def test_member_bars_cover_every_member_on_a_date(db_path: Path):
     btc_bar = held[btc]
     assert btc_bar is not None and btc_bar.source is Source.YAHOO and btc_bar.close == 62000.0
     assert held[eth] is None
+
+
+def test_market_cap_round_trips_and_bar_holders_are_listed_by_source_and_date(db_path: Path):
+    with Store(db_path) as store:
+        btc, eth = coins(store, "BTC", "ETH")
+        chart_bars = bars_from_market_chart(btc, market_chart(), CG_FETCHED)
+        store.upsert_bars([*chart_bars, bar(eth, Source.YAHOO, date(2026, 9, 23), 4000.0)])
+
+        (read,) = store.bars_for(btc, date(2026, 9, 23), date(2026, 9, 23))
+        assert read.market_cap == pytest.approx(1731252948699.2454)
+        assert store.instruments_with_bars(Source.COINGECKO, date(2026, 9, 23)) == {btc}
+        assert store.instruments_with_bars(Source.YAHOO, date(2026, 9, 23)) == {eth}
+        assert store.instruments_with_bars(Source.COINGECKO, date(2026, 9, 30)) == set()

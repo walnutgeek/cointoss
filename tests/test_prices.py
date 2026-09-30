@@ -344,6 +344,7 @@ def test_market_chart_yields_close_only_bars():
     assert first.bar_date == date(2026, 9, 23)
     assert first.close == pytest.approx(86183.29442787907)
     assert first.volume == pytest.approx(43496653159.936775)
+    assert first.market_cap == pytest.approx(1731252948699.2454)
 
 
 def test_adjusted_close_is_null_not_a_copy_of_close():
@@ -381,6 +382,19 @@ def test_volume_is_matched_by_day_not_by_position():
     bars = bars_from_market_chart(BTC, trimmed, FETCHED)
 
     assert [b.volume is None for b in bars] == [False, False, True, True, True, True, True]
+
+
+def test_market_cap_is_matched_by_day_and_not_compared_as_a_restatement():
+    """Market cap is price times a re-estimated supply, so a revision of it is not a restatement."""
+    payload = market_chart()
+    trimmed = payload.model_copy(update={"market_caps": payload.market_caps[:1]})
+
+    bars = bars_from_market_chart(BTC, trimmed, FETCHED)
+
+    assert [b.market_cap is None for b in bars] == [False, True, True, True, True, True, True]
+    stored = bars[0]
+    revised = stored.model_copy(update={"market_cap": 1.0, "fetched_at": REFETCHED})
+    assert detect_restatements(stored, revised, []) == []
 
 
 def test_a_volume_without_a_price_yields_no_bar():

@@ -37,7 +37,7 @@ from cointoss.instrument import InstrumentId, Source
 
 if TYPE_CHECKING:
     # Type-only so the pure mapping module does not drag in the HTTP stack the adapter needs.
-    from cointoss.sources.coingecko import MarketChart
+    from cointoss.sources.coingecko import MarketChart, MarketChartPoint
 
 __all__ = [
     "PRICE_FIELDS",
@@ -119,6 +119,11 @@ class Bar(BaseModel):
     heterogeneous series stays legible, and a vintage stays identifiable even though only one is
     kept.
 
+    `market_cap` is carried where the source reports one, as CoinGecko does. It is not a price
+    and plays no part in restatement detection: it is price times a circulating supply the
+    vendor re-estimates freely, so a revised supply would file noise rather than a rewritten
+    price history.
+
     >>> b = Bar(
     ...     instrument_id=InstrumentId("crypto.eth.usdc"),
     ...     source=Source.COINGECKO,
@@ -144,11 +149,12 @@ class Bar(BaseModel):
     close: float
     adj_close: float | None = None
     volume: float | None = None
+    market_cap: float | None = None
     fetched_at: datetime
 
     @model_validator(mode="after")
     def _validate(self) -> Bar:
-        for name in (*PRICE_FIELDS, "volume"):
+        for name in (*PRICE_FIELDS, "volume", "market_cap"):
             value = getattr(self, name)
             if value is None:
                 continue
@@ -327,9 +333,9 @@ def is_provisional(bar: Bar) -> bool:
     so a later re-fetch replacing it is the day completing, not a Restatement.
 
     A CoinGecko bar is the exception. Its bar for a date is the price at that date's 00:00 UTC
-    -- the label CoinGecko puts on its own daily point, and what the daily sweep snapshots just
-    after midnight (#18) -- so it is final from the moment that day begins, and provisional only
-    if fetched before it.
+    -- the label CoinGecko puts on its own daily point, and what the daily sweep records from a
+    listing fetched just after midnight -- so it is final from the moment that day begins, and
+    provisional only if fetched before it.
 
     Judged on the UTC calendar, because no session time is stored (ADR-0009). That is exact for
     a crypto bar, whose session is the UTC day, and conservative for a listed venue, whose
@@ -346,10 +352,10 @@ def is_provisional(bar: Bar) -> bool:
     True
     >>> is_provisional(bar.model_copy(update={"fetched_at": datetime(2026, 9, 30, 0, 5)}))
     False
-    >>> snapshot = bar.model_copy(
+    >>> swept = bar.model_copy(
     ...     update={"source": Source.COINGECKO, "fetched_at": datetime(2026, 9, 29, 0, 5)}
     ... )
-    >>> is_provisional(snapshot)
+    >>> is_provisional(swept)
     False
     """
     fetched_on = as_utc(bar.fetched_at).date()
@@ -463,18 +469,20 @@ def bars_from_market_chart(
 ) -> list[Bar]:
     """Map one CoinGecko market chart payload into one close-only Bar per UTC day.
 
+    Each bar carries the day's volume and market cap where the payload has them.
+
     The endpoint is close-only, so `open`, `high` and `low` stay null. So does `adj_close`:
     CoinGecko applies no dividend adjustment, and ADR-0009 keeps the field null rather than
     mirroring `close` so that equal by coincidence and equal by definition do not look alike.
 
     The three series are aligned by UTC day rather than by position, since nothing in the
-    payload promises they are parallel. A day with a price but no volume point yields a bar with
-    a null volume; a volume point on a day with no price yields nothing, because a Bar needs a
-    close.
+    payload promises they are parallel. A day with a price but no volume or market cap point
+    yields a bar with that field null; a volume or market cap point on a day with no price
+    yields nothing, because a Bar needs a close.
 
     Within one day the first point wins. A CoinGecko bar for a date is the price at that date's
     00:00 UTC, the point CoinGecko itself labels with the date and the one the daily sweep
-    snapshots (#18). The API appends a trailing point at the current time, so the final day of a
+    records. The API appends a trailing point at the current time, so the final day of a
     365-day fetch carries both its 00:00 point and a later one, and short windows space points
     hourly; taking the first keeps the 00:00 point in both cases, so the bar does not depend on
     `days` or on the time of the fetch, and `is_provisional` can treat it as final. The one
@@ -485,12 +493,9 @@ def bars_from_market_chart(
     (`cointoss.sources.coingecko.MARKET_CHART_MAX_DAYS`), and asking for more raises there
     rather than arriving here as a short result.
     """
-    volume_by_day: dict[date, float] = {}
-    for point in payload.total_volumes:
-        volume_by_day.setdefault(_utc_day(point.timestamp), point.value)
-    close_by_day: dict[date, float] = {}
-    for point in payload.prices:
-        close_by_day.setdefault(_utc_day(point.timestamp), point.value)
+    volume_by_day = _first_by_day(payload.total_volumes)
+    market_cap_by_day = _first_by_day(payload.market_caps)
+    close_by_day = _first_by_day(payload.prices)
     return [
         Bar(
             instrument_id=instrument_id,
@@ -498,7 +503,16 @@ def bars_from_market_chart(
             bar_date=bar_date,
             close=close,
             volume=volume_by_day.get(bar_date),
+            market_cap=market_cap_by_day.get(bar_date),
             fetched_at=fetched_at,
         )
         for bar_date, close in sorted(close_by_day.items())
     ]
+
+
+def _first_by_day(points: Sequence[MarketChartPoint]) -> dict[date, float]:
+    """Each UTC day's first point: the 00:00 one wherever the series has it."""
+    by_day: dict[date, float] = {}
+    for point in points:
+        by_day.setdefault(_utc_day(point.timestamp), point.value)
+    return by_day

@@ -495,6 +495,7 @@ class BarRow(DbModel["BarRow"]):
     low: float | None = Field(default=None, description="Low, null for a close-only source")
     adj_close: float | None = Field(default=None, description="Dividend-adjusted close")
     volume: float | None = Field(default=None, description="Traded volume")
+    market_cap: float | None = Field(default=None, description="Market cap, where reported")
     fetched_at: datetime = Field(description="When the stored vintage was fetched")
 
     @classmethod
@@ -1244,6 +1245,15 @@ class Store:
         )
         return [self._run_from(r, definition) for r in rows]
 
+    def runs_on(self, definition: str, day: date) -> list[EvaluationRun]:
+        """The Evaluation Runs of a Definition whose source data is for `day`, in run order."""
+        definition_id = self._require_universe(definition)
+        rows = sorted(
+            EvaluationRunRow.select(self.conn, definition=definition_id, source_asof=day),
+            key=lambda r: r.run_at,
+        )
+        return [self._run_from(r, definition) for r in rows]
+
     def universes_containing(
         self, instrument_id: InstrumentId | str, start: date, end: date
     ) -> tuple[str, ...]:
@@ -1636,6 +1646,17 @@ class Store:
                 chosen[held.bar_date] = held
         instrument = InstrumentId(survivor.instrument_id)
         return [self._bar_from(chosen[day], instrument) for day in sorted(chosen)]
+
+    def instruments_with_bars(self, source: Source, day: date) -> set[InstrumentId]:
+        """The Instruments, as stored, holding a bar from `source` for `day`."""
+        cursor = self.conn.cursor()
+        execute_sql(
+            cursor,
+            "SELECT i.instrument_id FROM Bar b JOIN Instrument i "
+            "ON b.instrument = i.instrument_row_id WHERE b.source = ? AND b.bar_date = ?",
+            (source.value, day.isoformat()),
+        )
+        return {InstrumentId(row[0]) for row in cursor.fetchall()}
 
     def latest_bar_date(self) -> date | None:
         """The latest date any bar is stored for, from any source; None before the first."""
