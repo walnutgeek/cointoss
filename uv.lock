@@ -387,6 +387,7 @@ source = { editable = "." }
 dependencies = [
     { name = "lythonic" },
     { name = "pyyaml" },
+    { name = "ruamel-yaml" },
     { name = "woodglue" },
     { name = "yfinance" },
 ]
@@ -423,6 +424,7 @@ requires-dist = [
     { name = "lythonic", specifier = ">=0.0.25" },
     { name = "openpyxl", marker = "extra == 'scripts'" },
     { name = "pyyaml", specifier = ">=6.0.3" },
+    { name = "ruamel-yaml", specifier = ">=0.18.17" },
     { name = "woodglue" },
     { name = "yfinance", specifier = ">=1.4.1" },
 ]
