@@ -581,7 +581,15 @@ class Index(NamedTuple):
 #
 # `universes_containing` starts from an Instrument alone, which neither membership index leads
 # with.
+#
+# Supersession is chased forwards through the Instrument's alternative key, but gathering
+# everything superseded into a survivor walks `superseded_by` backwards, which nothing else
+# indexes.
 INDEXES: tuple[Index, ...] = (
+    Index(
+        "Instrument",
+        "CREATE INDEX IF NOT EXISTS Instrument_by_superseded_by ON Instrument (superseded_by)",
+    ),
     Index(
         "TickerRecord",
         "CREATE INDEX IF NOT EXISTS TickerRecord_by_symbol "
@@ -605,6 +613,15 @@ INDEXES: tuple[Index, ...] = (
 )
 
 SCHEMA_VERSION = 1
+
+# The ids of every Instrument superseded, directly or through a chain, into the survivor bound
+# as the parameter, and the survivor's own. Seeded with the bare id rather than its row, since
+# `superseded_by` may name a survivor not yet stored. Walks `superseded_by` backwards; UNION
+# rather than UNION ALL keeps a cycle from recursing forever.
+_FAMILY_CTE = (
+    "WITH RECURSIVE family(instrument_id) AS (SELECT ? UNION "
+    "SELECT i.instrument_id FROM Instrument i JOIN family f ON i.superseded_by = f.instrument_id)"
+)
 
 
 class Migration(NamedTuple):
@@ -878,6 +895,21 @@ class Store:
             ],
         )
 
+    def _fold_ids(self, instrument_ids: Iterable[InstrumentId]) -> dict[InstrumentId, InstrumentId]:
+        """Each distinct id mapped to its survivor, chasing each chain once."""
+        return {i: self._survivor_id(i) for i in set(instrument_ids)}
+
+    def _family(self, survivor: InstrumentId) -> dict[int, tuple[InstrumentId, int]]:
+        """The stored Instruments that fold into `survivor`, by row id, with their mint order."""
+        cursor = self.conn.cursor()
+        execute_sql(
+            cursor,
+            f"{_FAMILY_CTE} SELECT i.instrument_row_id, i.instrument_id, i.mint_seq "
+            "FROM family f JOIN Instrument i ON i.instrument_id = f.instrument_id",
+            [str(survivor)],
+        )
+        return {pk: (InstrumentId(i), seq) for pk, i, seq in cursor.fetchall()}
+
     def _survivor_id(self, instrument_id: InstrumentId) -> InstrumentId:
         """Chase a stored Supersession chain to its fixed point."""
         seen: set[InstrumentId] = set()
@@ -1057,6 +1089,10 @@ class Store:
         the one in force writes no interval and no entry, only the Run, which is then the sole
         evidence the job is alive. The first evaluation always writes an entry, empty or not.
 
+        The diff is taken after folding Supersession on both sides, so a member re-expressed
+        under its survivor is not a change and dropping a survivor closes the intervals recorded
+        under its predecessors. A newly admitted member's interval is opened under its survivor.
+
         `when` is the source data's as-of date; `run_at` is the wall clock and defaults to now.
         `revision` defaults to the Definition's latest.
 
@@ -1076,7 +1112,7 @@ class Store:
         stamp = max(revisions) if revision is None else revision
         if stamp not in revisions:
             raise UnknownRevision(f"{definition} has no revision {stamp}")
-        wanted = self._instrument_row_ids(members)
+        wanted = self._survivor_row_ids(members)
 
         latest_entry = self._latest(UniverseEntryRow, "as_of", definition_id)
         latest_run = self._latest(EvaluationRunRow, "source_asof", definition_id)
@@ -1084,12 +1120,14 @@ class Store:
             if latest is not None and when < latest:
                 raise EntryOrder(f"{definition}: {when} precedes an evaluation for {latest}")
 
-        open_rows = {
-            row.instrument: row
-            for row in UniverseMembershipRow.select(
-                self.conn, definition=definition_id, valid_to=None
-            )
-        }
+        # Open intervals grouped by survivor, so a member recorded under a since-superseded id
+        # and now produced under its survivor is not a change.
+        open_rows: dict[InstrumentId, list[UniverseMembershipRow]] = {}
+        for row in UniverseMembershipRow.select(self.conn, definition=definition_id, valid_to=None):
+            held = InstrumentRow.load_by_id(self.conn, row.instrument)
+            assert held is not None  # the foreign key guarantees it
+            survivor = self._survivor_id(InstrumentId(held.instrument_id))
+            open_rows.setdefault(survivor, []).append(row)
         admitted = wanted.keys() - open_rows.keys()
         dropped = open_rows.keys() - wanted.keys()
         changed = latest_entry is None or bool(admitted or dropped)
@@ -1108,10 +1146,11 @@ class Store:
         )
         try:
             for instrument in dropped:
-                open_rows[instrument].model_copy(update={"valid_to": when}).save(self.conn)
+                for row in open_rows[instrument]:
+                    row.model_copy(update={"valid_to": when}).save(self.conn)
             for instrument in admitted:
                 UniverseMembershipRow(
-                    definition=definition_id, instrument=instrument, valid_from=when
+                    definition=definition_id, instrument=wanted[instrument], valid_from=when
                 ).save(self.conn)
             if changed:
                 UniverseEntryRow(definition=definition_id, as_of=when, revision=stamp).save(
@@ -1130,20 +1169,37 @@ class Store:
         Builds no Series. A date before the first entry raises `NotYetStarted` rather than
         answering empty, so "not yet started" stays distinguishable from "nothing qualified".
         Members come back ordered by Instrument Id, since stored membership has no order of its
-        own. Supersession is not folded: the ids are the ones the evaluation produced.
+        own.
+
+        Supersession is folded (ADR-0004): each member is reported as its survivor, once, however
+        many of the recorded members turned out to be the same Instrument. The chase is a
+        recursive step inside the same statement, seeded only from the members in force, so the
+        read stays one indexed query. A chain that never ends raises `SupersessionCycle`.
         """
         stamp = when.isoformat()
         cursor = self.conn.cursor()
+        # `chase` walks each member forwards along `superseded_by`; a row is terminal when its
+        # id is not itself superseded, which also covers a survivor that is not stored. UNION
+        # rather than UNION ALL is what stops a cycle from recursing forever.
         execute_sql(
             cursor,
-            "SELECT (SELECT MIN(e.as_of) FROM UniverseEntry e "
-            "WHERE e.definition = d.universe_definition_id), i.instrument_id "
-            "FROM UniverseDefinition d "
-            "LEFT JOIN UniverseMembership m ON m.definition = d.universe_definition_id "
+            "WITH RECURSIVE chase(start, current) AS ("
+            "SELECT i.instrument_id, i.instrument_id FROM UniverseDefinition d "
+            "JOIN UniverseMembership m ON m.definition = d.universe_definition_id "
             "AND m.valid_from <= ? AND (m.valid_to IS NULL OR m.valid_to > ?) "
-            "LEFT JOIN Instrument i ON i.instrument_row_id = m.instrument "
+            "JOIN Instrument i ON i.instrument_row_id = m.instrument "
+            "WHERE d.name = ? "
+            "UNION "
+            "SELECT c.start, i.superseded_by FROM chase c "
+            "JOIN Instrument i ON i.instrument_id = c.current "
+            "WHERE i.superseded_by IS NOT NULL) "
+            "SELECT (SELECT MIN(e.as_of) FROM UniverseEntry e "
+            "WHERE e.definition = d.universe_definition_id), c.start, c.current, "
+            "NOT EXISTS (SELECT 1 FROM Instrument s "
+            "WHERE s.instrument_id = c.current AND s.superseded_by IS NOT NULL) "
+            "FROM UniverseDefinition d LEFT JOIN chase c "
             "WHERE d.name = ?",
-            [stamp, stamp, definition],
+            [stamp, stamp, definition, definition],
         )
         rows = cursor.fetchall()
         if not rows:
@@ -1153,7 +1209,11 @@ class Store:
             raise NotYetStarted(f"{definition} has no entries")
         if when < date.fromisoformat(started):
             raise NotYetStarted(f"{definition} begins {started}, which is after {when}")
-        return Universe(sorted(row[1] for row in rows if row[1] is not None))
+        starts = {start for _, start, _, _ in rows if start is not None}
+        ended = {start: current for _, start, current, end in rows if start is not None and end}
+        if starts - ended.keys():
+            raise SupersessionCycle(f"supersession cycle through {sorted(starts - ended.keys())}")
+        return Universe(sorted(set(ended.values())))
 
     def revision_at(self, definition: str, when: date) -> int:
         """The Definition revision the Series entry in force on `when` was produced under."""
@@ -1189,21 +1249,29 @@ class Store:
         half-open `[valid_from, valid_to)` intervals, that is overlap when `valid_from <= end`
         and `valid_to > start`, an open interval reaching every later date.
 
-        Names come back sorted, each once however often the Instrument rejoined. Supersession is
-        not folded, as in `members_at`: the id is matched as the evaluation recorded it. An
-        unstored Instrument raises `UnknownInstrument`, so a typo is not read as "in none".
+        Names come back sorted, each once however often the Instrument rejoined. An unstored
+        Instrument raises `UnknownInstrument`, so a typo is not read as "in none".
+
+        Supersession is folded (ADR-0004): the Instrument is first chased to its survivor, and
+        membership recorded under the survivor or anything superseded into it counts. Asking
+        with a superseded id therefore gives the same answer as asking with its survivor.
         """
         if end < start:
             raise ValueError(f"range end {end} precedes its start {start}")
-        row = self._require_instrument(instrument_id)
+        survivor = self._survivor_id(
+            InstrumentId(self._require_instrument(instrument_id).instrument_id)
+        )
         cursor = self.conn.cursor()
         execute_sql(
             cursor,
-            "SELECT DISTINCT d.name FROM UniverseMembership m "
+            # CROSS JOIN pins the family as the outer loop; left to itself the planner may
+            # scan every Definition instead of seeking membership by Instrument.
+            f"{_FAMILY_CTE} SELECT DISTINCT d.name FROM family f "
+            "CROSS JOIN Instrument i ON i.instrument_id = f.instrument_id "
+            "CROSS JOIN UniverseMembership m ON m.instrument = i.instrument_row_id "
             "JOIN UniverseDefinition d ON d.universe_definition_id = m.definition "
-            "WHERE m.instrument = ? AND m.valid_from <= ? "
-            "AND (m.valid_to IS NULL OR m.valid_to > ?) ORDER BY d.name",
-            [row.instrument_row_id, end.isoformat(), start.isoformat()],
+            "WHERE m.valid_from <= ? AND (m.valid_to IS NULL OR m.valid_to > ?) ORDER BY d.name",
+            [str(survivor), end.isoformat(), start.isoformat()],
         )
         return tuple(name for (name,) in cursor.fetchall())
 
@@ -1212,9 +1280,9 @@ class Store:
 
         The expensive path: it reads every entry and every interval the Definition has, where
         `members_at` answers one date with one indexed query. Use it only where a caller is
-        typed on `UniverseSeries`. Each entry's members are ordered by Instrument Id, as
-        `members_at` orders them. A Definition never evaluated loads as a Series with no
-        entries, whose `as_of` raises `NotYetStarted`.
+        typed on `UniverseSeries`. Each entry's members are ordered by Instrument Id and folded
+        to their survivors, as `members_at` returns them. A Definition never evaluated loads as a
+        Series with no entries, whose `as_of` raises `NotYetStarted`.
         """
         definition_id = self._require_universe(name)
         entry_dates = sorted(
@@ -1228,23 +1296,27 @@ class Store:
             "WHERE m.definition = ? ORDER BY i.instrument_id",
             [definition_id],
         )
+        fetched = cursor.fetchall()
+        fold = self._fold_ids(InstrumentId(row[0]) for row in fetched)
         intervals = [
             (
-                instrument_id,
+                fold[InstrumentId(instrument_id)],
                 date.fromisoformat(start),
                 None if end is None else date.fromisoformat(end),
             )
-            for instrument_id, start, end in cursor.fetchall()
+            for instrument_id, start, end in fetched
         ]
         entries = tuple(
             DatedUniverse(
                 as_of=when,
                 universe=Universe(
-                    [
-                        instrument_id
-                        for instrument_id, start, end in intervals
-                        if start <= when and (end is None or when < end)
-                    ]
+                    sorted(
+                        {
+                            instrument_id
+                            for instrument_id, start, end in intervals
+                            if start <= when and (end is None or when < end)
+                        }
+                    )
                 ),
             )
             for when in entry_dates
@@ -1257,11 +1329,17 @@ class Store:
             raise UnknownUniverse(f"{name} is not stored")
         return definition_id
 
-    def _instrument_row_ids(self, members: Iterable[InstrumentId]) -> dict[int, InstrumentId]:
-        """Surrogate keys for an evaluated membership, refusing any Instrument not stored."""
-        found: dict[int, InstrumentId] = {}
+    def _survivor_row_ids(self, members: Iterable[InstrumentId]) -> dict[InstrumentId, int]:
+        """An evaluated membership folded to survivors, each with its surrogate key.
+
+        Refuses any member not stored, and any survivor not stored, since a new interval can
+        only be opened on a row.
+        """
+        found: dict[InstrumentId, int] = {}
         for instrument_id in members:
-            found[self._require_instrument(instrument_id).instrument_row_id] = instrument_id
+            self._require_instrument(instrument_id)
+            survivor = self._survivor_id(InstrumentId(instrument_id))
+            found[survivor] = self._require_instrument(survivor).instrument_row_id
         return found
 
     @staticmethod
@@ -1504,32 +1582,51 @@ class Store:
 
         `source` bypasses the preference and reads that one source's bars, which is how a
         disagreement between vendors is inspected.
+
+        Supersession is folded (ADR-0004). The Instrument is chased to its survivor, whose Price
+        Sources decide, and bars stored under anything superseded into it are candidates too;
+        every bar returned carries the survivor's id. Source preference is applied first, so a
+        predecessor's bar from a preferred source beats the survivor's from a fallback one.
+        Where two of them hold a bar for one date from one source, the survivor's own wins,
+        then the earliest-minted predecessor's.
         """
-        row = self._require_instrument(instrument_id)
+        asked = self._require_instrument(instrument_id)
+        survivor = self._require_instrument(self._survivor_id(InstrumentId(asked.instrument_id)))
+        family = self._family(InstrumentId(survivor.instrument_id))
         preference = (
             (source,)
             if source is not None
-            else tuple(Source(s) for s in row.price_sources.split(","))
+            else tuple(Source(s) for s in survivor.price_sources.split(","))
         )
         rank = {s: i for i, s in enumerate(preference)}
+
+        def precedence(held: BarRow) -> tuple[int, bool, int]:
+            return (
+                rank[held.source],
+                held.instrument != survivor.instrument_row_id,
+                family[held.instrument][1],
+            )
+
         chosen: dict[date, BarRow] = {}
         for held in BarRow.select(
             self.conn,
-            instrument=row.instrument_row_id,
+            instrument=list(family),
             source=list(preference),
             gte__bar_date=start,
             lte__bar_date=end,
         ):
             current = chosen.get(held.bar_date)
-            if current is None or rank[held.source] < rank[current.source]:
+            if current is None or precedence(held) < precedence(current):
                 chosen[held.bar_date] = held
-        instrument = InstrumentId(row.instrument_id)
+        instrument = InstrumentId(survivor.instrument_id)
         return [self._bar_from(chosen[day], instrument) for day in sorted(chosen)]
 
     def member_bars(self, definition: str, when: date) -> dict[InstrumentId, Bar | None]:
         """The resolved bar on `when` for every member of a universe on that date.
 
-        Every member is a key, and one with no bar from any of its Price Sources maps to None,
+        Keys are survivors, as `members_at` returns them, and each bar is read through
+        `bars_for`, so bars stored under a superseded id count. Every member is a key, and one
+        with no bar from any of its Price Sources maps to None,
         so a gap in the aligned input is visible rather than silently narrowing the universe.
         A date before the universe's first entry raises `NotYetStarted`, as `members_at` does.
         """
