@@ -61,6 +61,14 @@ from cointoss.instrument import (
     TickerRecord,
     normalize_symbol,
 )
+from cointoss.prices import (
+    Bar,
+    CorporateAction,
+    CorporateActionKind,
+    Restatement,
+    detect_restatements,
+    is_provisional,
+)
 from cointoss.risk import (
     CovarianceSeries,
     DateOccupied,
@@ -104,6 +112,8 @@ __all__ = [
     "SCHEMA",
     "SCHEMA_VERSION",
     "TABLES",
+    "BarRow",
+    "CorporateActionRow",
     "CovarianceEntryRow",
     "EvaluationRunRow",
     "ExposureEntryRow",
@@ -113,6 +123,7 @@ __all__ = [
     "Migration",
     "MigrationGap",
     "Persistence",
+    "RestatementRow",
     "RiskModelRevisionRow",
     "RiskModelRow",
     "SchemaTooNew",
@@ -465,6 +476,70 @@ class EvaluationRunRow(DbModel["EvaluationRunRow"]):
         return "EvaluationRun"
 
 
+class BarRow(DbModel["BarRow"]):
+    """One session's prices for one Instrument, as one source last reported them.
+
+    Source is part of the natural key rather than a tiebreak (ADR-0009), so two vendors
+    disagreeing about a close each keep their row and the choice between them is made at read
+    time through the Instrument's Price Sources.
+    """
+
+    bar_id: int = Field(default=-1, description="(PK)")
+    instrument: int = Field(description="(FK:Instrument.instrument_row_id)(AK) Instrument priced")
+    source: Source = Field(description="(AK) Source that reported the bar")
+    bar_date: date = Field(description="(AK) Session date, in the venue's own calendar")
+    close: float = Field(description="Close, the only price every source supplies")
+    open: float | None = Field(default=None, description="Open, null for a close-only source")
+    high: float | None = Field(default=None, description="High, null for a close-only source")
+    low: float | None = Field(default=None, description="Low, null for a close-only source")
+    adj_close: float | None = Field(default=None, description="Dividend-adjusted close")
+    volume: float | None = Field(default=None, description="Traded volume")
+    fetched_at: datetime = Field(description="When the stored vintage was fetched")
+
+    @classmethod
+    @override
+    def get_table_name(cls) -> str:
+        return "Bar"
+
+
+class CorporateActionRow(DbModel["CorporateActionRow"]):
+    """One dividend or split, the only record of why a stored price history changed."""
+
+    corporate_action_id: int = Field(default=-1, description="(PK)")
+    instrument: int = Field(
+        description="(FK:Instrument.instrument_row_id)(AK) Instrument the action applies to"
+    )
+    source: Source = Field(description="(AK) Source that reported the action")
+    action_date: date = Field(description="(AK) First session at the new terms")
+    kind: CorporateActionKind = Field(description="(AK) Dividend or split")
+    value: float = Field(description="Amount per share for a dividend, ratio for a split")
+
+    @classmethod
+    @override
+    def get_table_name(cls) -> str:
+        return "CorporateAction"
+
+
+class RestatementRow(DbModel["RestatementRow"]):
+    """One field of a stored Bar a re-fetch changed with no Corporate Action to explain it."""
+
+    restatement_id: int = Field(default=-1, description="(PK)")
+    instrument: int = Field(
+        description="(FK:Instrument.instrument_row_id)(AK) Instrument whose bar changed"
+    )
+    source: Source = Field(description="(AK) Source whose bar changed")
+    bar_date: date = Field(description="(AK) Session date of the changed bar")
+    field: str = Field(description="(AK) Bar field that changed")
+    detected_at: datetime = Field(description="(AK) Fetch time of the vintage that changed it")
+    old: float | None = Field(default=None, description="Value before the re-fetch")
+    new: float | None = Field(default=None, description="Value after the re-fetch")
+
+    @classmethod
+    @override
+    def get_table_name(cls) -> str:
+        return "Restatement"
+
+
 # Every table in the database, with the classification that decides whether a schema change
 # must migrate it or may drop and backfill it. Later tickets add their tables here; this
 # mapping is both the schema and the ADR-0008 classification, so the two cannot drift.
@@ -483,6 +558,9 @@ TABLES: dict[type[DbModel[Any]], Persistence] = {
     RiskModelRow: Persistence.DURABLE,
     RiskModelRevisionRow: Persistence.DURABLE,
     CovarianceEntryRow: Persistence.DURABLE,
+    BarRow: Persistence.REBUILDABLE,
+    CorporateActionRow: Persistence.REBUILDABLE,
+    RestatementRow: Persistence.REBUILDABLE,
 }
 
 SCHEMA = Schema(list(TABLES))
@@ -537,6 +615,11 @@ class Migration(NamedTuple):
 # Ordered, and empty: there is no prior schema to migrate from. Append steps with strictly
 # increasing `to_version` as the schema changes, and raise `SCHEMA_VERSION` to match.
 MIGRATIONS: list[Migration] = []
+
+
+def _as_utc(moment: datetime) -> datetime:
+    """A naive time read as UTC, so naive and aware fetch times still compare."""
+    return moment.replace(tzinfo=UTC) if moment.tzinfo is None else moment
 
 
 class Store:
@@ -1359,6 +1442,216 @@ class Store:
                 source=parameters.source,
             ).save(self.conn)
         return model_id
+
+    # -- Bars, Corporate Actions and Restatements, ADR-0009 --
+
+    def upsert_bars(
+        self, bars: Iterable[Bar], actions: Iterable[CorporateAction] = ()
+    ) -> list[Restatement]:
+        """Write bars and the Corporate Actions fetched with them, returning what was restated.
+
+        Idempotent on `(instrument, source, bar_date)`: a bar already held is overwritten by the
+        incoming vintage rather than duplicated, so a backfill may overlap freely. Before a
+        stored bar is overwritten it is compared through `detect_restatements`, with every
+        action on file for that Instrument and source as the explanation, and each unexplained
+        change is written as a Restatement. `actions` are written first, so a split arriving in
+        the same fetch as the rescaled history explains it.
+
+        Two overwrites are not compared. A stored bar that `is_provisional` was fetched before
+        its session closed, so its replacement is the day finishing rather than history being
+        rewritten; filing it would put a false Restatement in the log on every daily run. An
+        incoming vintage older than the stored one is skipped, so replaying an old fetch cannot
+        roll the current vintage back.
+
+        Every Instrument must already be stored, or `UnknownInstrument` is raised and nothing
+        is written.
+        """
+        bars = list(bars)
+        actions = list(actions)
+        pks = {
+            instrument_id: self._require_instrument(instrument_id).instrument_row_id
+            for instrument_id in {b.instrument_id for b in bars}
+            | {a.instrument_id for a in actions}
+        }
+        explanations: dict[tuple[int, Source], list[CorporateAction]] = {}
+        written: list[Restatement] = []
+        try:
+            for action in actions:
+                self._save_corporate_action(pks[action.instrument_id], action)
+            for incoming in bars:
+                pk = pks[incoming.instrument_id]
+                held = BarRow.select(
+                    self.conn, instrument=pk, source=incoming.source, bar_date=incoming.bar_date
+                )
+                row = BarRow(instrument=pk, **self._bar_fields(incoming))
+                if held:
+                    stored = self._bar_from(held[0], incoming.instrument_id)
+                    if _as_utc(incoming.fetched_at) < _as_utc(stored.fetched_at):
+                        continue
+                    if not is_provisional(stored):
+                        key = (pk, incoming.source)
+                        if key not in explanations:
+                            explanations[key] = self._actions(pk, incoming)
+                        for change in detect_restatements(stored, incoming, explanations[key]):
+                            self._save_restatement(pk, change)
+                            written.append(change)
+                    row = held[0].model_copy(update=self._bar_fields(incoming))
+                row.save(self.conn)
+        except BaseException:
+            self.conn.rollback()
+            raise
+        self.conn.commit()
+        return written
+
+    def bars_for(
+        self,
+        instrument_id: InstrumentId | str,
+        start: date,
+        end: date,
+        *,
+        source: Source | None = None,
+    ) -> list[Bar]:
+        """The bars for one Instrument from `start` to `end` inclusive, one per date.
+
+        Each date is resolved separately through the Instrument's Price Sources: the first
+        source holding a bar for that date supplies it, so a coin Yahoo lists only from its
+        listing date still has its earlier history from CoinGecko. Each bar says which source
+        it came from. A bar from a source outside the Price Sources is kept but never chosen.
+
+        `source` bypasses the preference and reads that one source's bars, which is how a
+        disagreement between vendors is inspected.
+        """
+        row = self._require_instrument(instrument_id)
+        preference = (
+            (source,)
+            if source is not None
+            else tuple(Source(s) for s in row.price_sources.split(","))
+        )
+        rank = {s: i for i, s in enumerate(preference)}
+        chosen: dict[date, BarRow] = {}
+        for held in BarRow.select(
+            self.conn,
+            instrument=row.instrument_row_id,
+            source=list(preference),
+            gte__bar_date=start,
+            lte__bar_date=end,
+        ):
+            current = chosen.get(held.bar_date)
+            if current is None or rank[held.source] < rank[current.source]:
+                chosen[held.bar_date] = held
+        instrument = InstrumentId(row.instrument_id)
+        return [self._bar_from(chosen[day], instrument) for day in sorted(chosen)]
+
+    def member_bars(self, definition: str, when: date) -> dict[InstrumentId, Bar | None]:
+        """The resolved bar on `when` for every member of a universe on that date.
+
+        Every member is a key, and one with no bar from any of its Price Sources maps to None,
+        so a gap in the aligned input is visible rather than silently narrowing the universe.
+        A date before the universe's first entry raises `NotYetStarted`, as `members_at` does.
+        """
+        held: dict[InstrumentId, Bar | None] = {}
+        for member in self.members_at(definition, when):
+            instrument_id = InstrumentId(member)
+            bars = self.bars_for(instrument_id, when, when)
+            held[instrument_id] = bars[0] if bars else None
+        return held
+
+    def corporate_actions_for(
+        self, instrument_id: InstrumentId | str, start: date, end: date
+    ) -> list[CorporateAction]:
+        """Every source's Corporate Actions for one Instrument, `start` to `end` inclusive."""
+        row = self._require_instrument(instrument_id)
+        held = CorporateActionRow.select(
+            self.conn,
+            instrument=row.instrument_row_id,
+            gte__action_date=start,
+            lte__action_date=end,
+        )
+        instrument = InstrumentId(row.instrument_id)
+        return [
+            self._action_from(r, instrument)
+            for r in sorted(held, key=lambda r: (r.action_date, r.kind, r.source))
+        ]
+
+    def restatements_for(self, instrument_id: InstrumentId | str) -> list[Restatement]:
+        """Every Restatement filed against one Instrument, in the order they were detected."""
+        row = self._require_instrument(instrument_id)
+        held = RestatementRow.select(self.conn, instrument=row.instrument_row_id)
+        return [
+            Restatement(
+                instrument_id=InstrumentId(row.instrument_id),
+                source=r.source,
+                bar_date=r.bar_date,
+                field=r.field,
+                old=r.old,
+                new=r.new,
+                detected_at=r.detected_at,
+            )
+            for r in sorted(held, key=lambda r: r.restatement_id)
+        ]
+
+    def _require_instrument(self, instrument_id: InstrumentId | str) -> InstrumentRow:
+        row = self._instrument_row(instrument_id)
+        if row is None:
+            raise UnknownInstrument(f"{instrument_id} is not stored")
+        return row
+
+    def _actions(self, pk: int, bar: Bar) -> list[CorporateAction]:
+        """The actions on file that can explain a change to `bar`: same Instrument and source."""
+        return [
+            self._action_from(r, bar.instrument_id)
+            for r in CorporateActionRow.select(self.conn, instrument=pk, source=bar.source)
+        ]
+
+    def _save_corporate_action(self, pk: int, action: CorporateAction) -> None:
+        """Insert or update one action by its natural key. Does not commit."""
+        held = CorporateActionRow.select(
+            self.conn,
+            instrument=pk,
+            source=action.source,
+            action_date=action.action_date,
+            kind=action.kind,
+        )
+        if held:
+            row = held[0].model_copy(update={"value": action.value})
+        else:
+            row = CorporateActionRow(
+                instrument=pk,
+                source=action.source,
+                action_date=action.action_date,
+                kind=action.kind,
+                value=action.value,
+            )
+        row.save(self.conn)
+
+    def _save_restatement(self, pk: int, change: Restatement) -> None:
+        RestatementRow(
+            instrument=pk,
+            source=change.source,
+            bar_date=change.bar_date,
+            field=change.field,
+            detected_at=change.detected_at,
+            old=change.old,
+            new=change.new,
+        ).save(self.conn)
+
+    @staticmethod
+    def _bar_fields(bar: Bar) -> dict[str, Any]:
+        return bar.model_dump(exclude={"instrument_id"})
+
+    @staticmethod
+    def _bar_from(row: BarRow, instrument_id: InstrumentId) -> Bar:
+        return Bar(instrument_id=instrument_id, **row.model_dump(exclude={"bar_id", "instrument"}))
+
+    @staticmethod
+    def _action_from(row: CorporateActionRow, instrument_id: InstrumentId) -> CorporateAction:
+        return CorporateAction(
+            instrument_id=instrument_id,
+            source=row.source,
+            action_date=row.action_date,
+            kind=row.kind,
+            value=row.value,
+        )
 
     def close(self) -> None:
         self.conn.close()

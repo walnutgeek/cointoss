@@ -110,6 +110,10 @@ _Avoid_: weight semantics, units, scale
 One Instrument's open, high, low, close and volume for one session date from one source. Stored as fetched; two sources disagreeing about a date each keep their own Bar.
 _Avoid_: candle, quote, price point, tick
 
+**Provisional Bar**:
+A Bar fetched on or before its own session date, judged on the UTC calendar, so possibly describing a day still in progress. Its replacement by a later fetch is the day finishing, not a Restatement.
+_Avoid_: partial bar, live bar, intraday bar
+
 **Corporate Action**:
 A dividend or split recorded against an Instrument on a date. The only record of why a stored price history changed.
 _Avoid_: event, adjustment, split factor

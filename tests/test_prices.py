@@ -14,9 +14,10 @@ from datetime import date, datetime
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from cointoss import FrameData
-from cointoss.instrument import InstrumentId
+from cointoss.instrument import InstrumentId, Source
 from cointoss.prices import (
     Bar,
     BarKeyMismatch,
@@ -54,7 +55,7 @@ def market_chart() -> MarketChart:
 def split(value: float = 10.0, when: date = SPLIT_DATE) -> CorporateAction:
     return CorporateAction(
         instrument_id=NVDA,
-        source="yahoo",
+        source=Source.YAHOO,
         action_date=when,
         kind=CorporateActionKind.SPLIT,
         value=value,
@@ -88,7 +89,7 @@ def test_one_frame_yields_bars_and_actions():
         date(2024, 6, 11),
         date(2024, 6, 12),
     ]
-    assert {b.source for b in bars} == {"yahoo"}
+    assert {b.source for b in bars} == {Source.YAHOO}
     assert {b.fetched_at for b in bars} == {FETCHED}
     assert {b.instrument_id for b in bars} == {NVDA}
 
@@ -118,7 +119,7 @@ def test_close_only_bar_is_representable():
     """A close and a volume are enough; the candle fields stay null rather than invented."""
     bar = Bar(
         instrument_id=InstrumentId("crypto.eth.usdc"),
-        source="coingecko",
+        source=Source.COINGECKO,
         bar_date=date(2024, 6, 5),
         close=1.0004,
         volume=8.2e8,
@@ -153,9 +154,21 @@ def test_negative_price_is_refused():
     with pytest.raises(MalformedValue, match="negative"):
         Bar(
             instrument_id=NVDA,
-            source="yahoo",
+            source=Source.YAHOO,
             bar_date=date(2024, 6, 5),
             close=-1.0,
+            fetched_at=FETCHED,
+        )
+
+
+def test_a_source_outside_the_vocabulary_is_refused():
+    """`source` is the closed `Source` vocabulary, so a misspelt vendor cannot key a bar."""
+    with pytest.raises(ValidationError, match="source"):
+        Bar(
+            instrument_id=NVDA,
+            source="cg",  # pyright: ignore[reportArgumentType]
+            bar_date=date(2024, 6, 5),
+            close=1.0,
             fetched_at=FETCHED,
         )
 
@@ -203,7 +216,7 @@ def test_unexplained_change_is_detected():
     assert [r.field for r in detected] == ["close"]
     only = detected[0]
     assert only.instrument_id == NVDA
-    assert only.source == "yahoo"
+    assert only.source is Source.YAHOO
     assert only.bar_date == first.bar_date
     assert only.old == pytest.approx(stored.close)
     assert only.new == pytest.approx(incoming.close)
@@ -240,14 +253,14 @@ def test_tolerance_is_relative_not_absolute():
     """A cheap coin and an expensive share are held to the same proportional standard."""
     cheap = Bar(
         instrument_id=InstrumentId("crypto.eth.shib"),
-        source="coingecko",
+        source=Source.COINGECKO,
         bar_date=date(2024, 6, 5),
         close=0.00002,
         fetched_at=FETCHED,
     )
     expensive = Bar(
         instrument_id=InstrumentId("stock.us.brk_a"),
-        source="yahoo",
+        source=Source.YAHOO,
         bar_date=date(2024, 6, 5),
         close=620000.0,
         fetched_at=FETCHED,
@@ -320,7 +333,7 @@ def test_market_chart_yields_close_only_bars():
     """CoinGecko carries a close and a volume; the candle fields stay null, not mirrored."""
     bars = bars_from_market_chart(BTC, market_chart(), FETCHED)
 
-    assert {b.source for b in bars} == {"coingecko"}
+    assert {b.source for b in bars} == {Source.COINGECKO}
     assert {b.instrument_id for b in bars} == {BTC}
     assert {b.fetched_at for b in bars} == {FETCHED}
     for bar in bars:

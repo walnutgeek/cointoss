@@ -33,7 +33,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 from pydantic import BaseModel, ConfigDict, model_validator
 
 from cointoss import FrameData
-from cointoss.instrument import InstrumentId
+from cointoss.instrument import InstrumentId, Source
 
 if TYPE_CHECKING:
     # Type-only so the pure mapping module does not drag in the HTTP stack the adapter needs.
@@ -53,6 +53,7 @@ __all__ = [
     "bars_from_market_chart",
     "bars_from_yahoo",
     "detect_restatements",
+    "is_provisional",
     "split_factor_after",
 ]
 
@@ -119,7 +120,7 @@ class Bar(BaseModel):
 
     >>> b = Bar(
     ...     instrument_id=InstrumentId("crypto.eth.usdc"),
-    ...     source="coingecko",
+    ...     source=Source.COINGECKO,
     ...     bar_date=date(2024, 6, 5),
     ...     close=1.0004,
     ...     volume=8.2e8,
@@ -128,13 +129,13 @@ class Bar(BaseModel):
     >>> b.open is None and b.adj_close is None
     True
     >>> b.key
-    (InstrumentId('crypto.eth.usdc'), 'coingecko', datetime.date(2024, 6, 5))
+    (InstrumentId('crypto.eth.usdc'), <Source.COINGECKO: 'coingecko'>, datetime.date(2024, 6, 5))
     """
 
     model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True)
 
     instrument_id: InstrumentId
-    source: str
+    source: Source
     bar_date: date
     open: float | None = None
     high: float | None = None
@@ -157,7 +158,7 @@ class Bar(BaseModel):
         return self
 
     @property
-    def key(self) -> tuple[InstrumentId, str, date]:
+    def key(self) -> tuple[InstrumentId, Source, date]:
         """What identifies the bar. Two sources on one date are two bars, not a conflict."""
         return (self.instrument_id, self.source, self.bar_date)
 
@@ -171,7 +172,7 @@ class CorporateAction(BaseModel):
 
     >>> CorporateAction(
     ...     instrument_id=InstrumentId("stock.us.nvda"),
-    ...     source="yahoo",
+    ...     source=Source.YAHOO,
     ...     action_date=date(2024, 6, 10),
     ...     kind=CorporateActionKind.SPLIT,
     ...     value=10.0,
@@ -182,7 +183,7 @@ class CorporateAction(BaseModel):
     model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True)
 
     instrument_id: InstrumentId
-    source: str
+    source: Source
     action_date: date
     kind: CorporateActionKind
     value: float
@@ -207,7 +208,7 @@ class Restatement(BaseModel):
     model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True)
 
     instrument_id: InstrumentId
-    source: str
+    source: Source
     bar_date: date
     field: str
     old: float | None
@@ -291,7 +292,7 @@ def bars_from_yahoo(
         bars.append(
             Bar(
                 instrument_id=instrument_id,
-                source="yahoo",
+                source=Source.YAHOO,
                 bar_date=bar_date,
                 close=close,
                 volume=_as_float(row[volume_at]) if volume_at is not None else None,
@@ -308,13 +309,43 @@ def bars_from_yahoo(
             actions.append(
                 CorporateAction(
                     instrument_id=instrument_id,
-                    source="yahoo",
+                    source=Source.YAHOO,
                     action_date=bar_date,
                     kind=kind,
                     value=value,
                 )
             )
     return bars, actions
+
+
+def is_provisional(bar: Bar) -> bool:
+    """Whether the bar was fetched before its session could be known to have closed.
+
+    A bar fetched on or before its own session date may describe a day still in progress:
+    CoinGecko's `market_chart` appends a trailing point at the current time, and Yahoo serves
+    the running session intraday. Its values are expected to move once the day finishes, so a
+    later re-fetch replacing it is the day completing, not a Restatement.
+
+    Judged on the UTC calendar, because no session time is stored (ADR-0009). That is exact for
+    a crypto bar, whose session is the UTC day, and conservative for a listed venue, whose
+    session for a date closes before that date ends in UTC: a bar fetched after the close but
+    before UTC midnight is called provisional although it is final. The cost of that error is
+    one re-fetch left unchecked; the opposite error files ordinary progress as a Restatement.
+    A naive `fetched_at` is read as UTC.
+
+    >>> bar = Bar(
+    ...     instrument_id=InstrumentId("crypto.native.btc"), source=Source.COINGECKO,
+    ...     bar_date=date(2026, 9, 29), close=84011.8, fetched_at=datetime(2026, 9, 29, 8, 0),
+    ... )
+    >>> is_provisional(bar)
+    True
+    >>> is_provisional(bar.model_copy(update={"fetched_at": datetime(2026, 9, 30, 0, 5)}))
+    False
+    """
+    fetched_at = bar.fetched_at
+    if fetched_at.tzinfo is not None:
+        fetched_at = fetched_at.astimezone(UTC)
+    return fetched_at.date() <= bar.bar_date
 
 
 def split_factor_after(actions: Sequence[CorporateAction], when: date) -> float:
@@ -361,11 +392,11 @@ def detect_restatements(
     >>> aapl = InstrumentId("stock.us.aapl")
     >>> when = datetime(2024, 7, 1, 0, 0)
     >>> stored = Bar(
-    ...     instrument_id=aapl, source="yahoo", bar_date=date(2024, 6, 3),
+    ...     instrument_id=aapl, source=Source.YAHOO, bar_date=date(2024, 6, 3),
     ...     close=100.0, volume=1000.0, fetched_at=datetime(2024, 6, 4, 0, 0),
     ... )
     >>> split = CorporateAction(
-    ...     instrument_id=aapl, source="yahoo", action_date=date(2024, 6, 10),
+    ...     instrument_id=aapl, source=Source.YAHOO, action_date=date(2024, 6, 10),
     ...     kind=CorporateActionKind.SPLIT, value=10.0,
     ... )
     >>> rescaled = stored.model_copy(update={"close": 10.0, "volume": 10000.0, "fetched_at": when})
@@ -431,7 +462,7 @@ def bars_from_market_chart(
     return [
         Bar(
             instrument_id=instrument_id,
-            source="coingecko",
+            source=Source.COINGECKO,
             bar_date=bar_date,
             close=close,
             volume=volume_by_day.get(bar_date),
