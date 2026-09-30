@@ -8,7 +8,7 @@ an overlapping re-fetch leaves no duplicate.
 
 The re-fetch tests replay what a daily CoinGecko job actually sees: the fetch on one day ends
 with a point at the current time, and the next day's fetch has dropped it. A CoinGecko bar is
-the day's 00:00 point (#18), so the trailing point never reaches a bar and the re-fetch
+the day's 00:00 point, so the trailing point never reaches a bar and the re-fetch
 restates nothing. A Yahoo bar fetched during its own session is provisional instead, and its
 replacement is the day finishing, not a Restatement.
 """

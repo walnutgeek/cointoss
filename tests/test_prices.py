@@ -357,7 +357,7 @@ def test_adjusted_close_is_null_not_a_copy_of_close():
 def test_one_bar_per_utc_day_with_the_first_point_winning():
     """The recorded tail ends with both a 00:00 point and a partial-day one for the same date.
 
-    The 00:00 point is the date's bar (#18), so the later point is ignored.
+    The 00:00 point is the date's bar, so the later point is ignored.
     """
     payload = market_chart()
     bars = bars_from_market_chart(BTC, payload, FETCHED)
