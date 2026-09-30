@@ -1011,6 +1011,10 @@ class Store:
             ),
         )
 
+    def universe_names(self) -> list[str]:
+        """The names of every stored Universe Definition, sorted, declared in config or not."""
+        return sorted(row.name for row in UniverseDefinitionRow.select(self.conn))
+
     def load_universe_members(self, name: str) -> list[UniverseMemberRecord]:
         """Every member record ever added to a Definition, removed ones included."""
         definition_id = self._universe_definition_id(name)

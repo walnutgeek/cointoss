@@ -26,22 +26,21 @@ price history all persist, and every read folds supersession.
 | `cointoss.prices` | `Bar`, `CorporateAction`, `Restatement`, source mapping, split-aware restatement detection. ADR-0009. |
 | `cointoss.store` | The only module that touches SQL. Sixteen tables, enforced pragmas, `SchemaVersion`. Membership by date or Instrument, bars resolved through Price Sources. ADR-0008. |
 | `cointoss.ingest` | Pinning a typed ticker: the mandatory FIGI attempt, resolve or mint, retrying an unresolved Instrument. ADR-0004. The daily market sweep (#19): CoinGecko `markets` to Instruments, membership and snapshot bars. |
+| `cointoss.config` | Universe Definitions declared in config and reconciled into the store (#20). `Settings`: the data directory (`--data-dir`, `COINTOSS_HOME`, `~/.local/share/cointoss`), its `cointoss.db` and optional `cointoss.yaml` (#21). |
+| `cointoss.app` | The `CointossApp` namespace fragment (#21): a `sweep` node on a daily cron trigger, idempotent within a UTC day, and read nodes `members`, `changes`, `bars`, `universes_of`, `runs`, `universes` served over woodglue JSON-RPC. |
 
 ### Not built
 
 Everything that makes it a system rather than a library:
 
-- **No scheduled sweep.** `cointoss.ingest.sweep` turns a CoinGecko `markets` listing into
-  Instruments, membership and bars (#19), but nothing runs it on a schedule yet (#21), and
-  nothing runs the retry queue.
+- **No retry runner.** The daily sweep is a scheduled node (#21), but nothing runs the
+  unresolved retry queue.
 - **No returns.** Nothing turns prices into returns, so no covariance can be computed; the only
   way one enters the system today is a vendor import.
-- **No universe accumulation on a schedule.** `record_membership` stores an evaluation, and
-  nothing calls it unattended.
 - **No portfolio.** ADR-0001's `Portfolio`, `Trade`, `Position` and `PortfolioSnapshot` are
   designed and unimplemented.
-- **No running instance.** `cointoss.cli:main` prints `TBD`. There is no `lyth.yaml`, no
-  scheduled work, and woodglue is a declared dependency that nothing imports.
+- **No running instance.** `cointoss.cli:main` prints `TBD`. The namespace woodglue would mount
+  exists (#21), but nothing writes a `woodglue.yaml` or starts it (#22).
 
 ## Direction
 

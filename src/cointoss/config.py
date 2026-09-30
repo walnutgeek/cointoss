@@ -17,30 +17,45 @@ A spec names no source. Every declared universe is a CoinGecko rank band while t
 crypto-only, and the Definition itself stores no source (ADR-0007's recipe has none), so a
 source here would be a field nothing reads. Unknown fields are refused, so a config that does
 name one fails loudly rather than being silently ignored.
+
+`Settings` is where a running instance finds all of this (#21, #22). An instance lives in one data
+directory, named by `--data-dir`, else `COINTOSS_HOME`, else `~/.local/share/cointoss`; it holds
+`cointoss.db` and an optional `cointoss.yaml` declaring the universes and how wide a listing each
+sweep fetches. A missing file means the defaults. The file is validated when loaded, so a config
+that could not sweep is refused at startup rather than at the next scheduled run.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 from collections import Counter
 from collections.abc import Iterable
 from datetime import date
 from enum import StrEnum
-from typing import ClassVar
+from pathlib import Path
+from typing import Any, ClassVar
 
+import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from cointoss.ingest import DEFAULT_TOP_N
 from cointoss.store import Store
 from cointoss.universe import UniverseDefinition, UniverseParameters
 
 __all__ = [
+    "CONFIG_FILENAME",
+    "DB_FILENAME",
     "DEFAULT_UNIVERSES",
+    "HOME_ENV",
     "ConfigError",
     "DuplicateUniverse",
     "Reconciliation",
+    "Settings",
     "UniverseReconciled",
     "UniverseSpec",
     "ensure_universes",
+    "resolve_data_dir",
 ]
 
 log = logging.getLogger(__name__)
@@ -82,6 +97,60 @@ class UniverseSpec(BaseModel):
 DEFAULT_UNIVERSES: tuple[UniverseSpec, ...] = (
     UniverseSpec(name="cg-top-100", enter_rank=100, exit_rank=120),
 )
+
+
+HOME_ENV = "COINTOSS_HOME"
+CONFIG_FILENAME = "cointoss.yaml"
+DB_FILENAME = "cointoss.db"
+
+
+def resolve_data_dir(data_dir: Path | None = None) -> Path:
+    """The instance's data directory: the one given, else `$COINTOSS_HOME`, else the XDG default."""
+    if data_dir is not None:
+        return data_dir
+    home = os.environ.get(HOME_ENV)
+    if home:
+        return Path(home)
+    return Path.home() / ".local" / "share" / "cointoss"
+
+
+class Settings(BaseModel):
+    """What a running instance needs to know: where its store is, and what to sweep.
+
+    `universes` are the declared Definitions, reconciled and evaluated by every sweep; `top_n` is
+    how many coins the sweep lists, and must reach every declared exit rank.
+    """
+
+    model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
+
+    data_dir: Path
+    universes: tuple[UniverseSpec, ...] = DEFAULT_UNIVERSES
+    top_n: int = Field(default=DEFAULT_TOP_N, gt=0)
+
+    @model_validator(mode="after")
+    def _validate(self) -> Settings:
+        names = Counter(s.name for s in self.universes)
+        duplicated = sorted(name for name, n in names.items() if n > 1)
+        if duplicated:
+            raise ValueError(f"declared more than once: {', '.join(duplicated)}")
+        widest = max((s.exit_rank for s in self.universes), default=0)
+        if self.top_n < widest:
+            raise ValueError(f"top_n {self.top_n} is narrower than exit rank {widest}")
+        return self
+
+    @property
+    def db_path(self) -> Path:
+        return self.data_dir / DB_FILENAME
+
+    @classmethod
+    def load(cls, data_dir: Path | None = None) -> Settings:
+        """The settings of the instance in `data_dir`, resolved by `resolve_data_dir`."""
+        home = resolve_data_dir(data_dir)
+        config = home / CONFIG_FILENAME
+        declared: dict[str, Any] = {}
+        if config.exists():
+            declared = yaml.safe_load(config.read_text()) or {}
+        return cls.model_validate({**declared, "data_dir": home})
 
 
 class Reconciliation(StrEnum):

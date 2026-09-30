@@ -20,14 +20,18 @@ import pytest
 from pydantic import ValidationError
 
 from cointoss.config import (
+    CONFIG_FILENAME,
     DEFAULT_UNIVERSES,
+    HOME_ENV,
     DuplicateUniverse,
     Reconciliation,
+    Settings,
     UniverseReconciled,
     UniverseSpec,
     ensure_universes,
+    resolve_data_dir,
 )
-from cointoss.ingest import pin_member
+from cointoss.ingest import DEFAULT_TOP_N, pin_member
 from cointoss.instrument import InstrumentId, Source
 from cointoss.sources.openfigi import API_KEY_ENV
 from cointoss.store import Store
@@ -202,3 +206,48 @@ def test_a_name_declared_twice_is_refused_before_anything_is_written(store: Stor
     with pytest.raises(DuplicateUniverse, match="cg-top-10"):
         ensure_universes(store, specs, DAY1)
     assert store.load_universe("cg-top-10") is None
+
+
+# -- Settings from the data directory, issue #21 --
+
+
+def test_settings_default_when_the_data_directory_has_no_config(tmp_path: Path):
+    settings = Settings.load(tmp_path)
+    assert settings.data_dir == tmp_path
+    assert settings.db_path == tmp_path / "cointoss.db"
+    assert settings.universes == DEFAULT_UNIVERSES
+    assert settings.top_n == DEFAULT_TOP_N
+
+
+def test_settings_read_the_config_file_in_the_data_directory(tmp_path: Path):
+    (tmp_path / CONFIG_FILENAME).write_text(
+        "top_n: 50\nuniverses:\n  - {name: cg-top-10, enter_rank: 10, exit_rank: 12}\n"
+    )
+    settings = Settings.load(tmp_path)
+    assert settings.top_n == 50
+    assert settings.universes == (UniverseSpec(name="cg-top-10", enter_rank=10, exit_rank=12),)
+
+
+def test_the_data_directory_comes_from_the_environment_when_not_given(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setenv(HOME_ENV, str(tmp_path))
+    assert resolve_data_dir() == tmp_path
+    assert resolve_data_dir(tmp_path / "other") == tmp_path / "other"
+    monkeypatch.delenv(HOME_ENV)
+    assert resolve_data_dir() == Path.home() / ".local" / "share" / "cointoss"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "top_n: 100\nuniverses:\n  - {name: cg-top-100, enter_rank: 100, exit_rank: 120}\n",
+        "universes:\n  - {name: a, enter_rank: 1, exit_rank: 2}\n"
+        "  - {name: a, enter_rank: 1, exit_rank: 3}\n",
+        "source: coingecko\n",
+    ],
+)
+def test_a_config_that_could_not_sweep_is_refused_when_loaded(tmp_path: Path, text: str):
+    (tmp_path / CONFIG_FILENAME).write_text(text)
+    with pytest.raises(ValidationError):
+        Settings.load(tmp_path)
