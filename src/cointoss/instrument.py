@@ -610,9 +610,9 @@ def _conflict(left: Iterable[ExternalReference], right: Iterable[ExternalReferen
 class InstrumentRegistry:
     """The identity seam over an in-memory collection of Instruments.
 
-    Write side: `observe`. Read side: `resolve_symbol`, `survivor`, `unresolved`. Storage is out
-    of scope; the collection is passed in and handed back, and no ordering beyond mint order --
-    which the registry tracks itself -- is assumed.
+    Write side: `observe`, and `anchor` for a retry. Read side: `resolve_symbol`, `survivor`,
+    `unresolved`. Storage is out of scope; the collection is passed in and handed back, and no
+    ordering beyond mint order -- which the registry tracks itself -- is assumed.
     """
 
     def __init__(self, instruments: list[Instrument] | None = None) -> None:
@@ -710,6 +710,47 @@ class InstrumentRegistry:
             symbol_match.absorb(obs)
             return IdentityResult(Outcome.MATCHED, symbol_match)
         return IdentityResult(Outcome.MINTED, self._mint(obs, scope))
+
+    def anchor(self, instrument_id: InstrumentId | str, obs: Observation) -> IdentityResult:
+        """Attach a FIGI answer to a named Instrument: the retry of ADR-0004's unresolved flow.
+
+        `observe` cannot do this, because its symbol tier only joins two unresolved parties and a
+        FIGI answer is resolved, so it would mint a second Instrument beside the one waiting for
+        that answer. Here the caller names the target instead, and the evidence is checked
+        against it: the target must be surviving, of the Observation's type and scope, not
+        already anchored on another FIGI, and not disagreeing on any other External Reference;
+        and no other Instrument may already hold one of the Observation's References, since
+        that is a merge question for review rather than a retry. Contrary evidence is flagged and
+        nothing is changed.
+
+        On success the Observation is absorbed like any match: References are added, the FIGI
+        Resolution becomes `RESOLVED`, and its symbol is recorded as Ticker History under the
+        usual forward-only rule, so a retry under a later ticker records the rename.
+        """
+        if not obs.is_resolved:
+            raise ValueError("anchoring needs a FIGI-resolved Observation")
+        obs = replace(obs, symbol=normalize_symbol(obs.symbol))
+        target = self.get(instrument_id)
+        review = self._anchor_review(target, obs)
+        if review is not None:
+            return IdentityResult(Outcome.FLAGGED, review=review)
+        target.absorb(obs)
+        return IdentityResult(Outcome.MATCHED, target)
+
+    def _anchor_review(self, target: Instrument, obs: Observation) -> str | None:
+        """Why `obs` may not be anchored on `target`, or None when nothing contradicts it."""
+        if target.superseded_by is not None:
+            return f"{target.id} is superseded by {target.superseded_by}"
+        if target.type is not obs.type or target.scope != Scope(obs.type, obs.scope):
+            return f"{target.id} is not a {obs.type} in {obs.scope}"
+        if _conflict(obs.references, target.references):
+            return f"observation disagrees with {target.id} on an External Reference"
+        others = sorted(
+            {self.survivor(i.id).id for i in self._match_by_reference(obs)} - {target.id}
+        )
+        if others:
+            return f"a reference of {obs.symbol} is already held by {others}, not {target.id}"
+        return None
 
     # -- Matching --
 

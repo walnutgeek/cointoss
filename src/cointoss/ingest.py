@@ -13,8 +13,11 @@ adapters must not.
 
 The resolution policy, in order, following ADR-0004:
 
-- A FIGI hit is put through the registry, which matches by External Reference or mints. The
-  result is persisted and the member pinned to it.
+- A FIGI hit for a symbol that exactly one unresolved Instrument held, at that source on that
+  date, is that Instrument's retry: the references are attached to it through
+  `InstrumentRegistry.anchor` rather than minting a numbered second one.
+- Any other FIGI hit is put through the registry, which matches by External Reference or mints.
+  The result is persisted and the member pinned to it.
 - A FIGI answer naming several distinct anchors is flagged for review. Picking one would guess,
   and minting from the symbol would ignore evidence that the ticker is contested.
 - Otherwise -- no match, an OpenFIGI outage, or a scope with no FIGI exchange to ask -- the
@@ -23,14 +26,10 @@ The resolution policy, in order, following ADR-0004:
 - Failing that the Observation goes through the registry's symbol-keyed last resort, which
   mints an Instrument flagged unresolved (or joins one already minted that way), and the member
   is pinned to it. An outage is recorded as `NOT_ATTEMPTED` and a miss as `NOT_FOUND`; both put
-  the Instrument in the registry's unresolved queue for a later retry.
+  the Instrument in the registry's unresolved queue, which `retry_resolution` works one
+  Instrument at a time.
 - Anything the registry flags for review, or a symbol two Instruments hold at once, leaves the
   member stored unresolved, and the edit still succeeds.
-
-Known gap: the registry's symbol tier joins only two unresolved parties, so a later FIGI hit on
-a ticker minted unresolved here does not reach that Instrument; it mints a second, numbered one.
-Closing it is the retry runner's job, which needs a registry operation that anchors an existing
-unresolved Instrument.
 """
 
 from __future__ import annotations
@@ -43,7 +42,9 @@ from cointoss.instrument import (
     ExternalReference,
     FigiResolution,
     IdentityResult,
+    Instrument,
     InstrumentId,
+    InstrumentRegistry,
     InstrumentType,
     Observation,
     Outcome,
@@ -63,6 +64,7 @@ __all__ = [
     "figi_job",
     "pin_member",
     "resolve_typed_symbol",
+    "retry_resolution",
 ]
 
 log = logging.getLogger(__name__)
@@ -97,7 +99,12 @@ def figi_job(source: Source, symbol: str, scope: str | None = None) -> MappingJo
     >>> figi_job(Source.YAHOO, "7203", scope="jp") is None
     True
     """
-    instrument_type = _SOURCE_TYPE[source]
+    return _figi_job_for(_SOURCE_TYPE[source], symbol, scope)
+
+
+def _figi_job_for(
+    instrument_type: InstrumentType, symbol: str, scope: str | None
+) -> MappingJob | None:
     ticker = normalize_symbol(symbol)
     if instrument_type is InstrumentType.CRYPTO:
         return MappingJob(idType="TICKER", idValue=ticker, marketSecDes="Curncy")
@@ -145,15 +152,72 @@ async def _figi_attempt(
     return FigiResolution.RESOLVED, refs
 
 
-def _observe(store: Store, obs: Observation) -> IdentityResult:
-    """Put an Observation through the registry and persist whatever it establishes."""
+def _identify(store: Store, obs: Observation) -> IdentityResult:
+    """Put an Observation through the registry and persist whatever it establishes.
+
+    A FIGI answer for a symbol an unresolved Instrument already held at that source on that
+    date is that Instrument's retry, so it is anchored there rather than minting a second one.
+    """
     registry = store.load_registry()
-    result = registry.observe(obs)
+    waiting = _waiting_holder(registry, obs) if obs.is_resolved else None
+    result = registry.anchor(waiting.id, obs) if waiting else registry.observe(obs)
+    _persist(store, registry, result)
+    return result
+
+
+def _waiting_holder(registry: InstrumentRegistry, obs: Observation) -> Instrument | None:
+    """The one unresolved Instrument whose Ticker History held the Observation's symbol."""
+    try:
+        held = registry.resolve_symbol(obs.source, obs.type, obs.symbol, obs.scope, obs.observed_at)
+    except AmbiguousSymbol:
+        # Symbol evidence is contested, so the FIGI answer alone decides.
+        return None
+    return held if held is not None and held.is_unresolved else None
+
+
+def _persist(store: Store, registry: InstrumentRegistry, result: IdentityResult) -> None:
     if result.instrument is not None:
         # Supersession rewrites the losers' `superseded_by`, so they are written too.
         store.save_instruments(
             [result.instrument, *(registry.get(loser) for loser in result.superseded)]
         )
+
+
+async def retry_resolution(
+    store: Store,
+    instrument_id: InstrumentId,
+    at: date,
+    *,
+    figi: OpenFigiClient | None = None,
+) -> IdentityResult | None:
+    """Retry the FIGI attempt for one stored Instrument, anchoring it on a hit.
+
+    The unit of work for the unresolved retry runner. The request is formed from the
+    Instrument's type, scope and display symbol, and a hit is attached through
+    `InstrumentRegistry.anchor`, which flags contrary evidence rather than acting on it. Returns
+    None when OpenFIGI still has no single answer to give -- a miss, an outage, or a scope with
+    no FIGI exchange -- and nothing is written. An unknown id raises `KeyError`.
+    """
+    registry = store.load_registry()
+    target = registry.get(instrument_id)
+    job = _figi_job_for(target.type, target.symbol, target.scope)
+    attempt = await _figi_attempt(figi or OpenFigiClient(), target.type, job)
+    if isinstance(attempt, IdentityResult):
+        return attempt
+    resolution, references = attempt
+    if resolution is not FigiResolution.RESOLVED:
+        return None
+    obs = Observation(
+        type=target.type,
+        symbol=target.symbol,
+        scope=target.scope,
+        observed_at=at,
+        source=target.identity_source,
+        references=references,
+        figi_resolution=resolution,
+    )
+    result = registry.anchor(target.id, obs)
+    _persist(store, registry, result)
     return result
 
 
@@ -197,7 +261,7 @@ async def resolve_typed_symbol(
             return None
         if held is not None:
             return held
-    result = _observe(store, obs)
+    result = _identify(store, obs)
     if result.instrument is None:
         log.warning("%s at %s flagged for review: %s", symbol, source, result.review)
         return None

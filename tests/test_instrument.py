@@ -588,3 +588,97 @@ def test_a_coingecko_coin_id_is_a_reference_and_never_ticker_history() -> None:
             reg.resolve_symbol(source, InstrumentType.CRYPTO, "usd-coin", "eth", date(2021, 1, 1))
             is None
         )
+
+
+def test_anchoring_resolves_an_unresolved_instrument_in_place() -> None:
+    """The retry of ADR-0004: a late FIGI answer lands on the Instrument minted without one."""
+    reg = InstrumentRegistry()
+    reg.observe(stock("FB", date(2012, 5, 18), resolution=FigiResolution.NOT_ATTEMPTED))
+
+    result = reg.anchor("stock.us.fb", stock("META", date(2022, 6, 9), figi=META_FIGI))
+    assert result.outcome is Outcome.MATCHED
+    assert result.instrument is not None
+    assert result.instrument.id == "stock.us.fb"
+    assert result.instrument.figi_resolution is FigiResolution.RESOLVED
+    assert ExternalReference.composite_figi(META_FIGI) in result.instrument.references
+    assert [i.id for i in reg.instruments()] == ["stock.us.fb"]
+    assert reg.unresolved() == []
+    # Ticker History follows the usual forward-only rule: the retry's symbol is a rename.
+    assert [(r.symbol, r.valid_to) for r in result.instrument.ticker_history] == [
+        ("FB", date(2022, 6, 9)),
+        ("META", None),
+    ]
+    # Once anchored, the FIGI reaches it like any other Instrument.
+    again = reg.observe(stock("META", date(2023, 1, 3), figi=META_FIGI))
+    assert again.instrument is not None and again.instrument.id == "stock.us.fb"
+
+
+def test_anchoring_the_same_figi_again_is_a_match() -> None:
+    reg = InstrumentRegistry()
+    reg.observe(stock("FB", date(2012, 5, 18)))
+    reg.anchor("stock.us.fb", stock("FB", date(2020, 1, 2), figi=META_FIGI))
+    again = reg.anchor("stock.us.fb", stock("FB", date(2020, 2, 3), figi=META_FIGI))
+    assert again.outcome is Outcome.MATCHED
+    assert again.instrument is not None and again.instrument.id == "stock.us.fb"
+
+
+@pytest.mark.parametrize(
+    "setup, target, retry",
+    [
+        pytest.param(
+            [stock("FB", date(2012, 5, 18)), stock("META", date(2022, 6, 9), figi=META_FIGI)],
+            "stock.us.fb",
+            stock("FB", date(2023, 1, 3), figi=META_FIGI),
+            id="figi-anchors-another-instrument",
+        ),
+        pytest.param(
+            [stock("FB", date(2012, 5, 18), figi=META_FIGI)],
+            "stock.us.fb",
+            stock("FB", date(2023, 1, 3), figi="BBG00PROSHARE1"),
+            id="target-resolved-to-another-figi",
+        ),
+        pytest.param(
+            [
+                stock("FB", date(2012, 5, 18), provider=("broker", "1")),
+                stock("FB", date(2013, 1, 2), figi=META_FIGI, provider=("broker", "1")),
+                stock("META", date(2014, 1, 2), provider=("gecko", "9")),
+                stock("META", date(2015, 1, 2), figi=META_FIGI, provider=("gecko", "9")),
+            ],
+            "stock.us.meta",
+            stock("META", date(2023, 1, 3), figi="BBG00OTHER01"),
+            id="target-superseded",
+        ),
+        pytest.param(
+            [stock("FB", date(2012, 5, 18), provider=("broker", "1"))],
+            "stock.us.fb",
+            stock("FB", date(2023, 1, 3), figi=META_FIGI, provider=("broker", "2")),
+            id="provider-id-disagrees",
+        ),
+        pytest.param(
+            [stock("SHOP", date(2015, 5, 21), scope="ca")],
+            "stock.ca.shop",
+            stock("SHOP", date(2023, 1, 3), figi="BBG00SHOP001"),
+            id="scope-differs",
+        ),
+    ],
+)
+def test_anchoring_against_contrary_evidence_is_flagged_and_not_acted_on(
+    setup: list[Observation], target: str, retry: Observation
+) -> None:
+    reg = InstrumentRegistry()
+    for obs in setup:
+        reg.observe(obs)
+    before = identity_state(reg)
+
+    result = reg.anchor(target, retry)
+    assert result.outcome is Outcome.FLAGGED
+    assert result.instrument is None
+    assert result.review is not None
+    assert identity_state(reg) == before
+
+
+def test_anchoring_requires_a_figi_answer() -> None:
+    reg = InstrumentRegistry()
+    reg.observe(stock("ZZZ", date(2020, 1, 1)))
+    with pytest.raises(ValueError, match="FIGI"):
+        reg.anchor("stock.us.zzz", stock("ZZZ", date(2020, 2, 1)))

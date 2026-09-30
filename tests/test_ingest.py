@@ -20,13 +20,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from tornado.httpclient import HTTPClientError
 
-from cointoss.ingest import pin_member
+from cointoss.ingest import pin_member, retry_resolution
 from cointoss.instrument import (
     ExternalReference,
     FigiResolution,
     InstrumentId,
     InstrumentType,
     Observation,
+    Outcome,
     Source,
     TickerRecord,
 )
@@ -189,11 +190,6 @@ async def test_a_second_miss_on_the_same_ticker_reaches_the_same_instrument(stor
     assert [i.id for i in store.load_instruments()] == [InstrumentId("stock.us.nosuch")]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="InstrumentRegistry's symbol tier skips a FIGI-resolved Observation, and ingest has "
-    "no retry operation, so a later hit mints a second Instrument beside the unresolved one",
-)
 async def test_a_later_figi_hit_reaches_the_instrument_minted_unresolved(store: Store):
     other = UniverseDefinition.create("other", UniverseParameters(), date(2024, 1, 1))
     store.save_universe(other)
@@ -201,6 +197,59 @@ async def test_a_later_figi_hit_reaches_the_instrument_minted_unresolved(store: 
     second = await pin(store, openfigi(hit(AAPL_FIGI)), "AAPL", date(2024, 4, 1), name="other")
     assert [i.id for i in store.load_instruments()] == [InstrumentId("stock.us.aapl")]
     assert second.instrument_id == first.instrument_id
+
+
+async def test_a_figi_hit_held_elsewhere_does_not_anchor_the_waiting_instrument(store: Store):
+    # AAPL was minted unresolved, but the FIGI OpenFIGI now answers is already another
+    # Instrument's: whether the two are one is a merge question, so nothing is anchored.
+    await pin(store, openfigi(NOT_FOUND), "AAPL", date(2024, 3, 1))
+    seed(store, stock("APPLE", date(2024, 3, 2), AAPL_FIGI))
+    other = UniverseDefinition.create("other", UniverseParameters(), date(2024, 1, 1))
+    store.save_universe(other)
+    record = await pin(store, openfigi(hit(AAPL_FIGI)), "AAPL", date(2024, 4, 1), name="other")
+    assert record.instrument_id is None
+    waiting = store.load_instrument("stock.us.aapl")
+    assert waiting is not None
+    assert waiting.figi_resolution is FigiResolution.NOT_FOUND
+    assert len(store.load_instruments()) == 2
+
+
+async def retry(store: Store, client: MagicMock, instrument_id: str, at: date):
+    with patch("cointoss.sources.openfigi.AsyncHTTPClient", return_value=client):
+        return await retry_resolution(store, InstrumentId(instrument_id), at)
+
+
+async def test_a_retry_with_a_figi_hit_resolves_the_instrument_in_place(store: Store):
+    failing = MagicMock()
+    failing.fetch = AsyncMock(side_effect=HTTPClientError(503, "Service Unavailable"))
+    record = await pin(store, failing, "BRK-B", date(2024, 3, 1))
+
+    client = openfigi(hit("BBG000DWG505", "BBG001S5N8V8"))
+    result = await retry(store, client, "stock.us.brk-b", date(2024, 3, 2))
+    assert sent_jobs(client)[0]["idValue"] == "BRK/B"
+    assert result is not None and result.outcome is Outcome.MATCHED
+    instrument = store.load_instrument("stock.us.brk-b")
+    assert instrument is not None
+    assert instrument.figi_resolution is FigiResolution.RESOLVED
+    assert ExternalReference.composite_figi("BBG000DWG505") in instrument.references
+    assert store.load_registry().unresolved() == []
+    assert store.load_universe_members("watchlist") == [record]
+
+
+async def test_a_retry_that_misses_again_changes_nothing(store: Store):
+    await pin(store, openfigi(NOT_FOUND), "NOSUCH", date(2024, 3, 1))
+    before = store.load_instruments()
+    assert await retry(store, openfigi(NOT_FOUND), "stock.us.nosuch", date(2024, 4, 1)) is None
+    assert store.load_instruments() == before
+
+
+async def test_a_retry_against_contrary_evidence_is_flagged(store: Store):
+    await pin(store, openfigi(NOT_FOUND), "AAPL", date(2024, 3, 1))
+    seed(store, stock("APPLE", date(2024, 3, 2), AAPL_FIGI))
+    before = store.load_instruments()
+    result = await retry(store, openfigi(hit(AAPL_FIGI)), "stock.us.aapl", date(2024, 4, 1))
+    assert result is not None and result.outcome is Outcome.FLAGGED
+    assert store.load_instruments() == before
 
 
 async def test_an_unresolved_sighting_the_registry_flags_pins_nothing(store: Store):
