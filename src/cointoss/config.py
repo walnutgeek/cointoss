@@ -2,7 +2,7 @@
 
 A Universe Definition is revision-logged (ADR-0007), so configuration cannot simply be the
 Definition: editing a YAML file would otherwise either rewrite history or be ignored. A
-`UniverseSpec` declares the rank band a Definition should have now, and `ensure_universes`
+`UniverseDeclaration` declares the rank band a Definition should have now, and `ensure_universes`
 brings the store up to it by the only move the log allows, appending a revision.
 
 What reconciliation owns is deliberately narrow: whether a Definition exists, and its rank band.
@@ -11,18 +11,19 @@ provenance that a config file has no way to express, and are never touched here.
 
 A Definition removed from the config is simply not reconciled. There is no "retired" flag: the
 stored Definition, its revisions and its members stay exactly as they were, and anything that
-decides which Definitions to evaluate reads the declared specs rather than the store.
+decides which Definitions to evaluate reads the declarations rather than the store.
 
-A spec names no source. Every declared universe is a CoinGecko rank band while the instance is
+A declaration names no source. Every declared universe is a CoinGecko rank band while the instance is
 crypto-only, and the Definition itself stores no source (ADR-0007's recipe has none), so a
 source here would be a field nothing reads. Unknown fields are refused, so a config that does
 name one fails loudly rather than being silently ignored.
 
-`Settings` is where a running instance finds all of this (#21, #22). An instance lives in one data
+`Settings` is where a running instance finds all of this. An instance lives in one data
 directory, named by `--data-dir`, else `COINTOSS_HOME`, else `~/.local/share/cointoss`; it holds
 `cointoss.db` and an optional `cointoss.yaml` declaring the universes and how wide a listing each
-sweep fetches. A missing file means the defaults. The file is validated when loaded, so a config
-that could not sweep is refused at startup rather than at the next scheduled run.
+sweep fetches, and the bar window: how long after 00:00 UTC a sweep may still record the day's
+bars. A missing file means the defaults. The file is validated when loaded, so a config that
+could not sweep is refused at startup rather than at the next scheduled run.
 """
 
 from __future__ import annotations
@@ -31,7 +32,7 @@ import logging
 import os
 from collections import Counter
 from collections.abc import Iterable
-from datetime import date
+from datetime import date, timedelta
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, ClassVar
@@ -39,7 +40,7 @@ from typing import Any, ClassVar
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from cointoss.ingest import DEFAULT_TOP_N
+from cointoss.ingest import DEFAULT_BAR_WINDOW, DEFAULT_TOP_N, check_listing_width
 from cointoss.store import Store
 from cointoss.universe import UniverseDefinition, UniverseParameters
 
@@ -53,7 +54,8 @@ __all__ = [
     "Reconciliation",
     "Settings",
     "UniverseReconciled",
-    "UniverseSpec",
+    "UniverseDeclaration",
+    "check_unique_names",
     "ensure_universes",
     "resolve_data_dir",
 ]
@@ -65,11 +67,22 @@ class ConfigError(Exception):
     """Base class for configuration errors."""
 
 
-class DuplicateUniverse(ConfigError):
-    """Two specs declare the same Universe Definition name."""
+class DuplicateUniverse(ConfigError, ValueError):
+    """Two declarations name the same Universe Definition.
+
+    A `ValueError` too, so pydantic reports it as a `ValidationError` when `Settings` loads.
+    """
 
 
-class UniverseSpec(BaseModel):
+def check_unique_names(declarations: Iterable[UniverseDeclaration]) -> None:
+    """Refuse a name declared twice, since which band would win would depend on list order."""
+    counts = Counter(d.name for d in declarations)
+    duplicated = sorted(name for name, n in counts.items() if n > 1)
+    if duplicated:
+        raise DuplicateUniverse(f"declared more than once: {', '.join(duplicated)}")
+
+
+class UniverseDeclaration(BaseModel):
     """A Universe Definition as declared in configuration: its name and its rank band.
 
     The band is checked by building the `UniverseParameters` it stands for, so a bad band is
@@ -84,7 +97,7 @@ class UniverseSpec(BaseModel):
     exit_rank: int
 
     @model_validator(mode="after")
-    def _validate(self) -> UniverseSpec:
+    def _validate(self) -> UniverseDeclaration:
         _ = self.parameters
         return self
 
@@ -94,8 +107,8 @@ class UniverseSpec(BaseModel):
         return UniverseParameters(enter_rank=self.enter_rank, exit_rank=self.exit_rank)
 
 
-DEFAULT_UNIVERSES: tuple[UniverseSpec, ...] = (
-    UniverseSpec(name="cg-top-100", enter_rank=100, exit_rank=120),
+DEFAULT_UNIVERSES: tuple[UniverseDeclaration, ...] = (
+    UniverseDeclaration(name="cg-top-100", enter_rank=100, exit_rank=120),
 )
 
 
@@ -118,25 +131,27 @@ class Settings(BaseModel):
     """What a running instance needs to know: where its store is, and what to sweep.
 
     `universes` are the declared Definitions, reconciled and evaluated by every sweep; `top_n` is
-    how many coins the sweep lists, and must reach every declared exit rank.
+    how many coins the sweep lists, and must reach every declared exit rank. `bar_window_hours`
+    is how long after 00:00 UTC a sweep still writes the day's bars; a later sweep records
+    membership only, since its price is no longer the day's 00:00 price.
     """
 
     model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
 
     data_dir: Path
-    universes: tuple[UniverseSpec, ...] = DEFAULT_UNIVERSES
+    universes: tuple[UniverseDeclaration, ...] = DEFAULT_UNIVERSES
     top_n: int = Field(default=DEFAULT_TOP_N, gt=0)
+    bar_window_hours: float = Field(default=DEFAULT_BAR_WINDOW.total_seconds() / 3600, gt=0, le=24)
 
     @model_validator(mode="after")
     def _validate(self) -> Settings:
-        names = Counter(s.name for s in self.universes)
-        duplicated = sorted(name for name, n in names.items() if n > 1)
-        if duplicated:
-            raise ValueError(f"declared more than once: {', '.join(duplicated)}")
-        widest = max((s.exit_rank for s in self.universes), default=0)
-        if self.top_n < widest:
-            raise ValueError(f"top_n {self.top_n} is narrower than exit rank {widest}")
+        check_unique_names(self.universes)
+        check_listing_width(self.top_n, (d.exit_rank for d in self.universes))
         return self
+
+    @property
+    def bar_window(self) -> timedelta:
+        return timedelta(hours=self.bar_window_hours)
 
     @property
     def db_path(self) -> Path:
@@ -162,7 +177,7 @@ class Reconciliation(StrEnum):
 
 
 class UniverseReconciled(BaseModel):
-    """The outcome for one spec, and the Definition's latest revision afterwards."""
+    """The outcome for one declaration, and the Definition's latest revision afterwards."""
 
     model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True)
 
@@ -172,34 +187,31 @@ class UniverseReconciled(BaseModel):
 
 
 def ensure_universes(
-    store: Store, specs: Iterable[UniverseSpec], at: date
+    store: Store, declarations: Iterable[UniverseDeclaration], at: date
 ) -> list[UniverseReconciled]:
-    """Bring each declared Definition's rank band in the store up to its spec.
+    """Bring each declared Definition's rank band in the store up to its declaration.
 
     A missing Definition is created at revision 1 dated `at`. One whose band differs gets one
     more revision dated `at`, carrying its Inclusions and Exclusions forward unchanged; one whose
     band matches is left alone. Nothing is deleted or rewritten, and stored Definitions absent
-    from `specs` are not read. Results are in spec order.
+    from `declarations` are not read. Results are in declaration order.
 
-    A name declared twice is refused before anything is written, since which band would win
-    would otherwise depend on list order.
+    A name declared twice raises `DuplicateUniverse` before anything is written.
     """
-    specs = list(specs)
-    duplicated = sorted(name for name, n in Counter(s.name for s in specs).items() if n > 1)
-    if duplicated:
-        raise DuplicateUniverse(f"declared more than once: {', '.join(duplicated)}")
-    return [_ensure_universe(store, spec, at) for spec in specs]
+    declarations = list(declarations)
+    check_unique_names(declarations)
+    return [_ensure_universe(store, declared, at) for declared in declarations]
 
 
-def _ensure_universe(store: Store, spec: UniverseSpec, at: date) -> UniverseReconciled:
-    stored = store.load_universe(spec.name)
+def _ensure_universe(store: Store, declared: UniverseDeclaration, at: date) -> UniverseReconciled:
+    stored = store.load_universe(declared.name)
     if stored is None:
-        definition = UniverseDefinition.create(spec.name, spec.parameters, at)
+        definition = UniverseDefinition.create(declared.name, declared.parameters, at)
         outcome = Reconciliation.CREATED
     else:
         # `edited` is a no-op when the band already matches, and touches only the two ranks, so
         # the Inclusions and Exclusions projected from member rows ride along as they are.
-        definition = stored.edited(at, enter_rank=spec.enter_rank, exit_rank=spec.exit_rank)
+        definition = stored.edited(at, enter_rank=declared.enter_rank, exit_rank=declared.exit_rank)
         outcome = (
             Reconciliation.UNCHANGED
             if definition.revision == stored.revision
@@ -209,5 +221,5 @@ def _ensure_universe(store: Store, spec: UniverseSpec, at: date) -> UniverseReco
         # No member records are passed: the member rows already stored are the system of record
         # for Inclusions and Exclusions, and a new revision is covered by every standing member.
         store.save_universe(definition)
-        log.info("%s %s at revision %d", spec.name, outcome, definition.revision)
-    return UniverseReconciled(name=spec.name, outcome=outcome, revision=definition.revision)
+        log.info("%s %s at revision %d", declared.name, outcome, definition.revision)
+    return UniverseReconciled(name=declared.name, outcome=outcome, revision=definition.revision)

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterator
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
@@ -26,12 +26,12 @@ from cointoss.config import (
     DuplicateUniverse,
     Reconciliation,
     Settings,
+    UniverseDeclaration,
     UniverseReconciled,
-    UniverseSpec,
     ensure_universes,
     resolve_data_dir,
 )
-from cointoss.ingest import DEFAULT_TOP_N, pin_member
+from cointoss.ingest import DEFAULT_BAR_WINDOW, DEFAULT_TOP_N, pin_member
 from cointoss.instrument import InstrumentId, Source
 from cointoss.sources.openfigi import API_KEY_ENV
 from cointoss.store import Store
@@ -87,7 +87,7 @@ def test_an_empty_store_gets_the_default_universe_at_revision_1(store: Store):
     assert band(store, "cg-top-100") == (100, 120)
 
 
-def test_the_same_spec_again_adds_no_revision(store: Store):
+def test_the_same_declaration_again_adds_no_revision(store: Store):
     ensure_universes(store, DEFAULT_UNIVERSES, DAY1)
     assert ensure_universes(store, DEFAULT_UNIVERSES, DAY2) == [
         UniverseReconciled(name="cg-top-100", outcome=Reconciliation.UNCHANGED, revision=1)
@@ -107,8 +107,8 @@ def test_a_changed_band_adds_exactly_one_revision_dated_at(
     store: Store, enter: int, exit: int, changed: tuple[str, ...]
 ):
     ensure_universes(store, DEFAULT_UNIVERSES, DAY1)
-    spec = UniverseSpec(name="cg-top-100", enter_rank=enter, exit_rank=exit)
-    assert ensure_universes(store, [spec], DAY2) == [
+    declared = UniverseDeclaration(name="cg-top-100", enter_rank=enter, exit_rank=exit)
+    assert ensure_universes(store, [declared], DAY2) == [
         UniverseReconciled(name="cg-top-100", outcome=Reconciliation.REVISED, revision=2)
     ]
     definition = store.require_universe("cg-top-100")
@@ -118,7 +118,7 @@ def test_a_changed_band_adds_exactly_one_revision_dated_at(
     assert band(store, "cg-top-100") == (enter, exit)
     # The earlier revision is kept as it was, never rewritten.
     assert definition.parameters_at(1) == UniverseParameters(enter_rank=100, exit_rank=120)
-    assert ensure_universes(store, [spec], DAY3)[0].outcome is Reconciliation.UNCHANGED
+    assert ensure_universes(store, [declared], DAY3)[0].outcome is Reconciliation.UNCHANGED
 
 
 async def test_pinned_members_survive_a_band_change_untouched(store: Store):
@@ -129,8 +129,8 @@ async def test_pinned_members_survive_a_band_change_untouched(store: Store):
     pinned_at = store.require_universe("cg-top-100").revision
     assert pinned_at == 3
 
-    spec = UniverseSpec(name="cg-top-100", enter_rank=50, exit_rank=60)
-    assert ensure_universes(store, [spec], DAY2) == [
+    declared = UniverseDeclaration(name="cg-top-100", enter_rank=50, exit_rank=60)
+    assert ensure_universes(store, [declared], DAY2) == [
         UniverseReconciled(name="cg-top-100", outcome=Reconciliation.REVISED, revision=4)
     ]
 
@@ -157,18 +157,18 @@ async def test_an_unchanged_band_leaves_pinned_members_and_revision_alone(store:
 @pytest.mark.parametrize(("enter", "exit"), [(120, 100), (0, 20), (-5, 10)])
 def test_an_invalid_band_is_refused_by_universe_parameters(enter: int, exit: int):
     with pytest.raises(RaggedRule):
-        UniverseSpec(name="bad", enter_rank=enter, exit_rank=exit)
+        UniverseDeclaration(name="bad", enter_rank=enter, exit_rank=exit)
 
 
 def test_a_config_naming_an_unknown_field_is_refused():
     with pytest.raises(ValidationError):
-        UniverseSpec.model_validate(
+        UniverseDeclaration.model_validate(
             {"name": "cg-top-100", "enter_rank": 100, "exit_rank": 120, "source": "coingecko"}
         )
 
 
 def test_a_definition_dropped_from_config_stays_stored_and_unchanged(store: Store):
-    other = UniverseSpec(name="cg-top-10", enter_rank=10, exit_rank=12)
+    other = UniverseDeclaration(name="cg-top-10", enter_rank=10, exit_rank=12)
     ensure_universes(store, [*DEFAULT_UNIVERSES, other], DAY1)
     before = store.require_universe("cg-top-100")
 
@@ -179,13 +179,13 @@ def test_a_definition_dropped_from_config_stays_stored_and_unchanged(store: Stor
     assert store.require_universe("cg-top-100") == before
 
 
-def test_each_spec_is_reconciled_on_its_own(store: Store):
+def test_each_declaration_is_reconciled_on_its_own(store: Store):
     ensure_universes(store, DEFAULT_UNIVERSES, DAY1)
-    specs = [
-        UniverseSpec(name="cg-top-100", enter_rank=100, exit_rank=130),
-        UniverseSpec(name="cg-top-10", enter_rank=10, exit_rank=12),
+    declarations = [
+        UniverseDeclaration(name="cg-top-100", enter_rank=100, exit_rank=130),
+        UniverseDeclaration(name="cg-top-10", enter_rank=10, exit_rank=12),
     ]
-    assert ensure_universes(store, specs, DAY2) == [
+    assert ensure_universes(store, declarations, DAY2) == [
         UniverseReconciled(name="cg-top-100", outcome=Reconciliation.REVISED, revision=2),
         UniverseReconciled(name="cg-top-10", outcome=Reconciliation.CREATED, revision=1),
     ]
@@ -199,16 +199,21 @@ def test_a_rule_is_added_to_a_stored_definition_that_had_none(store: Store):
 
 
 def test_a_name_declared_twice_is_refused_before_anything_is_written(store: Store):
-    specs = [
-        UniverseSpec(name="cg-top-10", enter_rank=10, exit_rank=12),
-        UniverseSpec(name="cg-top-10", enter_rank=10, exit_rank=15),
+    declarations = [
+        UniverseDeclaration(name="cg-top-10", enter_rank=10, exit_rank=12),
+        UniverseDeclaration(name="cg-top-10", enter_rank=10, exit_rank=15),
     ]
     with pytest.raises(DuplicateUniverse, match="cg-top-10"):
-        ensure_universes(store, specs, DAY1)
+        ensure_universes(store, declarations, DAY1)
     assert store.load_universe("cg-top-10") is None
+    # Loading settings refuses it by the same check, reported through pydantic.
+    with pytest.raises(ValidationError, match="declared more than once: cg-top-10"):
+        Settings(data_dir=Path("."), universes=tuple(declarations))
 
 
-# -- Settings from the data directory, issue #21 --
+def test_the_bar_window_is_read_from_the_config(tmp_path: Path):
+    (tmp_path / CONFIG_FILENAME).write_text("bar_window_hours: 1.5\n")
+    assert Settings.load(tmp_path).bar_window == timedelta(minutes=90)
 
 
 def test_settings_default_when_the_data_directory_has_no_config(tmp_path: Path):
@@ -217,6 +222,7 @@ def test_settings_default_when_the_data_directory_has_no_config(tmp_path: Path):
     assert settings.db_path == tmp_path / "cointoss.db"
     assert settings.universes == DEFAULT_UNIVERSES
     assert settings.top_n == DEFAULT_TOP_N
+    assert settings.bar_window == DEFAULT_BAR_WINDOW == timedelta(hours=3)
 
 
 def test_settings_read_the_config_file_in_the_data_directory(tmp_path: Path):
@@ -225,7 +231,9 @@ def test_settings_read_the_config_file_in_the_data_directory(tmp_path: Path):
     )
     settings = Settings.load(tmp_path)
     assert settings.top_n == 50
-    assert settings.universes == (UniverseSpec(name="cg-top-10", enter_rank=10, exit_rank=12),)
+    assert settings.universes == (
+        UniverseDeclaration(name="cg-top-10", enter_rank=10, exit_rank=12),
+    )
 
 
 def test_the_data_directory_comes_from_the_environment_when_not_given(
@@ -245,6 +253,8 @@ def test_the_data_directory_comes_from_the_environment_when_not_given(
         "universes:\n  - {name: a, enter_rank: 1, exit_rank: 2}\n"
         "  - {name: a, enter_rank: 1, exit_rank: 3}\n",
         "source: coingecko\n",
+        "bar_window_hours: 0\n",
+        "bar_window_hours: 25\n",
     ],
 )
 def test_a_config_that_could_not_sweep_is_refused_when_loaded(tmp_path: Path, text: str):
