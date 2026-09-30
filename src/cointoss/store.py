@@ -66,6 +66,7 @@ from cointoss.prices import (
     CorporateAction,
     CorporateActionKind,
     Restatement,
+    as_utc,
     detect_restatements,
     is_provisional,
 )
@@ -577,6 +578,7 @@ class Index(NamedTuple):
 # what the caller actually has: a symbol, or an external identifier. These do. Membership is
 # the same shape: its key leads with the Definition then the Instrument, while a point read
 # starts from a Definition and a date.
+#
 # `universes_containing` starts from an Instrument alone, which neither membership index leads
 # with.
 INDEXES: tuple[Index, ...] = (
@@ -615,11 +617,6 @@ class Migration(NamedTuple):
 # Ordered, and empty: there is no prior schema to migrate from. Append steps with strictly
 # increasing `to_version` as the schema changes, and raise `SCHEMA_VERSION` to match.
 MIGRATIONS: list[Migration] = []
-
-
-def _as_utc(moment: datetime) -> datetime:
-    """A naive time read as UTC, so naive and aware fetch times still compare."""
-    return moment.replace(tzinfo=UTC) if moment.tzinfo is None else moment
 
 
 class Store:
@@ -827,6 +824,12 @@ class Store:
     def _instrument_row(self, instrument_id: InstrumentId | str) -> InstrumentRow | None:
         return InstrumentRow.load_by_ak(self.conn, instrument_id=str(instrument_id))
 
+    def _require_instrument(self, instrument_id: InstrumentId | str) -> InstrumentRow:
+        row = self._instrument_row(instrument_id)
+        if row is None:
+            raise UnknownInstrument(f"{instrument_id} is not stored")
+        return row
+
     @staticmethod
     def _instrument_fields(instrument: Instrument) -> dict[str, Any]:
         return {
@@ -1009,10 +1012,7 @@ class Store:
         """Insert or update one member row by its natural key. Does not commit."""
         instrument_row_id: int | None = None
         if record.instrument_id is not None:
-            row = self._instrument_row(record.instrument_id)
-            if row is None:
-                raise UnknownInstrument(f"{record.instrument_id} is not stored")
-            instrument_row_id = row.instrument_row_id
+            instrument_row_id = self._require_instrument(record.instrument_id).instrument_row_id
         UniverseMemberRow(
             definition=definition_id,
             role=record.role,
@@ -1052,8 +1052,8 @@ class Store:
         """Record what an evaluation produced for `when`, and that it ran.
 
         Never goes through `UniverseSeries.append`, but follows the same rule. The open
-        intervals are diffed against `members`: leavers are closed at `when`, joiners opened
-        from it, and a Series entry stamped with `revision` is written. A membership equal to
+        intervals are diffed against `members`: the dropped are closed at `when`, the admitted
+        opened from it, and a Series entry stamped with `revision` is written. A membership equal to
         the one in force writes no interval and no entry, only the Run, which is then the sole
         evidence the job is alive. The first evaluation always writes an entry, empty or not.
 
@@ -1090,9 +1090,9 @@ class Store:
                 self.conn, definition=definition_id, valid_to=None
             )
         }
-        joiners = wanted.keys() - open_rows.keys()
-        leavers = open_rows.keys() - wanted.keys()
-        changed = latest_entry is None or bool(joiners or leavers)
+        admitted = wanted.keys() - open_rows.keys()
+        dropped = open_rows.keys() - wanted.keys()
+        changed = latest_entry is None or bool(admitted or dropped)
         if changed and latest_entry == when:
             raise EntryOrder(f"{definition}: {when} already holds a different membership")
 
@@ -1102,14 +1102,14 @@ class Store:
             run_at=datetime.now(UTC) if run_at is None else run_at,
             source_asof=when,
             outcome=RunOutcome.CHANGED if changed else RunOutcome.UNCHANGED,
-            n_admitted=len(joiners),
-            n_dropped=len(leavers),
+            n_admitted=len(admitted),
+            n_dropped=len(dropped),
             n_unresolved=self._unresolved_at(definition, stamp),
         )
         try:
-            for instrument in leavers:
+            for instrument in dropped:
                 open_rows[instrument].model_copy(update={"valid_to": when}).save(self.conn)
-            for instrument in joiners:
+            for instrument in admitted:
                 UniverseMembershipRow(
                     definition=definition_id, instrument=instrument, valid_from=when
                 ).save(self.conn)
@@ -1117,16 +1117,7 @@ class Store:
                 UniverseEntryRow(definition=definition_id, as_of=when, revision=stamp).save(
                     self.conn
                 )
-            EvaluationRunRow(
-                definition=definition_id,
-                run_at=run.run_at,
-                revision=run.revision,
-                source_asof=run.source_asof,
-                outcome=run.outcome,
-                n_admitted=run.n_admitted,
-                n_dropped=run.n_dropped,
-                n_unresolved=run.n_unresolved,
-            ).save(self.conn)
+            EvaluationRunRow(definition=definition_id, **self._run_fields(run)).save(self.conn)
         except BaseException:
             self.conn.rollback()
             raise
@@ -1185,19 +1176,7 @@ class Store:
         rows = sorted(
             EvaluationRunRow.select(self.conn, definition=definition_id), key=lambda r: r.run_at
         )
-        return [
-            EvaluationRun(
-                definition=definition,
-                revision=r.revision,
-                run_at=r.run_at,
-                source_asof=r.source_asof,
-                outcome=r.outcome,
-                n_admitted=r.n_admitted,
-                n_dropped=r.n_dropped,
-                n_unresolved=r.n_unresolved,
-            )
-            for r in rows
-        ]
+        return [self._run_from(r, definition) for r in rows]
 
     def universes_containing(
         self, instrument_id: InstrumentId | str, start: date, end: date
@@ -1216,9 +1195,7 @@ class Store:
         """
         if end < start:
             raise ValueError(f"range end {end} precedes its start {start}")
-        row = self._instrument_row(instrument_id)
-        if row is None:
-            raise UnknownInstrument(f"{instrument_id} is not stored")
+        row = self._require_instrument(instrument_id)
         cursor = self.conn.cursor()
         execute_sql(
             cursor,
@@ -1284,11 +1261,18 @@ class Store:
         """Surrogate keys for an evaluated membership, refusing any Instrument not stored."""
         found: dict[int, InstrumentId] = {}
         for instrument_id in members:
-            row = self._instrument_row(instrument_id)
-            if row is None:
-                raise UnknownInstrument(f"{instrument_id} is not stored")
-            found[row.instrument_row_id] = instrument_id
+            found[self._require_instrument(instrument_id).instrument_row_id] = instrument_id
         return found
+
+    @staticmethod
+    def _run_fields(run: EvaluationRun) -> dict[str, Any]:
+        return run.model_dump(exclude={"definition"})
+
+    @staticmethod
+    def _run_from(row: EvaluationRunRow, definition: str) -> EvaluationRun:
+        return EvaluationRun(
+            definition=definition, **row.model_dump(exclude={"evaluation_run_id", "definition"})
+        )
 
     def _latest(self, table: type[DbModel[Any]], column: str, definition_id: int) -> date | None:
         cursor = self.conn.cursor()
@@ -1486,7 +1470,7 @@ class Store:
                 row = BarRow(instrument=pk, **self._bar_fields(incoming))
                 if held:
                     stored = self._bar_from(held[0], incoming.instrument_id)
-                    if _as_utc(incoming.fetched_at) < _as_utc(stored.fetched_at):
+                    if as_utc(incoming.fetched_at) < as_utc(stored.fetched_at):
                         continue
                     if not is_provisional(stored):
                         key = (pk, incoming.source)
@@ -1589,12 +1573,6 @@ class Store:
             )
             for r in sorted(held, key=lambda r: r.restatement_id)
         ]
-
-    def _require_instrument(self, instrument_id: InstrumentId | str) -> InstrumentRow:
-        row = self._instrument_row(instrument_id)
-        if row is None:
-            raise UnknownInstrument(f"{instrument_id} is not stored")
-        return row
 
     def _actions(self, pk: int, bar: Bar) -> list[CorporateAction]:
         """The actions on file that can explain a change to `bar`: same Instrument and source."""

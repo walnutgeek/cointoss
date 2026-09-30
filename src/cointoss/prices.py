@@ -50,6 +50,7 @@ __all__ = [
     "MissingColumn",
     "PriceError",
     "Restatement",
+    "as_utc",
     "bars_from_market_chart",
     "bars_from_yahoo",
     "detect_restatements",
@@ -342,10 +343,22 @@ def is_provisional(bar: Bar) -> bool:
     >>> is_provisional(bar.model_copy(update={"fetched_at": datetime(2026, 9, 30, 0, 5)}))
     False
     """
-    fetched_at = bar.fetched_at
-    if fetched_at.tzinfo is not None:
-        fetched_at = fetched_at.astimezone(UTC)
-    return fetched_at.date() <= bar.bar_date
+    return as_utc(bar.fetched_at).date() <= bar.bar_date
+
+
+def as_utc(moment: datetime) -> datetime:
+    """A moment in UTC, reading a naive one as already UTC.
+
+    Naive times are labelled rather than converted, since `astimezone` would read them as the
+    machine's local time. Aware ones are converted, so their UTC calendar date is the right one.
+
+    >>> as_utc(datetime(2026, 9, 29, 23, 30)).isoformat()
+    '2026-09-29T23:30:00+00:00'
+    >>> from datetime import timedelta, timezone
+    >>> as_utc(datetime(2026, 9, 29, 23, 30, tzinfo=timezone(timedelta(hours=-5)))).isoformat()
+    '2026-09-30T04:30:00+00:00'
+    """
+    return moment.replace(tzinfo=UTC) if moment.tzinfo is None else moment.astimezone(UTC)
 
 
 def split_factor_after(actions: Sequence[CorporateAction], when: date) -> float:
