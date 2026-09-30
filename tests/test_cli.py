@@ -1,4 +1,4 @@
-"""The `cointoss` CLI, issue #22: `init`, `sweep`, `status`, `token`.
+"""The `cointoss` CLI: `init`, `sweep`, `status`, `token`.
 
 Each test runs `cointoss.cli.main` against a temporary data directory. CoinGecko is answered
 from the recorded `markets` listing and the clock is fixed, through the same seam
@@ -23,7 +23,7 @@ import yaml
 from woodglue.cli import load_namespaces
 from woodglue.config import load_config
 
-from cointoss.app import SWEEP_TRIGGER
+from cointoss.app import SWEEP_TRIGGER, sweep_lock
 from cointoss.cli import main, render_unit
 from cointoss.config import DEFAULT_UNIVERSES, HOME_ENV, Settings
 from cointoss.store import Store
@@ -129,6 +129,17 @@ def test_init_refuses_a_woodglue_yaml_that_does_not_parse(
     assert (home / "woodglue.yaml").read_text() == "namespaces: 7\n"
 
 
+def test_a_woodglue_yaml_that_is_not_yaml_is_one_line(
+    home: Path, capsys: pytest.CaptureFixture[str]
+):
+    home.mkdir(parents=True)
+    (home / "woodglue.yaml").write_text("namespaces: [\n")
+    code, out = run(capsys, "token", "--data-dir", str(home))
+    assert code == 1
+    (line,) = out.strip().splitlines()
+    assert line.startswith(f"cointoss token: {home / 'woodglue.yaml'}: ")
+
+
 def test_the_data_dir_comes_from_the_environment(
     home: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ):
@@ -177,16 +188,61 @@ def test_a_second_sweep_the_same_day_fetches_nothing_unless_forced(
     assert client.fetch.call_count == 1
 
 
-def test_sweep_date_must_be_the_current_utc_day(home: Path, capsys: pytest.CaptureFixture[str]):
-    with market() as client:
-        code, out = run(capsys, "sweep", "--data-dir", str(home), "--date", "2026-09-29")
-    assert code != 0
+def test_a_late_sweep_says_it_wrote_no_bars(home: Path, capsys: pytest.CaptureFixture[str]):
+    with market(AT.replace(hour=6)):
+        code, out = run(capsys, "sweep", "--data-dir", str(home))
+    assert code == 0, out
+    assert "0 bars" in out
+    assert "no bars: swept after the bar window" in out
+
+
+def test_a_sweep_while_another_runs_exits_with_one_line(
+    home: Path, capsys: pytest.CaptureFixture[str]
+):
+    home.mkdir(parents=True)
+    with sweep_lock(home), market() as client:
+        code, out = run(capsys, "sweep", "--data-dir", str(home))
+    assert code == 1
     assert client.fetch.call_count == 0
-    assert "2026-09-29" in out and "2026-09-30" in out
+    assert out.strip().splitlines() == [
+        f"cointoss sweep: another sweep holds {home / 'sweep.lock'}; not sweeping"
+    ]
+
+
+@pytest.mark.parametrize("command", ["sweep", "status"])
+@pytest.mark.parametrize(
+    "text",
+    [
+        "top_n: [\n",
+        "universes:\n  - {name: bad, enter_rank: 120, exit_rank: 100}\n",
+        "top_n: 10\n",
+        "bar_window_hours: 0\n",
+    ],
+)
+def test_a_config_that_does_not_load_is_one_line_not_a_traceback(
+    home: Path, capsys: pytest.CaptureFixture[str], command: str, text: str
+):
+    home.mkdir(parents=True)
+    (home / "cointoss.yaml").write_text(text)
     with market() as client:
-        code, _ = run(capsys, "sweep", "--data-dir", str(home), "--date", "2026-09-30")
-    assert code == 0
-    assert client.fetch.call_count == 1
+        code, out = run(capsys, command, "--data-dir", str(home))
+    assert code == 1
+    assert client.fetch.call_count == 0
+    (line,) = out.strip().splitlines()
+    assert line.startswith(f"cointoss {command}: {home / 'cointoss.yaml'}: ")
+
+
+def test_an_unexpected_error_keeps_its_traceback(home: Path):
+    with (
+        patch("cointoss.cli.cmd_status", side_effect=ValueError("a bug")),
+        pytest.raises(ValueError, match="a bug"),
+    ):
+        main(["status", "--data-dir", str(home)])
+
+
+def test_sweep_no_longer_takes_a_date(home: Path):
+    with pytest.raises(SystemExit):
+        main(["sweep", "--data-dir", str(home), "--date", "2026-09-30"])
 
 
 def test_status_without_a_database_says_to_run_init(home: Path, capsys: pytest.CaptureFixture[str]):
@@ -217,17 +273,39 @@ def test_init_systemd_writes_the_unit_for_this_install(
 
 
 def test_the_rendered_unit_runs_woodglue_in_the_foreground_with_a_catch_up_sweep():
-    unit = render_unit(bin_dir=Path("/opt/ct/bin"), data_dir=Path("/srv/ct"))
+    unit = render_unit(
+        bin_dir=Path("/opt/ct/bin"), data_dir=Path("/srv/ct"), timeout=Path("/opt/cu/timeout")
+    )
     lines = unit.splitlines()
     assert "ExecStart=/opt/ct/bin/wgl --data=/srv/ct start" in lines
     assert "Type=simple" in lines
-    pre = next(ln for ln in lines if ln.startswith("ExecStartPre="))
     # '-' so a failed catch-up (no network at boot) does not stop the API from starting.
-    assert pre.startswith("ExecStartPre=-") and "/opt/ct/bin/cointoss sweep" in pre
-    assert "{" not in unit
+    assert "ExecStartPre=-/opt/cu/timeout 120 /opt/ct/bin/cointoss sweep" in lines
+    assert "$" not in unit
     assert SHIPPED_UNIT.exists()
+
+
+def test_the_unit_finds_timeout_on_the_path_or_refuses():
+    with patch("cointoss.cli.shutil.which", return_value="/usr/local/bin/timeout"):
+        unit = render_unit(bin_dir=Path("/opt/ct/bin"), data_dir=Path("/srv/ct"))
+    assert "ExecStartPre=-/usr/local/bin/timeout 120 " in unit
+    with (
+        patch("cointoss.cli.shutil.which", return_value=None),
+        pytest.raises(ValueError, match="timeout"),
+    ):
+        render_unit(bin_dir=Path("/opt/ct/bin"), data_dir=Path("/srv/ct"))
+
+
+def test_a_percent_in_a_unit_path_is_escaped_for_systemd():
+    unit = render_unit(
+        bin_dir=Path("/opt/ct/bin"), data_dir=Path("/srv/100%ct"), timeout=Path("/bin/timeout")
+    )
+    assert "Environment=COINTOSS_HOME=/srv/100%%ct" in unit.splitlines()
+    assert "ExecStart=/opt/ct/bin/wgl --data=/srv/100%%ct start" in unit.splitlines()
 
 
 def test_a_unit_path_with_whitespace_is_refused():
     with pytest.raises(ValueError, match="whitespace"):
-        render_unit(bin_dir=Path("/opt/my ct/bin"), data_dir=Path("/srv/ct"))
+        render_unit(
+            bin_dir=Path("/opt/my ct/bin"), data_dir=Path("/srv/ct"), timeout=Path("/bin/timeout")
+        )

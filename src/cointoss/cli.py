@@ -1,7 +1,7 @@
-"""The `cointoss` command: set up an instance, sweep by hand, and check on it (#22).
+"""The `cointoss` command: set up an instance, sweep by hand, and check on it.
 
     cointoss init   [--data-dir D] [--systemd]   create the instance, idempotently
-    cointoss sweep  [--data-dir D] [--date D] [--force]
+    cointoss sweep  [--data-dir D] [--force]
     cointoss status [--data-dir D]
     cointoss token  [--data-dir D]               print the JSON-RPC bearer token
 
@@ -17,9 +17,12 @@ start` from a shell serves the same store the unit does. The unit also sets `COI
 the `cointoss` commands it runs.
 
 `sweep` calls the fragment's own `sweep` node, so a manual run follows exactly the scheduled
-run's idempotency rule. The sweep records CoinGecko's current listing as today's (UTC) bar, so
-it cannot be run for another date: `--date` only states which day the caller means, and is
-refused when that is not today. A missed past day is history backfill, which is out of scope.
+run's idempotency rule and takes the same lock. It records CoinGecko's current listing for
+today (UTC), so it has no date to choose; a missed past day is history backfill.
+
+Expected failures -- a config that does not load, a sweep already running, a missing store --
+are turned into `CliError` where they arise and reported as one line. Anything else is a bug
+and keeps its traceback.
 
 The CLI uses argparse rather than lythonic's `ActionTree`, which derives option names from
 Python parameter names (`--data_dir`) and takes root options only before the subcommand.
@@ -32,21 +35,24 @@ import asyncio
 import datetime as dt
 import logging
 import os
+import shutil
 import sys
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from importlib.resources import files
 from pathlib import Path
+from string import Template
 from typing import Any
 
 import yaml
 from lythonic.compose.engine import resolve_file
 from pydantic import ValidationError
+from ruamel.yaml import YAMLError as WoodglueYAMLError
 from woodglue.config import CONFIG_FILENAME as WOODGLUE_CONFIG
 from woodglue.config import load_config
 from woodglue.token_store import ensure_token, get_single_token
 
-import cointoss.app
-from cointoss.app import CointossApp, fragment_entry
+from cointoss.app import CointossApp, SweepInProgress, fragment_entry, utc_today
 from cointoss.config import (
     CONFIG_FILENAME,
     ConfigError,
@@ -56,6 +62,7 @@ from cointoss.config import (
 )
 from cointoss.prices import as_utc
 from cointoss.store import Store, UnknownUniverse
+from cointoss.universe import UniverseError
 
 __all__ = ["main", "render_unit", "user_unit_dir"]
 
@@ -74,13 +81,24 @@ def user_unit_dir() -> Path:
     return base / "systemd" / "user"
 
 
-def render_unit(*, bin_dir: Path, data_dir: Path) -> str:
+def render_unit(*, bin_dir: Path, data_dir: Path, timeout: Path | None = None) -> str:
     """The shipped `cointoss.service` template with this install's paths filled in.
 
+    `timeout` is coreutils' `timeout`, found on `PATH` when not given; it bounds the catch-up
+    sweep, since systemd's own `TimeoutStartSec` would fail the whole unit rather than let the
+    server start without it. Raises `ValueError` when it cannot be found.
+
     systemd splits `Exec*=` lines on whitespace, so a path containing any is refused rather than
-    quoted into a unit that might still be misread.
+    quoted into a unit that might still be misread. A `%` is doubled, since systemd would read
+    it as the start of a specifier.
     """
-    for path in (bin_dir, data_dir):
+    if timeout is None:
+        found = shutil.which("timeout")
+        if found is None:
+            raise ValueError("`timeout` (coreutils) not found on PATH")
+        timeout = Path(found)
+    paths = {"bin_dir": bin_dir, "data_dir": data_dir, "timeout": timeout}
+    for path in paths.values():
         if any(c.isspace() for c in str(path)):
             raise ValueError(f"path contains whitespace, not supported in the unit: {path}")
     template = files("cointoss").joinpath(UNIT_NAME).read_text()
@@ -89,7 +107,8 @@ def render_unit(*, bin_dir: Path, data_dir: Path) -> str:
     header = (
         "# Written by `cointoss init --systemd` from the template cointoss/cointoss.service.\n\n"
     )
-    return header + body.format(bin_dir=bin_dir, data_dir=data_dir)
+    escaped = {name: str(path).replace("%", "%%") for name, path in paths.items()}
+    return header + Template(body).substitute(escaped)
 
 
 def woodglue_config(data_dir: Path) -> dict[str, Any]:
@@ -113,7 +132,8 @@ def cointoss_config() -> dict[str, Any]:
     defaults = Settings(data_dir=Path("."))
     return {
         "top_n": defaults.top_n,
-        "universes": [spec.model_dump() for spec in defaults.universes],
+        "bar_window_hours": defaults.bar_window_hours,
+        "universes": [declared.model_dump() for declared in defaults.universes],
     }
 
 
@@ -133,10 +153,39 @@ def _yaml(header: str, content: dict[str, Any]) -> str:
 
 def _auth_db(data_dir: Path) -> Path | None:
     """The token database woodglue will use, or None when auth is off."""
-    config = load_config(data_dir)
+    try:
+        config = load_config(data_dir)
+    except FileNotFoundError as exc:
+        raise CliError(f"{exc}; run `cointoss init` first") from exc
+    except (ValidationError, WoodglueYAMLError) as exc:
+        raise CliError(f"{data_dir / WOODGLUE_CONFIG}: {_one_line(exc)}") from exc
     if not config.auth.enabled:
         return None
     return resolve_file(data_dir, config.storage.auth_db, "auth.db")
+
+
+@contextmanager
+def _loading_settings(data_dir: Path) -> Iterator[None]:
+    """Report a `cointoss.yaml` that does not load as a `CliError`."""
+    try:
+        yield
+    except (ValidationError, ConfigError, UniverseError, yaml.YAMLError) as exc:
+        raise CliError(f"{data_dir / CONFIG_FILENAME}: {_one_line(exc)}") from exc
+
+
+def _one_line(exc: Exception) -> str:
+    """An error's message on one line: each validation error's field and reason, or the text."""
+    if isinstance(exc, ValidationError):
+        return "; ".join(
+            f"{'.'.join(str(part) for part in error['loc']) or 'config'}: {error['msg']}"
+            for error in exc.errors()
+        )
+    return " ".join(str(exc).split())
+
+
+def _settings(data_dir: Path) -> Settings:
+    with _loading_settings(data_dir):
+        return Settings.load(data_dir)
 
 
 def _bin_dir() -> Path:
@@ -160,10 +209,7 @@ def cmd_init(data_dir: Path, systemd: bool) -> None:
         ),
     )
     print(f"{CONFIG_FILENAME}: {'created' if written else 'kept'}")
-    try:
-        settings = Settings.load(data_dir)
-    except (ValidationError, ConfigError, ValueError, yaml.YAMLError) as exc:
-        raise CliError(f"{data_dir / CONFIG_FILENAME}: {exc}") from exc
+    settings = _settings(data_dir)
 
     written = _write_new(
         data_dir / WOODGLUE_CONFIG,
@@ -173,14 +219,10 @@ def cmd_init(data_dir: Path, systemd: bool) -> None:
         ),
     )
     print(f"{WOODGLUE_CONFIG}: {'created' if written else 'kept'}")
-    try:
-        auth_db = _auth_db(data_dir)
-    except (ValidationError, ValueError, yaml.YAMLError) as exc:
-        raise CliError(f"{data_dir / WOODGLUE_CONFIG}: {exc}") from exc
+    auth_db = _auth_db(data_dir)
 
     with Store(settings.db_path) as store:
-        today = as_utc(cointoss.app.utcnow()).date()
-        for reconciled in ensure_universes(store, settings.universes, today):
+        for reconciled in ensure_universes(store, settings.universes, utc_today()):
             print(f"universe {reconciled.name}: {reconciled.outcome} (rev {reconciled.revision})")
     print(f"database: {settings.db_path}")
 
@@ -195,7 +237,10 @@ def cmd_init(data_dir: Path, systemd: bool) -> None:
 
 
 def _install_unit(data_dir: Path) -> None:
-    unit = render_unit(bin_dir=_bin_dir(), data_dir=data_dir)
+    try:
+        unit = render_unit(bin_dir=_bin_dir(), data_dir=data_dir)
+    except ValueError as exc:
+        raise CliError(f"unit not written: {exc}") from exc
     unit_dir = user_unit_dir()
     unit_dir.mkdir(parents=True, exist_ok=True)
     path = unit_dir / UNIT_NAME
@@ -211,23 +256,24 @@ def _install_unit(data_dir: Path) -> None:
     print("  loginctl enable-linger $USER")
 
 
-def cmd_sweep(data_dir: Path, on: dt.date | None, force: bool) -> int:
-    today = as_utc(cointoss.app.utcnow()).date()
-    if on is not None and on != today:
-        raise CliError(
-            f"--date {on}: a sweep records the current listing, so it can only be for today "
-            f"(UTC {today}); backfilling a past date is not supported"
-        )
-    outcome = asyncio.run(CointossApp(str(data_dir)).sweep(force=force))
+def cmd_sweep(data_dir: Path, force: bool) -> int:
+    with _loading_settings(data_dir):
+        app = CointossApp(str(data_dir))
+    try:
+        outcome = asyncio.run(app.sweep(force=force))
+    except SweepInProgress as exc:
+        raise CliError(f"{exc}; not sweeping") from exc
     if outcome.report is None:
-        print(f"sweep {outcome.date}: already swept at {outcome.at.isoformat()}")
+        print(f"sweep {outcome.day}: already swept")
         return 0
     report = outcome.report
     print(
-        f"sweep {outcome.date} at {outcome.at.isoformat()}: listed {report.listed}, "
-        f"{report.bars} bars, {report.restatements} restatements, "
+        f"sweep {outcome.day} at {report.at.isoformat()}: listed {report.listed}, "
+        f"{report.bars} bars, {report.bars_kept} kept, {report.restatements} restatements, "
         f"{len(report.skipped)} skipped"
     )
+    if report.bars_skipped_late:
+        print("  no bars: swept after the bar window; the day's bars are left for a backfill")
     for run in report.runs:
         print(f"  {run.definition}: {run.outcome}, +{run.n_admitted} -{run.n_dropped}")
     for name, why in sorted(report.failed.items()):
@@ -258,15 +304,15 @@ def _server_state(data_dir: Path) -> str:
 
 
 def cmd_status(data_dir: Path) -> None:
-    settings = Settings.load(data_dir)
+    settings = _settings(data_dir)
     if not settings.db_path.exists():
         raise CliError(f"no database at {settings.db_path}; run `cointoss init` first")
-    today = as_utc(cointoss.app.utcnow()).date()
+    today = utc_today()
     print(f"data dir: {data_dir}")
     print(f"server: {_server_state(data_dir)}")
     with Store(settings.db_path) as store:
-        for spec in settings.universes:
-            print(_universe_status(store, spec.name, today))
+        for declared in settings.universes:
+            print(_universe_status(store, declared.name, today))
         latest = store.latest_bar_date()
     print(f"last bar {latest}" if latest else "last bar: none yet")
 
@@ -279,21 +325,18 @@ def _universe_status(store: Store, name: str, today: dt.date) -> str:
     if not runs:
         return f"{name}: no runs yet"
     run = max(runs, key=lambda r: (r.source_asof, r.run_at))
-    held = store.member_bars(name, run.source_asof)
-    priced = sum(bar is not None for bar in held.values())
+    bar_by_member = store.member_bars(name, run.source_asof)
+    priced = sum(bar is not None for bar in bar_by_member.values())
     behind = "" if run.source_asof >= today else f"; BEHIND, today is {today}"
     return (
         f"{name}: last run {run.source_asof} at {as_utc(run.run_at).isoformat()} {run.outcome}, "
-        f"+{run.n_admitted} -{run.n_dropped}; {len(held)} members, "
-        f"{priced}/{len(held)} bars{behind}"
+        f"+{run.n_admitted} -{run.n_dropped}; {len(bar_by_member)} members, "
+        f"{priced}/{len(bar_by_member)} bars{behind}"
     )
 
 
 def cmd_token(data_dir: Path) -> None:
-    try:
-        auth_db = _auth_db(data_dir)
-    except FileNotFoundError as exc:
-        raise CliError(f"{exc}; run `cointoss init` first") from exc
+    auth_db = _auth_db(data_dir)
     if auth_db is None:
         raise CliError("auth is disabled in woodglue.yaml; no token is needed")
     ensure_token(auth_db)
@@ -322,9 +365,6 @@ def _parser() -> argparse.ArgumentParser:
     )
     sweep = commands.add_parser("sweep", parents=[data], help="run today's sweep now")
     sweep.add_argument(
-        "--date", type=dt.date.fromisoformat, help="the UTC day meant; refused unless today"
-    )
-    sweep.add_argument(
         "--force", action="store_true", help="re-fetch even if today is already swept"
     )
     commands.add_parser("status", parents=[data], help="last Evaluation Run per universe")
@@ -341,14 +381,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             case "init":
                 cmd_init(data_dir, args.systemd)
             case "sweep":
-                return cmd_sweep(data_dir, args.date, args.force)
+                return cmd_sweep(data_dir, args.force)
             case "status":
                 cmd_status(data_dir)
             case "token":
                 cmd_token(data_dir)
             case _:
                 raise AssertionError(args.command)
-    except (CliError, ValueError) as exc:
+    except CliError as exc:
         print(f"cointoss {args.command}: {exc}", file=sys.stderr)
         return 1
     return 0

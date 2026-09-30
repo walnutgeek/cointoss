@@ -1,4 +1,4 @@
-"""The cointoss namespace, issue #21, mounted the way woodglue mounts it.
+"""The cointoss namespace, mounted the way woodglue mounts it.
 
 The fragment is registered through `Namespace.from_dict` with the entry `fragment_entry` builds,
 which is what a `woodglue.yaml` carries, over a temporary data directory holding a
@@ -40,7 +40,10 @@ from cointoss.app import (
     SWEEP_TRIGGER,
     BadRequest,
     NotFound,
+    NotInitialized,
+    SweepInProgress,
     fragment_entry,
+    sweep_lock,
 )
 from cointoss.store import Store
 
@@ -182,7 +185,7 @@ async def test_a_second_fire_on_the_same_day_is_a_no_op(ns: Namespace, data_dir:
 
     assert client.fetch.call_count == 0
     assert again.already_swept
-    assert again.at == first.at == DAY1_AT
+    assert again.day == first.day == DAY1_AT.date()
     assert again.report is None
     with Store(data_dir / "cointoss.db") as store:
         assert len(store.load_evaluation_runs("cg-top-100")) == 1
@@ -190,17 +193,52 @@ async def test_a_second_fire_on_the_same_day_is_a_no_op(ns: Namespace, data_dir:
         assert bar.close == 83227
 
 
-async def test_a_forced_resweep_reuses_the_days_moment(ns: Namespace, data_dir: Path):
+async def test_a_forced_resweep_keeps_the_days_bars_and_runs(ns: Namespace, data_dir: Path):
     await sweep(ns, DAY1_AT, day1_pages())
-    retried = await sweep(ns, DAY1_AT + timedelta(hours=2), day1_pages(), force=True)
+    moved = day1_pages()
+    for coin in moved[0]:
+        if coin["id"] == "bitcoin":
+            coin["current_price"] = 90000.0
+    later = DAY1_AT + timedelta(hours=2)
+
+    retried = await sweep(ns, later, moved, force=True)
 
     assert not retried.already_swept
-    assert retried.at == DAY1_AT
     assert retried.report is not None
+    assert retried.report.at == later
     assert retried.report.failed == {}
     assert retried.report.restatements == 0
+    assert retried.report.bars == 0
     with Store(data_dir / "cointoss.db") as store:
         assert len(store.load_evaluation_runs("cg-top-100")) == 1
+        assert store.restatements_for(BTC) == []
+        (bar,) = store.bars_for(BTC, DAY1_AT.date(), DAY1_AT.date())
+        assert (bar.close, bar.fetched_at) == (83227, DAY1_AT)
+
+
+async def test_a_late_sweep_writes_no_bars_unless_the_window_allows(ns: Namespace, data_dir: Path):
+    late = DAY1_AT.replace(hour=5)
+    swept = await sweep(ns, late, day1_pages())
+    assert swept.report is not None
+    assert swept.report.bars_skipped_late
+    assert len(swept.report.runs) == 2
+
+    (data_dir / "cointoss.yaml").write_text(yaml.safe_dump({**CONFIG, "bar_window_hours": 6}))
+    widened = Namespace.from_dict([fragment_entry(data_dir=data_dir)])
+    swept = await sweep(widened, late + timedelta(days=1), day1_pages())
+    assert swept.report is not None
+    assert not swept.report.bars_skipped_late
+    assert swept.report.bars == 249
+
+
+async def test_a_sweep_while_another_holds_the_lock_exits_without_fetching(
+    ns: Namespace, data_dir: Path
+):
+    with sweep_lock(data_dir), market(DAY1_AT, day1_pages()) as client:
+        with pytest.raises(SweepInProgress):
+            await ns.get("data:sweep")()
+    assert client.fetch.call_count == 0
+    assert (await sweep(ns, DAY1_AT, day1_pages())).report is not None
 
 
 async def test_the_sweep_reconciles_declared_universes_first(ns: Namespace):
@@ -209,7 +247,7 @@ async def test_the_sweep_reconciles_declared_universes_first(ns: Namespace):
         ("cg-top-100", "created"),
         ("cg-top-10", "created"),
     ]
-    assert as_json(swept)["date"] == "2026-09-30"
+    assert as_json(swept)["day"] == "2026-09-30"
 
 
 async def test_members_returns_each_member_with_its_bar(seeded: Namespace):
@@ -224,6 +262,7 @@ async def test_members_returns_each_member_with_its_bar(seeded: Namespace):
     assert btc["name"] == "Bitcoin"
     assert btc["close"] == 84000.0
     assert btc["volume"] == 28071563826
+    assert btc["market_cap"] == 1672100896326
     assert btc["source"] == "coingecko"
 
 
@@ -291,8 +330,21 @@ async def test_universes_lists_stored_definitions_with_their_band(seeded: Namesp
     ]
 
 
-def test_universes_is_empty_before_anything_is_stored(ns: Namespace):
+def test_universes_is_empty_before_anything_is_stored(ns: Namespace, data_dir: Path):
+    Store(data_dir / "cointoss.db").close()
     assert call(ns, "universes") == []
+
+
+@pytest.mark.parametrize("missing", ["database", "data_dir"])
+def test_a_read_without_a_database_is_refused_and_creates_nothing(
+    data_dir: Path, tmp_path: Path, missing: str
+):
+    home = data_dir if missing == "database" else tmp_path / "absent"
+    ns = Namespace.from_dict([fragment_entry(data_dir=home)])
+    with pytest.raises(NotInitialized, match="cointoss init"):
+        ns.get("data:universes")()
+    assert not (home / "cointoss.db").exists()
+    assert home.exists() == (missing == "database")
 
 
 @pytest.mark.parametrize(

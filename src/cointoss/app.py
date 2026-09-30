@@ -1,4 +1,4 @@
-"""The cointoss namespace: the scheduled daily sweep and the read API, issue #21.
+"""The cointoss namespace: the scheduled daily sweep and the read API.
 
 `CointossApp` is a lythonic `NamespaceFragment`. woodglue mounts it from `woodglue.yaml` as one
 entry of a namespace's `entries`, and `fragment_entry` builds that entry:
@@ -33,6 +33,14 @@ other than its creator's; the store's WAL journal lets these short readers run b
 writes; and nothing is left holding a transaction or a replaced file. Opening costs the schema
 and version check, a few small queries, which a local API at human rates does not notice.
 
+A read never creates anything: against a data directory with no `cointoss.db` it raises
+`NotInitialized`, naming `cointoss init`. Only `init` and the sweep create the store.
+
+One sweep runs at a time per data directory. The sweep node takes an exclusive `flock` on
+`sweep.lock` there, without waiting: a second sweep, such as a manual `cointoss sweep` while the
+scheduled one runs, raises `SweepInProgress` and does nothing. Waiting would block woodglue's
+IOLoop while the first finished, only to find the day already swept.
+
 A request the store cannot answer -- an unknown universe or Instrument, a date before a
 universe's first entry, a malformed date -- raises an `ApiError` carrying a JSON-RPC error code
 and a message naming what was not found. woodglue 0.0.6 answers any exception from a node with
@@ -43,6 +51,7 @@ caller but not yet a JSON-RPC client.
 from __future__ import annotations
 
 import datetime as dt
+import fcntl
 import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -70,9 +79,13 @@ __all__ = [
     "MemberView",
     "MembersView",
     "NotFound",
+    "NotInitialized",
+    "SweepInProgress",
     "SweepOutcome",
     "UniverseView",
     "fragment_entry",
+    "sweep_lock",
+    "utc_today",
     "utcnow",
 ]
 
@@ -82,6 +95,7 @@ DEFAULT_SWEEP_SCHEDULE = "5 0 * * *"
 """Five past midnight UTC: after CoinGecko's 00:00 point exists, and early enough to be it."""
 
 SWEEP_TRIGGER = "daily_sweep"
+SWEEP_LOCK = "sweep.lock"
 
 
 def utcnow() -> dt.datetime:
@@ -89,11 +103,15 @@ def utcnow() -> dt.datetime:
     return dt.datetime.now(dt.UTC)
 
 
+def utc_today() -> dt.date:
+    """Today's date on the UTC calendar, by `utcnow`."""
+    return as_utc(utcnow()).date()
+
+
 def fragment_entry(
     *,
     data_dir: Path | None = None,
     schedule: str = DEFAULT_SWEEP_SCHEDULE,
-    nsref: str = "data:",
 ) -> dict[str, Any]:
     """The `woodglue.yaml` namespace entry mounting the fragment with its daily sweep trigger.
 
@@ -104,7 +122,7 @@ def fragment_entry(
     entry: dict[str, Any] = {
         "type": "fragment",
         "gref": "cointoss.app:CointossApp",
-        "nsref": nsref,
+        "nsref": "data:",
         "configs": {"sweep": {"triggers": [{"name": SWEEP_TRIGGER, "schedule": schedule}]}},
     }
     if data_dir is not None:
@@ -113,7 +131,15 @@ def fragment_entry(
 
 
 class ApiError(Exception):
-    """A request the store cannot answer, with the JSON-RPC error code it stands for."""
+    """A read never creates anything: against a data directory with no `cointoss.db` it raises
+    `NotInitialized`, naming `cointoss init`. Only `init` and the sweep create the store.
+
+    One sweep runs at a time per data directory. The sweep node takes an exclusive `flock` on
+    `sweep.lock` there, without waiting: a second sweep, such as a manual `cointoss sweep` while the
+    scheduled one runs, raises `SweepInProgress` and does nothing. Waiting would block woodglue's
+    IOLoop while the first finished, only to find the day already swept.
+
+    A request the store cannot answer, with the JSON-RPC error code it stands for."""
 
     code: ClassVar[int] = -32000
 
@@ -124,17 +150,46 @@ class NotFound(ApiError):
     code: ClassVar[int] = -32001
 
 
+class NotInitialized(ApiError):
+    """The data directory holds no database yet."""
+
+    code: ClassVar[int] = -32002
+
+
 class BadRequest(ApiError):
     """A parameter is malformed: not an ISO date, a range ending before it starts."""
 
     code: ClassVar[int] = -32602
 
 
+class SweepInProgress(Exception):
+    """Another sweep holds the data directory's sweep lock."""
+
+
+@contextmanager
+def sweep_lock(data_dir: Path) -> Iterator[None]:
+    """Hold the data directory's sweep lock, or raise `SweepInProgress` at once if it is held.
+
+    An `flock` is released by the kernel when its holder exits, so a killed sweep leaves no
+    stale lock behind.
+    """
+    path = data_dir / SWEEP_LOCK
+    with path.open("a") as f:
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise SweepInProgress(f"another sweep holds {path}") from None
+        try:
+            yield
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
+
+
 class MemberView(BaseModel):
     """One member on a date and its bar for that date, if one is stored.
 
-    Close and volume are what a CoinGecko snapshot bar holds. Market cap and rank are not
-    persisted, so they are not here.
+    Close, volume and market cap are what a swept CoinGecko bar holds. Rank is not persisted,
+    so it is not here.
     """
 
     model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True)
@@ -144,6 +199,7 @@ class MemberView(BaseModel):
     name: str | None
     close: float | None
     volume: float | None
+    market_cap: float | None
     source: Source | None
     fetched_at: dt.datetime | None
 
@@ -181,16 +237,15 @@ class UniverseView(BaseModel):
 
 
 class SweepOutcome(BaseModel):
-    """What one firing of the sweep did.
+    """What one firing of the sweep did for the UTC `day`.
 
-    `at` is the moment the day's data is stamped with. `already_swept` means every declared
-    universe already had a Run for `date`, so nothing was fetched and `report` is None.
+    `already_swept` means every declared universe already had a Run for `day`, so nothing was
+    fetched and `report` is None.
     """
 
     model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True)
 
-    date: dt.date
-    at: dt.datetime
+    day: dt.date
     already_swept: bool
     reconciled: list[UniverseReconciled]
     report: ingest.SweepReport | None
@@ -206,7 +261,11 @@ class CointossApp(NamespaceFragment):
 
     @contextmanager
     def _store(self) -> Iterator[Store]:
-        self.settings.data_dir.mkdir(parents=True, exist_ok=True)
+        """The store for a read, which must already exist; opening never creates one here."""
+        if not self.settings.db_path.exists():
+            raise NotInitialized(
+                f"no database at {self.settings.db_path}; run `cointoss init` first"
+            )
         try:
             with Store(self.settings.db_path) as store:
                 yield store
@@ -219,51 +278,52 @@ class CointossApp(NamespaceFragment):
 
         Idempotent within a UTC day. Once every declared universe has a Run for today, a further
         firing fetches nothing and reports `already_swept`. Otherwise -- the first firing, a
-        retry after a failure, a universe newly declared, or `force` -- the sweep is stamped with
-        the `run_at` of the day's earliest Run if there is one, else the current time. Reusing
-        the day's moment is what lets a retry return the Runs already recorded instead of being
-        refused for a second membership on the same date. A forced re-sweep still re-fetches
-        prices, so a price that has moved since is filed as a Restatement.
+        retry after a failure, a universe newly declared, or `force` -- it sweeps at the current
+        time. `ingest.sweep` returns a universe's Run already recorded for the day rather than
+        evaluating it again, and keeps any bar already stored for the day, so a re-sweep only
+        fills in what is missing and never files a Restatement against the day's own bars.
+
+        Creates the data directory and store if absent. Raises `SweepInProgress` if another
+        sweep of this data directory is running.
         """
-        now = utcnow()
-        day = as_utc(now).date()
-        names = [spec.name for spec in self.settings.universes]
-        with self._store() as store:
+        now = as_utc(utcnow())
+        day = now.date()
+        names = [declared.name for declared in self.settings.universes]
+        self.settings.data_dir.mkdir(parents=True, exist_ok=True)
+        with sweep_lock(self.settings.data_dir), Store(self.settings.db_path) as store:
             reconciled = ensure_universes(store, self.settings.universes, day)
-            held = {
-                run.definition: as_utc(run.run_at)
-                for name in names
-                for run in store.load_evaluation_runs(name)
-                if run.source_asof == day
-            }
-            at = min(held.values(), default=as_utc(now))
-            if not force and names and held.keys() >= set(names):
-                log.info("sweep %s: already swept at %s", day, at.isoformat())
-                return SweepOutcome(
-                    date=day, at=at, already_swept=True, reconciled=reconciled, report=None
-                )
-            report = await ingest.sweep(store, at, names, top_n=self.settings.top_n)
+            swept_today = {name for name in names if store.runs_on(name, day)}
+            if not force and names and swept_today >= set(names):
+                log.info("sweep %s: already swept", day)
+                return SweepOutcome(day=day, already_swept=True, reconciled=reconciled, report=None)
+            report = await ingest.sweep(
+                store,
+                now,
+                names,
+                top_n=self.settings.top_n,
+                bar_window=self.settings.bar_window,
+            )
         log.info(
-            "sweep %s: listed %d, %d bars, %d restatements, failed %s",
+            "sweep %s: listed %d, %d bars, %d kept, %d restatements%s, failed %s",
             day,
             report.listed,
             report.bars,
+            report.bars_kept,
             report.restatements,
+            ", late: no bars" if report.bars_skipped_late else "",
             sorted(report.failed) or "none",
         )
-        return SweepOutcome(
-            date=day, at=at, already_swept=False, reconciled=reconciled, report=report
-        )
+        return SweepOutcome(day=day, already_swept=False, reconciled=reconciled, report=report)
 
     @nsnode(tags=["api"])
     def members(self, universe: str, date: str) -> MembersView:
-        """The members of a universe on a date, each with that date's close and volume."""
+        """The members of a universe on a date, each with that date's close, volume and market cap."""
         on = _date(date, "date")
         with self._store() as store:
-            held = store.member_bars(universe, on)
-            instruments = {i: store.load_instrument(i) for i in held}
+            bar_by_member = store.member_bars(universe, on)
+            instruments = {i: store.load_instrument(i) for i in bar_by_member}
         views: list[MemberView] = []
-        for instrument_id, bar in held.items():
+        for instrument_id, bar in bar_by_member.items():
             instrument = instruments[instrument_id]
             views.append(
                 MemberView(
@@ -272,6 +332,7 @@ class CointossApp(NamespaceFragment):
                     name=instrument.name if instrument else None,
                     close=bar.close if bar else None,
                     volume=bar.volume if bar else None,
+                    market_cap=bar.market_cap if bar else None,
                     source=bar.source if bar else None,
                     fetched_at=bar.fetched_at if bar else None,
                 )

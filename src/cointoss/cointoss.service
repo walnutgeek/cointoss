@@ -1,8 +1,8 @@
 # systemd --user unit for a cointoss instance.
 #
-# A template: `cointoss init --systemd` fills in {bin_dir} (the virtualenv's bin directory,
-# e.g. /home/me/cointoss/.venv/bin) and {data_dir}, and installs the result as
-# ~/.config/systemd/user/cointoss.service.
+# A template: `cointoss init --systemd` fills in $bin_dir (the virtualenv's bin directory,
+# e.g. /home/me/cointoss/.venv/bin), $data_dir and $timeout (coreutils' `timeout`, found on
+# PATH), and installs the result as ~/.config/systemd/user/cointoss.service.
 
 [Unit]
 Description=cointoss: daily CoinGecko sweep and JSON-RPC API on woodglue
@@ -10,13 +10,14 @@ Documentation=https://github.com/walnutgeek/cointoss
 
 [Service]
 Type=simple
-Environment=COINTOSS_HOME={data_dir}
+Environment=COINTOSS_HOME=$data_dir
 Environment=PYTHONUNBUFFERED=1
-# Catch up a sweep missed while the service was down; a no-op once today is swept. Bounded,
-# and prefixed with '-', so a network that is not up yet cannot keep the API from starting.
-ExecStartPre=-/usr/bin/timeout 120 {bin_dir}/cointoss sweep
+# Catch up a sweep missed while the service was down; a no-op once today is swept. Bounded by
+# `timeout` and prefixed with '-', so a network that is not up yet cannot keep the API from
+# starting: '-' ignores a failed exit, but TimeoutStartSec expiring would fail the whole unit.
+ExecStartPre=-$timeout 120 $bin_dir/cointoss sweep
 # `wgl start` runs in the foreground.
-ExecStart={bin_dir}/wgl --data={data_dir} start
+ExecStart=$bin_dir/wgl --data=$data_dir start
 Restart=on-failure
 RestartSec=30
 TimeoutStartSec=180
