@@ -73,10 +73,12 @@ from cointoss.risk import (
 )
 from cointoss.series import (
     DatedMatrix,
+    DatedUniverse,
     EntryOrder,
     ExposureSemantics,
     ExposureSeries,
     NotYetStarted,
+    UniverseSeries,
 )
 from cointoss.universe import (
     EvaluationRun,
@@ -497,6 +499,8 @@ class Index(NamedTuple):
 # what the caller actually has: a symbol, or an external identifier. These do. Membership is
 # the same shape: its key leads with the Definition then the Instrument, while a point read
 # starts from a Definition and a date.
+# `universes_containing` starts from an Instrument alone, which neither membership index leads
+# with.
 INDEXES: tuple[Index, ...] = (
     Index(
         "TickerRecord",
@@ -512,6 +516,11 @@ INDEXES: tuple[Index, ...] = (
         "UniverseMembership",
         "CREATE INDEX IF NOT EXISTS UniverseMembership_by_date "
         "ON UniverseMembership (definition, valid_from, valid_to)",
+    ),
+    Index(
+        "UniverseMembership",
+        "CREATE INDEX IF NOT EXISTS UniverseMembership_by_instrument "
+        "ON UniverseMembership (instrument, valid_from, valid_to)",
     ),
 )
 
@@ -1106,6 +1115,81 @@ class Store:
             )
             for r in rows
         ]
+
+    def universes_containing(
+        self, instrument_id: InstrumentId | str, start: date, end: date
+    ) -> tuple[str, ...]:
+        """Names of the universes the Instrument was a member of on any day of `[start, end]`.
+
+        The cross-cutting read ADR-0008 shaped the storage around: one indexed range query over
+        membership intervals, building no Series. Both ends are inclusive, so a single-day range
+        is a point query and "in 2024" is `(date(2024, 1, 1), date(2024, 12, 31))`. Against the
+        half-open `[valid_from, valid_to)` intervals, that is overlap when `valid_from <= end`
+        and `valid_to > start`, an open interval reaching every later date.
+
+        Names come back sorted, each once however often the Instrument rejoined. Supersession is
+        not folded, as in `members_at`: the id is matched as the evaluation recorded it. An
+        unstored Instrument raises `UnknownInstrument`, so a typo is not read as "in none".
+        """
+        if end < start:
+            raise ValueError(f"range end {end} precedes its start {start}")
+        row = self._instrument_row(instrument_id)
+        if row is None:
+            raise UnknownInstrument(f"{instrument_id} is not stored")
+        cursor = self.conn.cursor()
+        execute_sql(
+            cursor,
+            "SELECT DISTINCT d.name FROM UniverseMembership m "
+            "JOIN UniverseDefinition d ON d.universe_definition_id = m.definition "
+            "WHERE m.instrument = ? AND m.valid_from <= ? "
+            "AND (m.valid_to IS NULL OR m.valid_to > ?) ORDER BY d.name",
+            [row.instrument_row_id, end.isoformat(), start.isoformat()],
+        )
+        return tuple(name for (name,) in cursor.fetchall())
+
+    def load_universe_series(self, name: str) -> UniverseSeries:
+        """The whole Universe Series of a Definition, as the value object.
+
+        The expensive path: it reads every entry and every interval the Definition has, where
+        `members_at` answers one date with one indexed query. Use it only where a caller is
+        typed on `UniverseSeries`. Each entry's members are ordered by Instrument Id, as
+        `members_at` orders them. A Definition never evaluated loads as a Series with no
+        entries, whose `as_of` raises `NotYetStarted`.
+        """
+        definition_id = self._require_universe(name)
+        entry_dates = sorted(
+            row.as_of for row in UniverseEntryRow.select(self.conn, definition=definition_id)
+        )
+        cursor = self.conn.cursor()
+        execute_sql(
+            cursor,
+            "SELECT i.instrument_id, m.valid_from, m.valid_to FROM UniverseMembership m "
+            "JOIN Instrument i ON i.instrument_row_id = m.instrument "
+            "WHERE m.definition = ? ORDER BY i.instrument_id",
+            [definition_id],
+        )
+        intervals = [
+            (
+                instrument_id,
+                date.fromisoformat(start),
+                None if end is None else date.fromisoformat(end),
+            )
+            for instrument_id, start, end in cursor.fetchall()
+        ]
+        entries = tuple(
+            DatedUniverse(
+                as_of=when,
+                universe=Universe(
+                    [
+                        instrument_id
+                        for instrument_id, start, end in intervals
+                        if start <= when and (end is None or when < end)
+                    ]
+                ),
+            )
+            for when in entry_dates
+        )
+        return UniverseSeries(name=name, entries=entries)
 
     def _require_universe(self, name: str) -> int:
         definition_id = self._universe_definition_id(name)

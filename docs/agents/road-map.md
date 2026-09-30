@@ -34,9 +34,9 @@ definitions persist, and four tickets remain on issue #5.
 
 Everything that makes it a system rather than a library:
 
-- **Partial persistence.** Identity, Ticker History, Universe Definitions, members, and Exposure
-  and Covariance entries are stored. Membership intervals, Evaluation Runs and Bars are not:
-  issues #12, #13 and #16.
+- **Partial persistence.** Identity, Ticker History, Universe Definitions, members, membership
+  intervals, Evaluation Runs, and Exposure and Covariance entries are stored, and membership reads
+  back by date, by Instrument, or as a whole `UniverseSeries`. Bars are not: issue #16.
 - **No ingest layer.** Nothing constructs an `Observation` from a source row, so ADR-0004's
   "a FIGI attempt is mandatory at instrument creation" has no home to be enforced in. Issue #14
   builds the narrow slice that pinning a typed ticker needs; scheduled sweeps stay out.
@@ -94,10 +94,10 @@ an ingest layer, price storage, and returns.
 
 Each step is independently useful and leaves the system working.
 
-1. **Persistence for what exists.** `cointoss.store` to ADR-0008. Mostly done: identity, Ticker
-   History, Universe Definitions, members, and matrix entries all persist. Membership intervals
-   and Evaluation Runs remain, with the append-equivalence guard that keeps the store's
-   diff-and-close honest against `UniverseSeries.append`. Issues #12 and #13.
+1. **Persistence for what exists.** `cointoss.store` to ADR-0008. Done: identity, Ticker
+   History, Universe Definitions, members, membership intervals, Evaluation Runs and matrix
+   entries all persist, and a seeded property test keeps the store's diff-and-close honest
+   against `UniverseSeries.append`.
 2. **Universe Definitions.** ADR-0007's recipe, revision log, Inclusions and Exclusions and the
    pure evaluator are done. Pinning a typed ticker, which is where the mandatory FIGI attempt
    lands, is issue #14.
