@@ -135,7 +135,7 @@ the ADRs; what follows is only the index, so nothing here is re-litigated from m
 - **CoinGecko and Yahoo crypto bars are about a day apart.** CoinGecko's 00:00 UTC point for day
   D is roughly D-1's close; Yahoo's bar closes at the end of D. `bars_for` falling back between
   them splices series offset by a day. ADR-0009's "agree on what a crypto day is" holds for the
-  label only. Settle before backfill mixes the two.
+  label only. Settle before Yahoo crypto bars are ingested alongside CoinGecko.
 - **A fixed `days` for `market_chart`.** The bar for a date depends on `days` (hourly versus
   daily points), so overlapping fetches with different `days` file a Restatement on every
   overlapping date. Ingest must pick one.
