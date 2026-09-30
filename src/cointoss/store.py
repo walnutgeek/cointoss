@@ -71,13 +71,22 @@ from cointoss.risk import (
     RiskModelRevision,
     RiskParameters,
 )
-from cointoss.series import DatedMatrix, ExposureSemantics, ExposureSeries
+from cointoss.series import (
+    DatedMatrix,
+    EntryOrder,
+    ExposureSemantics,
+    ExposureSeries,
+    NotYetStarted,
+)
 from cointoss.universe import (
+    EvaluationRun,
     MemberRole,
+    RunOutcome,
     UniverseDefinition,
     UniverseDefinitionRevision,
     UniverseMemberRecord,
     UniverseParameters,
+    UnknownRevision,
     resolved_members,
 )
 
@@ -94,6 +103,7 @@ __all__ = [
     "SCHEMA_VERSION",
     "TABLES",
     "CovarianceEntryRow",
+    "EvaluationRunRow",
     "ExposureEntryRow",
     "Index",
     "InstrumentReferenceRow",
@@ -108,9 +118,12 @@ __all__ = [
     "Store",
     "StoreError",
     "UnknownInstrument",
+    "UnknownUniverse",
     "TickerRecordRow",
     "UniverseDefinitionRow",
+    "UniverseEntryRow",
     "UniverseMemberRow",
+    "UniverseMembershipRow",
     "UniverseRevisionRow",
 ]
 
@@ -129,6 +142,10 @@ class MigrationGap(StoreError):
 
 class UnknownInstrument(StoreError):
     """A member pins an Instrument Id the store does not hold."""
+
+
+class UnknownUniverse(StoreError):
+    """A Universe Definition name the store does not hold."""
 
 
 class Persistence(StrEnum):
@@ -381,6 +398,71 @@ class UniverseMemberRow(DbModel["UniverseMemberRow"]):
         return "UniverseMember"
 
 
+class UniverseEntryRow(DbModel["UniverseEntryRow"]):
+    """One Universe Series entry: a date the membership changed, and the revision behind it.
+
+    The intervals say who was a member; this says when the Series moved and under which recipe.
+    Both are needed. An entry that only closed intervals, and a first entry with nobody in it,
+    have no interval row of their own to carry a Revision Stamp or mark where the Series
+    begins, so without this row "nothing qualified" would read as "not yet started". It is
+    durable for the same reason the intervals are: hysteresis makes neither re-derivable.
+    """
+
+    universe_entry_id: int = Field(default=-1, description="(PK)")
+    definition: int = Field(
+        description="(FK:UniverseDefinition.universe_definition_id)(AK) Definition it belongs to"
+    )
+    as_of: date = Field(description="(AK) Date the membership changed")
+    revision: int = Field(description="Definition revision the entry was produced under")
+
+    @classmethod
+    @override
+    def get_table_name(cls) -> str:
+        return "UniverseEntry"
+
+
+class UniverseMembershipRow(DbModel["UniverseMembershipRow"]):
+    """One Instrument's stretch inside a Universe Series. `valid_to` null means still a member.
+
+    Half-open, `[valid_from, valid_to)`, so a member dropped on a date is absent on that date,
+    matching `UniverseSeries.as_of`, whose entry is in force from its own date onward.
+    """
+
+    universe_membership_id: int = Field(default=-1, description="(PK)")
+    definition: int = Field(
+        description="(FK:UniverseDefinition.universe_definition_id)(AK) Definition it belongs to"
+    )
+    instrument: int = Field(description="(FK:Instrument.instrument_row_id)(AK) The member")
+    valid_from: date = Field(description="(AK) First date the Instrument is a member")
+    valid_to: date | None = Field(default=None, description="First date it no longer is")
+
+    @classmethod
+    @override
+    def get_table_name(cls) -> str:
+        return "UniverseMembership"
+
+
+class EvaluationRunRow(DbModel["EvaluationRunRow"]):
+    """One execution of a Universe Definition. Liveness, not truth: see `EvaluationRun`."""
+
+    evaluation_run_id: int = Field(default=-1, description="(PK)")
+    definition: int = Field(
+        description="(FK:UniverseDefinition.universe_definition_id)(AK) Definition evaluated"
+    )
+    run_at: datetime = Field(description="(AK) When the job executed")
+    revision: int = Field(description="Definition revision it ran under")
+    source_asof: date = Field(description="Date of the source data the membership is for")
+    outcome: RunOutcome = Field(description="Whether a Series entry was written")
+    n_admitted: int = Field(description="Instruments that joined")
+    n_dropped: int = Field(description="Instruments that left")
+    n_unresolved: int = Field(description="Standing members with no Instrument to evaluate")
+
+    @classmethod
+    @override
+    def get_table_name(cls) -> str:
+        return "EvaluationRun"
+
+
 # Every table in the database, with the classification that decides whether a schema change
 # must migrate it or may drop and backfill it. Later tickets add their tables here; this
 # mapping is both the schema and the ADR-0008 classification, so the two cannot drift.
@@ -392,6 +474,9 @@ TABLES: dict[type[DbModel[Any]], Persistence] = {
     UniverseDefinitionRow: Persistence.DURABLE,
     UniverseRevisionRow: Persistence.DURABLE,
     UniverseMemberRow: Persistence.DURABLE,
+    UniverseEntryRow: Persistence.DURABLE,
+    UniverseMembershipRow: Persistence.DURABLE,
+    EvaluationRunRow: Persistence.REBUILDABLE,
     ExposureEntryRow: Persistence.DURABLE,
     RiskModelRow: Persistence.DURABLE,
     RiskModelRevisionRow: Persistence.DURABLE,
@@ -409,7 +494,9 @@ class Index(NamedTuple):
 
 
 # The alternative keys lead with the Instrument, so neither supports a lookup that starts from
-# what the caller actually has: a symbol, or an external identifier. These do.
+# what the caller actually has: a symbol, or an external identifier. These do. Membership is
+# the same shape: its key leads with the Definition then the Instrument, while a point read
+# starts from a Definition and a date.
 INDEXES: tuple[Index, ...] = (
     Index(
         "TickerRecord",
@@ -420,6 +507,11 @@ INDEXES: tuple[Index, ...] = (
         "InstrumentReference",
         "CREATE INDEX IF NOT EXISTS InstrumentReference_by_value "
         "ON InstrumentReference (kind, value, qualifier)",
+    ),
+    Index(
+        "UniverseMembership",
+        "CREATE INDEX IF NOT EXISTS UniverseMembership_by_date "
+        "ON UniverseMembership (definition, valid_from, valid_to)",
     ),
 )
 
@@ -852,6 +944,200 @@ class Store:
             instrument_id=instrument_id,
             added_in_revision=row.added_in_revision,
             removed_in_revision=row.removed_in_revision,
+        )
+
+    # -- Universe Membership and Evaluation Runs, ADR-0007 and ADR-0008 --
+
+    def record_membership(
+        self,
+        definition: str,
+        when: date,
+        members: Iterable[InstrumentId],
+        *,
+        revision: int | None = None,
+        run_at: datetime | None = None,
+    ) -> EvaluationRun:
+        """Record what an evaluation produced for `when`, and that it ran.
+
+        Never goes through `UniverseSeries.append`, but follows the same rule. The open
+        intervals are diffed against `members`: leavers are closed at `when`, joiners opened
+        from it, and a Series entry stamped with `revision` is written. A membership equal to
+        the one in force writes no interval and no entry, only the Run, which is then the sole
+        evidence the job is alive. The first evaluation always writes an entry, empty or not.
+
+        `when` is the source data's as-of date; `run_at` is the wall clock and defaults to now.
+        `revision` defaults to the Definition's latest.
+
+        Refused with `EntryOrder`, and nothing written:
+
+        - `when` before the latest Run or the latest entry. Hysteresis makes each evaluation
+          depend on the membership before it, so a change slotted in behind a later run would
+          contradict the input that run was computed from.
+        - `when` equal to the latest entry's date with a different membership: two entries
+          would claim one date. A repeat of the same result on that date is a heartbeat, and a
+          change on a date only a quiet run has touched is accepted, as `append` accepts it.
+        """
+        definition_id = self._require_universe(definition)
+        revisions = {
+            r.revision for r in UniverseRevisionRow.select(self.conn, definition=definition_id)
+        }
+        stamp = max(revisions) if revision is None else revision
+        if stamp not in revisions:
+            raise UnknownRevision(f"{definition} has no revision {stamp}")
+        wanted = self._instrument_row_ids(members)
+
+        latest_entry = self._latest(UniverseEntryRow, "as_of", definition_id)
+        latest_run = self._latest(EvaluationRunRow, "source_asof", definition_id)
+        for latest in (latest_entry, latest_run):
+            if latest is not None and when < latest:
+                raise EntryOrder(f"{definition}: {when} precedes an evaluation for {latest}")
+
+        open_rows = {
+            row.instrument: row
+            for row in UniverseMembershipRow.select(
+                self.conn, definition=definition_id, valid_to=None
+            )
+        }
+        joiners = wanted.keys() - open_rows.keys()
+        leavers = open_rows.keys() - wanted.keys()
+        changed = latest_entry is None or bool(joiners or leavers)
+        if changed and latest_entry == when:
+            raise EntryOrder(f"{definition}: {when} already holds a different membership")
+
+        run = EvaluationRun(
+            definition=definition,
+            revision=stamp,
+            run_at=datetime.now(UTC) if run_at is None else run_at,
+            source_asof=when,
+            outcome=RunOutcome.CHANGED if changed else RunOutcome.UNCHANGED,
+            n_admitted=len(joiners),
+            n_dropped=len(leavers),
+            n_unresolved=self._unresolved_at(definition, stamp),
+        )
+        try:
+            for instrument in leavers:
+                open_rows[instrument].model_copy(update={"valid_to": when}).save(self.conn)
+            for instrument in joiners:
+                UniverseMembershipRow(
+                    definition=definition_id, instrument=instrument, valid_from=when
+                ).save(self.conn)
+            if changed:
+                UniverseEntryRow(definition=definition_id, as_of=when, revision=stamp).save(
+                    self.conn
+                )
+            EvaluationRunRow(
+                definition=definition_id,
+                run_at=run.run_at,
+                revision=run.revision,
+                source_asof=run.source_asof,
+                outcome=run.outcome,
+                n_admitted=run.n_admitted,
+                n_dropped=run.n_dropped,
+                n_unresolved=run.n_unresolved,
+            ).save(self.conn)
+        except BaseException:
+            self.conn.rollback()
+            raise
+        self.conn.commit()
+        return run
+
+    def members_at(self, definition: str, when: date) -> Universe:
+        """The membership of a universe on a date, as one indexed query.
+
+        Builds no Series. A date before the first entry raises `NotYetStarted` rather than
+        answering empty, so "not yet started" stays distinguishable from "nothing qualified".
+        Members come back ordered by Instrument Id, since stored membership has no order of its
+        own. Supersession is not folded: the ids are the ones the evaluation produced.
+        """
+        stamp = when.isoformat()
+        cursor = self.conn.cursor()
+        execute_sql(
+            cursor,
+            "SELECT (SELECT MIN(e.as_of) FROM UniverseEntry e "
+            "WHERE e.definition = d.universe_definition_id), i.instrument_id "
+            "FROM UniverseDefinition d "
+            "LEFT JOIN UniverseMembership m ON m.definition = d.universe_definition_id "
+            "AND m.valid_from <= ? AND (m.valid_to IS NULL OR m.valid_to > ?) "
+            "LEFT JOIN Instrument i ON i.instrument_row_id = m.instrument "
+            "WHERE d.name = ?",
+            [stamp, stamp, definition],
+        )
+        rows = cursor.fetchall()
+        if not rows:
+            raise UnknownUniverse(f"{definition} is not stored")
+        started = rows[0][0]
+        if started is None:
+            raise NotYetStarted(f"{definition} has no entries")
+        if when < date.fromisoformat(started):
+            raise NotYetStarted(f"{definition} begins {started}, which is after {when}")
+        return Universe(sorted(row[1] for row in rows if row[1] is not None))
+
+    def revision_at(self, definition: str, when: date) -> int:
+        """The Definition revision the Series entry in force on `when` was produced under."""
+        definition_id = self._require_universe(definition)
+        cursor = self.conn.cursor()
+        execute_sql(
+            cursor,
+            "SELECT revision FROM UniverseEntry WHERE definition = ? AND as_of <= ? "
+            "ORDER BY as_of DESC LIMIT 1",
+            [definition_id, when.isoformat()],
+        )
+        row = cursor.fetchone()
+        if row is None:
+            raise NotYetStarted(f"{definition} has no entry on or before {when}")
+        return row[0]
+
+    def load_evaluation_runs(self, definition: str) -> list[EvaluationRun]:
+        """Every Evaluation Run of a Definition, in the order the jobs executed."""
+        definition_id = self._require_universe(definition)
+        rows = sorted(
+            EvaluationRunRow.select(self.conn, definition=definition_id), key=lambda r: r.run_at
+        )
+        return [
+            EvaluationRun(
+                definition=definition,
+                revision=r.revision,
+                run_at=r.run_at,
+                source_asof=r.source_asof,
+                outcome=r.outcome,
+                n_admitted=r.n_admitted,
+                n_dropped=r.n_dropped,
+                n_unresolved=r.n_unresolved,
+            )
+            for r in rows
+        ]
+
+    def _require_universe(self, name: str) -> int:
+        definition_id = self._universe_definition_id(name)
+        if definition_id is None:
+            raise UnknownUniverse(f"{name} is not stored")
+        return definition_id
+
+    def _instrument_row_ids(self, members: Iterable[InstrumentId]) -> dict[int, InstrumentId]:
+        """Surrogate keys for an evaluated membership, refusing any Instrument not stored."""
+        found: dict[int, InstrumentId] = {}
+        for instrument_id in members:
+            row = self._instrument_row(instrument_id)
+            if row is None:
+                raise UnknownInstrument(f"{instrument_id} is not stored")
+            found[row.instrument_row_id] = instrument_id
+        return found
+
+    def _latest(self, table: type[DbModel[Any]], column: str, definition_id: int) -> date | None:
+        cursor = self.conn.cursor()
+        execute_sql(
+            cursor,
+            f"SELECT MAX({column}) FROM {table.get_table_name()} WHERE definition = ?",
+            [definition_id],
+        )
+        latest = cursor.fetchone()[0]
+        return None if latest is None else date.fromisoformat(latest)
+
+    def _unresolved_at(self, definition: str, revision: int) -> int:
+        return sum(
+            1
+            for record in self.load_universe_members(definition)
+            if record.instrument_id is None and record.covers(revision)
         )
 
     def save_exposure_series(self, series: ExposureSeries) -> None:

@@ -25,7 +25,7 @@ caller.
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
-from datetime import date
+from datetime import date, datetime
 from enum import StrEnum
 from typing import Any, ClassVar
 
@@ -34,8 +34,10 @@ from pydantic import BaseModel, ConfigDict, model_validator
 from cointoss.instrument import InstrumentId, Source
 
 __all__ = [
+    "EvaluationRun",
     "MemberRole",
     "RaggedRule",
+    "RunOutcome",
     "UniverseDefinition",
     "UniverseDefinitionRevision",
     "UniverseError",
@@ -67,6 +69,38 @@ class MemberRole(StrEnum):
 
     INCLUSION = "inclusion"
     EXCLUSION = "exclusion"
+
+
+class RunOutcome(StrEnum):
+    """Whether an Evaluation Run wrote a Universe Series entry.
+
+    The first run of a Definition always does, even when its membership is empty, because it is
+    what turns "not yet started" into "nothing qualified".
+    """
+
+    CHANGED = "changed"
+    UNCHANGED = "unchanged"
+
+
+class EvaluationRun(BaseModel):
+    """One execution of a Universe Definition: evidence the job ran, not a record of truth.
+
+    `source_asof` is the date the membership is recorded for and `run_at` is when the job
+    executed, kept apart so a late or backfilled run is not mistaken for a stale market. The
+    counts are against the membership in force before the run; `n_unresolved` counts the
+    members standing at `revision` that have no Instrument and so could not take part.
+    """
+
+    model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True)
+
+    definition: str
+    revision: int
+    run_at: datetime
+    source_asof: date
+    outcome: RunOutcome
+    n_admitted: int
+    n_dropped: int
+    n_unresolved: int
 
 
 class UniverseParameters(BaseModel):

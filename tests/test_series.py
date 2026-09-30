@@ -188,6 +188,25 @@ def test_two_entries_cannot_claim_one_date() -> None:
         )
     with pytest.raises(EntryOrder):
         UniverseSeries(name="midcap").append(Q2, ["AAPL"]).append(Q1, ["MSFT"])
+    with pytest.raises(EntryOrder):
+        UniverseSeries(
+            name="midcap",
+            entries=(
+                DatedUniverse(as_of=Q2, universe=Universe(["AAPL"])),
+                DatedUniverse(as_of=Q1, universe=Universe(["MSFT"])),
+            ),
+        )
+
+
+def test_appending_an_unchanged_universe_adds_no_entry() -> None:
+    """A Series records events, not heartbeats; membership is a set, so order is not a change."""
+    series = UniverseSeries(name="midcap").append(Q1, ["AAPL", "MSFT"])
+    assert series.append(Q2, ["MSFT", "AAPL"]) == series
+    assert series.append(Q1, ["AAPL", "MSFT"]) == series
+    with pytest.raises(EntryOrder):
+        series.append(date(2023, 12, 31), ["AAPL", "MSFT"])
+    with pytest.raises(EntryOrder):
+        series.append(Q1, ["AAPL"])
 
 
 def test_appending_leaves_the_original_readable_and_unchanged() -> None:

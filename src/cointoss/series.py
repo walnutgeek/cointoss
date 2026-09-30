@@ -193,8 +193,22 @@ class UniverseSeries(BaseModel):
         return self.entries[_position(self.dates(), when, self.name)].universe
 
     def append(self, when: date, universe: Universe | Iterable[str]) -> UniverseSeries:
-        """A new Series with one more entry. Series are immutable."""
-        entry = DatedUniverse(as_of=when, universe=Universe(universe))
+        """A new Series with one more entry, or this one if membership did not change.
+
+        Series are immutable. An unchanged membership is not an entry: `dates` are the dates the
+        scope changed, and the store records no interval rows for a quiet evaluation, so the
+        fold must not either. Membership is compared as a set, so reordering is not a change.
+        An earlier date is refused before that comparison, so a misordered replay fails even
+        when it would have changed nothing.
+        """
+        universe = Universe(universe)
+        if self.entries:
+            last = self.entries[-1]
+            if when < last.as_of:
+                raise EntryOrder(f"{self.name}: {when} precedes the last entry {last.as_of}")
+            if set(universe) == set(last.universe):
+                return self
+        entry = DatedUniverse(as_of=when, universe=universe)
         return UniverseSeries(name=self.name, entries=(*self.entries, entry))
 
     def change(self, start: date, end: date) -> UniverseChange:
