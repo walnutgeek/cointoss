@@ -4,17 +4,13 @@ Where cointoss is, where it is going, and what has to be decided before it gets 
 as directions change. Decisions that survive belong in `docs/adr/`; vocabulary belongs in
 `CONTEXT.md`. This file holds the parts that are still moving.
 
-Last updated: 2026-09-29, at `d508fd0`.
-
-In progress: the persistence layer, GitHub issue #5. Eight of its twelve tickets are done;
-`docs/superpowers/plans/2026-09-29-persistence-layer-handoff.md` carries the state and what is
-left.
+Last updated: 2026-09-29, at `0d15c29`.
 
 ## Where we are
 
-Seven ADRs. 237 tests, lint clean. ADR-0007, 0008 and 0009 settle persistence and are two thirds
-built: `cointoss.universe`, `cointoss.prices` and `cointoss.store` exist, identity and universe
-definitions persist, and four tickets remain on issue #5.
+Nine ADRs. 347 tests, lint clean. The persistence layer (issue #5, ADR-0007, 0008 and 0009) is
+built: identity, Universe Definitions, membership intervals, Evaluation Runs, matrix entries and
+price history all persist, and every read folds supersession.
 
 ### Built
 
@@ -28,24 +24,20 @@ definitions persist, and four tickets remain on issue #5.
 | `cointoss.sources.coingecko` | Coin list, markets, detail, OHLC, market chart. Cached. |
 | `cointoss.universe` | `UniverseDefinition` with a revision log, Inclusions and Exclusions, pure rank-band evaluation. ADR-0007. |
 | `cointoss.prices` | `Bar`, `CorporateAction`, `Restatement`, source mapping, split-aware restatement detection. ADR-0009. |
-| `cointoss.store` | The only module that touches SQL. Ten tables, enforced pragmas, `SchemaVersion`. ADR-0008. |
+| `cointoss.store` | The only module that touches SQL. Sixteen tables, enforced pragmas, `SchemaVersion`. Membership by date or Instrument, bars resolved through Price Sources. ADR-0008. |
+| `cointoss.ingest` | Pinning a typed ticker: the mandatory FIGI attempt, resolve or mint, retrying an unresolved Instrument. ADR-0004. |
 
 ### Not built
 
 Everything that makes it a system rather than a library:
 
-- **Partial persistence.** Identity, Ticker History, Universe Definitions, members, membership
-  intervals, Evaluation Runs, and Exposure and Covariance entries are stored, and membership reads
-  back by date, by Instrument, or as a whole `UniverseSeries`. Bars are not: issue #16.
-- **No ingest layer.** Nothing constructs an `Observation` from a source row, so ADR-0004's
-  "a FIGI attempt is mandatory at instrument creation" has no home to be enforced in. Issue #14
-  builds the narrow slice that pinning a typed ticker needs; scheduled sweeps stay out.
-- **No price storage.** `cointoss.prices` maps a source payload into Bars, and nothing writes them
-  down yet: issue #16. `market_chart` is in the adapter.
+- **No ingest sweep.** `cointoss.ingest` covers pinning a typed ticker and retrying one
+  unresolved Instrument. Nothing yet turns a source listing into Observations on a schedule, and
+  nothing runs the retry queue.
 - **No returns.** Nothing turns prices into returns, so no covariance can be computed; the only
   way one enters the system today is a vendor import.
-- **No universe accumulation.** A Definition evaluates to a membership, and nothing records the
-  result over time: issue #12.
+- **No universe accumulation on a schedule.** `record_membership` stores an evaluation, and
+  nothing calls it unattended.
 - **No portfolio.** ADR-0001's `Portfolio`, `Trade`, `Position` and `PortfolioSnapshot` are
   designed and unimplemented.
 - **No running instance.** `cointoss.cli:main` prints `TBD`. There is no `lyth.yaml`, no
@@ -69,8 +61,8 @@ CoinGecko ─────┘   (FIGI-anchored)  └─ UniverseSeries "coingecko
 ```
 
 Nothing in that diagram is speculative about the parts already built — identity, universes and
-declared covariance exist and are tested. What is missing is the plumbing between them and the
-storage underneath.
+declared covariance exist and are tested. Storage is built too. What is missing is the plumbing that feeds
+it.
 
 ## What a running instance needs
 
@@ -87,27 +79,24 @@ it:
 - **`lythonic.compose.dag_runner`** executes DAGs with provenance.
 - **woodglue** serves it: apps, service, mount, CLI, UI.
 
-So "run an instance" is mostly configuration and wiring, plus the three genuinely new pieces:
-an ingest layer, price storage, and returns.
+So "run an instance" is mostly configuration and wiring, plus the genuinely new pieces: the
+ingest sweep and returns.
 
 ## Proposed build order
 
 Each step is independently useful and leaves the system working.
 
-1. **Persistence for what exists.** `cointoss.store` to ADR-0008. Done: identity, Ticker
-   History, Universe Definitions, members, membership intervals, Evaluation Runs and matrix
-   entries all persist, and a seeded property test keeps the store's diff-and-close honest
-   against `UniverseSeries.append`.
-2. **Universe Definitions.** ADR-0007's recipe, revision log, Inclusions and Exclusions and the
-   pure evaluator are done. Pinning a typed ticker, which is where the mandatory FIGI attempt
-   lands, is issue #14.
-3. **Ingest.** One path from a source row to an `Observation` to an `InstrumentRegistry`, enforcing
-   the mandatory-FIGI-attempt invariant and driving the unresolved retry queue. Pinning a manual
-   member is one of its entry points.
+1. **Persistence for what exists.** Done (#5). `cointoss.store` to ADR-0008, with a seeded
+   property test keeping the store's diff-and-close honest against `UniverseSeries.append`.
+2. **Universe Definitions.** Done. ADR-0007's recipe, revision log, Inclusions and Exclusions, the
+   pure evaluator, and pinning a typed ticker.
+3. **Ingest.** One path from a source row to an `Observation` to an `InstrumentRegistry`, in
+   `cointoss.ingest` beside pinning, enforcing the mandatory-FIGI-attempt invariant and driving
+   the unresolved retry queue through `retry_resolution`.
 4. **The instance.** `lyth.yaml`, a real CLI, cron triggers on the ingest and evaluation DAGs,
    woodglue serving. First point at which data accumulates unattended.
-5. **Price storage.** ADR-0009's Bars, Corporate Actions and Restatements, from `get_prices` and
-   CoinGecko `market_chart`. Needs `market_chart` added to the CoinGecko adapter first.
+5. **Price storage.** Done (#16). ADR-0009's Bars, Corporate Actions and Restatements, with
+   provisional bars excused from restatement. Ingest feeds it.
 6. **Returns.** Whatever representation the estimator needs.
 7. **The estimator.** Closes ADR-0005's gap so a covariance can be computed rather than only
    imported.
@@ -138,7 +127,26 @@ the ADRs; what follows is only the index, so nothing here is re-litigated from m
 
 - **Delisting versus absence.** Absence from a source is not the same fact as a delisting, and
   nothing yet distinguishes them. ADR-0007 drops an instrument from membership either way. This
-  needs settling before #3.
+  needs settling before step 3.
+- **CoinGecko and Yahoo crypto bars are about a day apart.** CoinGecko's 00:00 UTC point for day
+  D is roughly D-1's close; Yahoo's bar closes at the end of D. `bars_for` falling back between
+  them splices series offset by a day. ADR-0009's "agree on what a crypto day is" holds for the
+  label only. Settle before ingest mixes the two.
+- **A fixed `days` for `market_chart`.** The bar for a date depends on `days` (hourly versus
+  daily points), so overlapping fetches with different `days` file a Restatement on every
+  overlapping date. Ingest must pick one.
+- **Backfills.** `record_membership` refuses a `when` earlier than the latest Evaluation Run, so
+  evaluating a past date after a later one is not supported (ADR-0008 amendment).
+- **Unfolded reads.** `corporate_actions_for`, `restatements_for` and the action lookup in
+  `upsert_bars` do not fold supersession; `bars_for` consults only the Survivor's Price Sources.
+- **A review queue for flagged identity.** Registry flags, ambiguous FIGI answers and refused
+  anchors are only logged.
+- **`save_universe` silently discards** Inclusion and Exclusion sets that arrive without member
+  rows. Probably should raise.
+- **Restatement noise.** Tolerance is `1e-6` relative, and `adj_close` changes from a new dividend
+  are reported. Either may need loosening once real re-fetches run.
+- **ADR-0008's schema block** omits `ExposureEntry`, `CovarianceEntry`, `RiskModel` and
+  `RiskModelRevision`.
 - **Full sweep versus incremental.** What triggers each, and at what cadence the unresolved retry
   queue runs given OpenFIGI's coverage lag.
 - **Returns.** Representation (`FrameData`, a `KeyedVector` per date, a new Series type, or

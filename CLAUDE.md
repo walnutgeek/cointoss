@@ -153,5 +153,5 @@ Single-context layout with `CONTEXT.md` at repo root and ADRs in `docs/adr/`. Se
 ### Road map
 
 Current direction, proposed build order, and the decisions still open are in
-`docs/agents/road-map.md`. Read it before proposing what to build next; update it when a
+`docs/road-map.md`. Read it before proposing what to build next; update it when a
 direction changes. Settled decisions graduate to `docs/adr/`, vocabulary to `CONTEXT.md`.
