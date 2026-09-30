@@ -20,13 +20,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from tornado.httpclient import HTTPClientError
 
-from cointoss.ingest import pin_member
+from cointoss.ingest import pin_member, retry_resolution
 from cointoss.instrument import (
     ExternalReference,
     FigiResolution,
     InstrumentId,
     InstrumentType,
     Observation,
+    Outcome,
     Source,
     TickerRecord,
 )
@@ -153,26 +154,125 @@ async def test_a_yahoo_share_class_ticker_is_sent_in_openfigi_spelling(store: St
     assert record.instrument_id == InstrumentId("stock.us.brk-b")
 
 
-async def test_an_unknown_ticker_is_stored_unresolved_and_the_edit_succeeds(store: Store):
+async def test_an_unknown_ticker_mints_an_unresolved_instrument_and_pins_it(store: Store):
     record = await pin(store, openfigi(NOT_FOUND), "NOSUCH", date(2024, 3, 1))
 
-    assert record.instrument_id is None
-    assert store.unresolved_members("watchlist") == [record]
+    assert record.instrument_id == InstrumentId("stock.us.nosuch")
+    assert store.unresolved_members("watchlist") == []
+    instrument = store.load_instrument("stock.us.nosuch")
+    assert instrument is not None
+    assert instrument.figi_resolution is FigiResolution.NOT_FOUND
+    assert instrument.references == []
+    # Flagged unresolved is what puts it in the retry queue ADR-0004 requires.
+    assert [i.id for i in store.load_registry().unresolved()] == [record.instrument_id]
     reloaded = store.load_universe("watchlist")
     assert reloaded is not None
-    assert reloaded.revision == 2
-    assert reloaded.parameters.inclusions == frozenset()
-    # A typo must not mint a durable Instrument Id that can never be retired.
-    assert store.load_instruments() == []
+    assert reloaded.parameters.inclusions == frozenset({record.instrument_id})
 
 
-async def test_an_openfigi_outage_leaves_the_member_unresolved(store: Store):
+async def test_an_openfigi_outage_mints_unresolved_as_not_attempted(store: Store):
     failing = MagicMock()
     failing.fetch = AsyncMock(side_effect=HTTPClientError(429, "Too Many Requests"))
     record = await pin(store, failing, "AAPL", date(2024, 3, 1))
+    assert record.instrument_id == InstrumentId("stock.us.aapl")
+    instrument = store.load_instrument("stock.us.aapl")
+    assert instrument is not None
+    assert instrument.figi_resolution is FigiResolution.NOT_ATTEMPTED
+    assert [i.id for i in store.load_registry().unresolved()] == [record.instrument_id]
+
+
+async def test_a_second_miss_on_the_same_ticker_reaches_the_same_instrument(store: Store):
+    other = UniverseDefinition.create("other", UniverseParameters(), date(2024, 1, 1))
+    store.save_universe(other)
+    first = await pin(store, openfigi(NOT_FOUND), "NOSUCH", date(2024, 3, 1))
+    second = await pin(store, openfigi(NOT_FOUND), "nosuch", date(2024, 4, 1), name="other")
+    assert second.instrument_id == first.instrument_id
+    assert [i.id for i in store.load_instruments()] == [InstrumentId("stock.us.nosuch")]
+
+
+async def test_a_later_figi_hit_reaches_the_instrument_minted_unresolved(store: Store):
+    other = UniverseDefinition.create("other", UniverseParameters(), date(2024, 1, 1))
+    store.save_universe(other)
+    first = await pin(store, openfigi(NOT_FOUND), "AAPL", date(2024, 3, 1))
+    second = await pin(store, openfigi(hit(AAPL_FIGI)), "AAPL", date(2024, 4, 1), name="other")
+    assert [i.id for i in store.load_instruments()] == [InstrumentId("stock.us.aapl")]
+    assert second.instrument_id == first.instrument_id
+
+
+async def test_a_figi_hit_held_elsewhere_does_not_anchor_the_waiting_instrument(store: Store):
+    # AAPL was minted unresolved, but the FIGI OpenFIGI now answers is already another
+    # Instrument's: whether the two are one is a merge question, so nothing is anchored.
+    await pin(store, openfigi(NOT_FOUND), "AAPL", date(2024, 3, 1))
+    seed(store, stock("APPLE", date(2024, 3, 2), AAPL_FIGI))
+    other = UniverseDefinition.create("other", UniverseParameters(), date(2024, 1, 1))
+    store.save_universe(other)
+    record = await pin(store, openfigi(hit(AAPL_FIGI)), "AAPL", date(2024, 4, 1), name="other")
+    assert record.instrument_id is None
+    waiting = store.load_instrument("stock.us.aapl")
+    assert waiting is not None
+    assert waiting.figi_resolution is FigiResolution.NOT_FOUND
+    assert len(store.load_instruments()) == 2
+
+
+async def retry(store: Store, client: MagicMock, instrument_id: str, at: date):
+    with patch("cointoss.sources.openfigi.AsyncHTTPClient", return_value=client):
+        return await retry_resolution(store, InstrumentId(instrument_id), at)
+
+
+async def test_a_retry_with_a_figi_hit_resolves_the_instrument_in_place(store: Store):
+    failing = MagicMock()
+    failing.fetch = AsyncMock(side_effect=HTTPClientError(503, "Service Unavailable"))
+    record = await pin(store, failing, "BRK-B", date(2024, 3, 1))
+
+    client = openfigi(hit("BBG000DWG505", "BBG001S5N8V8"))
+    result = await retry(store, client, "stock.us.brk-b", date(2024, 3, 2))
+    assert sent_jobs(client)[0]["idValue"] == "BRK/B"
+    assert result is not None and result.outcome is Outcome.MATCHED
+    instrument = store.load_instrument("stock.us.brk-b")
+    assert instrument is not None
+    assert instrument.figi_resolution is FigiResolution.RESOLVED
+    assert ExternalReference.composite_figi("BBG000DWG505") in instrument.references
+    assert store.load_registry().unresolved() == []
+    assert store.load_universe_members("watchlist") == [record]
+
+
+async def test_a_retry_that_misses_again_changes_nothing(store: Store):
+    await pin(store, openfigi(NOT_FOUND), "NOSUCH", date(2024, 3, 1))
+    before = store.load_instruments()
+    assert await retry(store, openfigi(NOT_FOUND), "stock.us.nosuch", date(2024, 4, 1)) is None
+    assert store.load_instruments() == before
+
+
+async def test_a_retry_against_contrary_evidence_is_flagged(store: Store):
+    await pin(store, openfigi(NOT_FOUND), "AAPL", date(2024, 3, 1))
+    seed(store, stock("APPLE", date(2024, 3, 2), AAPL_FIGI))
+    before = store.load_instruments()
+    result = await retry(store, openfigi(hit(AAPL_FIGI)), "stock.us.aapl", date(2024, 4, 1))
+    assert result is not None and result.outcome is Outcome.FLAGGED
+    assert store.load_instruments() == before
+
+
+async def test_an_unresolved_sighting_the_registry_flags_pins_nothing(store: Store):
+    # Two unresolved Instruments told apart only by a provider id both answer to XYZ, but no
+    # Yahoo Ticker History names either, so the registry's symbol tier sees two candidates.
+    seed(
+        store,
+        *(
+            Observation(
+                type=InstrumentType.STOCK,
+                symbol="XYZ",
+                scope="us",
+                observed_at=date(2020, 1, 2),
+                source=Source.COINGECKO,
+                references=(ExternalReference.provider_id("vendor", n),),
+            )
+            for n in ("1", "2")
+        ),
+    )
+    record = await pin(store, openfigi(NOT_FOUND), "XYZ", date(2024, 3, 1))
     assert record.instrument_id is None
     assert store.unresolved_members("watchlist") == [record]
-    assert store.load_instruments() == []
+    assert len(store.load_instruments()) == 2
 
 
 async def test_a_reference_match_pins_to_the_existing_instrument(store: Store):
@@ -213,11 +313,16 @@ async def test_a_coin_resolves_on_its_asset_figi(store: Store):
     assert instrument.identity_source is Source.COINGECKO
 
 
-async def test_an_ambiguous_figi_answer_pins_nothing(store: Store):
+async def test_an_ambiguous_figi_answer_is_flagged_and_mints_nothing(
+    store: Store, caplog: pytest.LogCaptureFixture
+):
     client = openfigi({"data": [hit(AAPL_FIGI)["data"][0], hit(META_FIGI)["data"][0]]})
     record = await pin(store, client, "AAPL", date(2024, 3, 1))
     assert record.instrument_id is None
+    assert store.unresolved_members("watchlist") == [record]
+    # Several anchors is an answer, not a miss: minting from the symbol would guess.
     assert store.load_instruments() == []
+    assert "flagged" in caplog.text
 
 
 async def test_an_observation_the_registry_flags_pins_nothing(store: Store):
@@ -229,11 +334,14 @@ async def test_an_observation_the_registry_flags_pins_nothing(store: Store):
     assert [i.id for i in store.load_instruments()] == [InstrumentId("stock.ca.shop")]
 
 
-async def test_a_scope_with_no_figi_exchange_is_not_sent(store: Store):
+async def test_a_scope_with_no_figi_exchange_is_not_sent_and_mints_unresolved(store: Store):
     client = openfigi()
     record = await pin(store, client, "7203", date(2024, 3, 1), scope="jp")
     assert client.fetch.call_count == 0
-    assert record.instrument_id is None
+    assert record.instrument_id == InstrumentId("stock.jp.7203")
+    instrument = store.load_instrument("stock.jp.7203")
+    assert instrument is not None
+    assert instrument.figi_resolution is FigiResolution.NOT_ATTEMPTED
 
 
 async def test_resolution_happens_once_at_edit_time(store: Store):
