@@ -1328,6 +1328,13 @@ class Store:
         )
         return UniverseSeries(name=name, entries=entries)
 
+    def require_universe(self, name: str) -> UniverseDefinition:
+        """`load_universe`, raising `UnknownUniverse` instead of returning None."""
+        definition = self.load_universe(name)
+        if definition is None:
+            raise UnknownUniverse(f"{name} is not stored")
+        return definition
+
     def _require_universe(self, name: str) -> int:
         definition_id = self._universe_definition_id(name)
         if definition_id is None:

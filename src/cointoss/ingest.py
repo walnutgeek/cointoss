@@ -52,7 +52,7 @@ from cointoss.instrument import (
     normalize_symbol,
 )
 from cointoss.sources.openfigi import MappingJob, MappingResult, OpenFigiClient
-from cointoss.store import Store, UnknownUniverse
+from cointoss.store import Store
 from cointoss.universe import (
     MemberRole,
     UniverseDefinition,
@@ -287,9 +287,7 @@ async def pin_member(
     a ticker already standing in the same role from the same source changes nothing and makes
     no FIGI call.
     """
-    definition = store.load_universe(name)
-    if definition is None:
-        raise UnknownUniverse(f"no Universe Definition named {name!r}")
+    definition = store.require_universe(name)
     for member in store.load_universe_members(name):
         if _stands_as(member, definition.revision, role, source, symbol):
             return member
@@ -330,17 +328,8 @@ def _with_member(
     leaves the parameters unchanged as a no-op. Adding an unresolved member, or a second ticker
     for an Instrument already present, leaves the projected sets unchanged and is still an edit.
     """
-    current = definition.parameters
-    added: frozenset[InstrumentId] = (
-        frozenset() if instrument_id is None else frozenset({instrument_id})
-    )
-    match role:
-        case MemberRole.INCLUSION:
-            changed = "inclusions"
-            parameters = current.model_copy(update={changed: current.inclusions | added})
-        case MemberRole.EXCLUSION:
-            changed = "exclusions"
-            parameters = current.model_copy(update={changed: current.exclusions | added})
+    parameters = definition.parameters.pinned(role, instrument_id)
+    changed = "inclusions" if role is MemberRole.INCLUSION else "exclusions"
     entry = UniverseDefinitionRevision(
         revision=definition.revision + 1,
         changed_at=at,

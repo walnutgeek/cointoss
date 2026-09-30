@@ -143,6 +143,20 @@ class UniverseParameters(BaseModel):
         """Whether membership is driven by a rank band at all, or by Inclusions alone."""
         return self.enter_rank is not None
 
+    def pinned(self, role: MemberRole, instrument_id: InstrumentId | None) -> UniverseParameters:
+        """These parameters with `instrument_id` added to the set `role` names.
+
+        An unresolved member (None) leaves the sets unchanged, since only resolved members are
+        projected into them.
+        """
+        if instrument_id is None:
+            return self
+        match role:
+            case MemberRole.INCLUSION:
+                return self.model_copy(update={"inclusions": self.inclusions | {instrument_id}})
+            case MemberRole.EXCLUSION:
+                return self.model_copy(update={"exclusions": self.exclusions | {instrument_id}})
+
 
 class UniverseMemberRecord(BaseModel):
     """The provenance of one hand-pinned member, in the words it was typed in.
