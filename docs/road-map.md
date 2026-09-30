@@ -84,25 +84,29 @@ ingest sweep and returns.
 
 ## Proposed build order
 
-Each step is independently useful and leaves the system working.
+Each step is independently useful and leaves the system working. Priority is a running instance
+early, because accumulated history is the one thing that cannot be produced later.
 
 1. **Persistence for what exists.** Done (#5). `cointoss.store` to ADR-0008, with a seeded
    property test keeping the store's diff-and-close honest against `UniverseSeries.append`.
 2. **Universe Definitions.** Done. ADR-0007's recipe, revision log, Inclusions and Exclusions, the
    pure evaluator, and pinning a typed ticker.
-3. **Ingest.** One path from a source row to an `Observation` to an `InstrumentRegistry`, in
-   `cointoss.ingest` beside pinning, enforcing the mandatory-FIGI-attempt invariant and driving
-   the unresolved retry queue through `retry_resolution`.
-4. **The instance.** `lyth.yaml`, a real CLI, cron triggers on the ingest and evaluation DAGs,
-   woodglue serving. First point at which data accumulates unattended.
-5. **Price storage.** Done (#16). ADR-0009's Bars, Corporate Actions and Restatements, with
-   provisional bars excused from restatement. Ingest feeds it.
-6. **Returns.** Whatever representation the estimator needs.
-7. **The estimator.** Closes ADR-0005's gap so a covariance can be computed rather than only
-   imported.
-8. **Portfolio.** ADR-0001's `Trade` as system of record, `Position`, `PortfolioSnapshot`.
-9. **The FIGI mapping cache.** ADR-0006's `(universe_name, as_of)` key. Unblocked since #3; until it
-   lands, instrument creation hits a live OpenFIGI call on every ingest.
+3. **Price storage.** Done (#16). ADR-0009's Bars, Corporate Actions and Restatements.
+4. **MVP: a running crypto instance (#18).** CoinGecko only. A daily sweep shortly after 00:00
+   UTC turns `markets` into Instruments, `cg-top-100` membership (enter 100, exit 120,
+   configurable) and snapshot bars; a woodglue namespace serves it over JSON-RPC on 127.0.0.1;
+   `cointoss init`, `woodglue.yaml`, cron triggers and a `systemd --user` unit keep it running.
+   Tickets #19-#22.
+5. **History backfill.** `market_chart` for members, filling only dates before the first snapshot.
+6. **UI.** A small page over the JSON-RPC API: universe today, joins and leaves, a coin's price
+   history, scheduler health.
+7. **Portfolio.** ADR-0001's `Trade` as system of record, `Position`, `PortfolioSnapshot`, valued
+   from stored bars.
+8. **Yahoo and stocks.** The FIGI path in earnest, exchange calendars, corporate actions.
+9. **Returns.** Whatever representation the estimator needs.
+10. **The estimator.** Closes ADR-0005's gap so a covariance can be computed rather than only
+    imported.
+11. **The FIGI mapping cache.** ADR-0006's `(universe_name, as_of)` key.
 
 ## Settled in grilling
 
@@ -127,11 +131,11 @@ the ADRs; what follows is only the index, so nothing here is re-litigated from m
 
 - **Delisting versus absence.** Absence from a source is not the same fact as a delisting, and
   nothing yet distinguishes them. ADR-0007 drops an instrument from membership either way. This
-  needs settling before step 3.
+  needs settling before stocks (step 8).
 - **CoinGecko and Yahoo crypto bars are about a day apart.** CoinGecko's 00:00 UTC point for day
   D is roughly D-1's close; Yahoo's bar closes at the end of D. `bars_for` falling back between
   them splices series offset by a day. ADR-0009's "agree on what a crypto day is" holds for the
-  label only. Settle before ingest mixes the two.
+  label only. Settle before backfill mixes the two.
 - **A fixed `days` for `market_chart`.** The bar for a date depends on `days` (hourly versus
   daily points), so overlapping fetches with different `days` file a Restatement on every
   overlapping date. Ingest must pick one.
