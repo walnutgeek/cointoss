@@ -41,28 +41,22 @@ from cointoss.instrument import (
     normalize_symbol,
 )
 from cointoss.sources.openfigi import MappingJob, MappingResult, OpenFigiClient
-from cointoss.store import Store
+from cointoss.store import Store, UnknownUniverse
 from cointoss.universe import (
     MemberRole,
     UniverseDefinition,
     UniverseDefinitionRevision,
-    UniverseError,
     UniverseMemberRecord,
     UniverseParameters,
 )
 
 __all__ = [
-    "UnknownUniverse",
     "figi_job",
     "pin_member",
     "resolve_typed_symbol",
 ]
 
 log = logging.getLogger(__name__)
-
-
-class UnknownUniverse(UniverseError):
-    """No Universe Definition by that name is stored."""
 
 
 # What a symbol typed against a source denotes. Yahoo is the Identity Source for listed

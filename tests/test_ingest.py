@@ -20,7 +20,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from tornado.httpclient import HTTPClientError
 
-from cointoss.ingest import UnknownUniverse, pin_member
+from cointoss.ingest import pin_member
 from cointoss.instrument import (
     ExternalReference,
     FigiResolution,
@@ -31,7 +31,7 @@ from cointoss.instrument import (
     TickerRecord,
 )
 from cointoss.sources.openfigi import API_KEY_ENV
-from cointoss.store import Store
+from cointoss.store import Store, UnknownUniverse
 from cointoss.universe import MemberRole, UniverseDefinition, UniverseParameters, evaluate
 
 META_FIGI = "BBG000MM2P62"
