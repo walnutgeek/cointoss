@@ -4,7 +4,7 @@ Where cointoss is, where it is going, and what has to be decided before it gets 
 as directions change. Decisions that survive belong in `docs/adr/`; vocabulary belongs in
 `CONTEXT.md`. This file holds the parts that are still moving.
 
-Last updated: 2026-09-29, at `0d15c29`.
+Last updated: 2026-09-29, at `9bb02d6`.
 
 ## Where we are
 
@@ -28,19 +28,22 @@ price history all persist, and every read folds supersession.
 | `cointoss.ingest` | Pinning a typed ticker: the mandatory FIGI attempt, resolve or mint, retrying an unresolved Instrument. ADR-0004. The daily market sweep (#19): CoinGecko `markets` to Instruments, membership and snapshot bars. |
 | `cointoss.config` | Universe Definitions declared in config and reconciled into the store (#20). `Settings`: the data directory (`--data-dir`, `COINTOSS_HOME`, `~/.local/share/cointoss`), its `cointoss.db` and optional `cointoss.yaml` (#21). |
 | `cointoss.app` | The `CointossApp` namespace fragment (#21): a `sweep` node on a daily cron trigger, idempotent within a UTC day, and read nodes `members`, `changes`, `bars`, `universes_of`, `runs`, `universes` served over woodglue JSON-RPC. |
+| `cointoss.cli` | The `cointoss` command (#22): `init` writes `cointoss.yaml`, `woodglue.yaml` and the store, idempotently, and with `--systemd` the `systemd --user` unit; `sweep` runs today's sweep through the fragment's node; `status` and `token`. |
 
 ### Not built
 
 Everything that makes it a system rather than a library:
 
+- **Missed days stay missed.** The unit catches up today's sweep when the service starts, but a
+  day the machine was down for is never swept; a sweep run late in the day records that
+  moment's price as the day's bar, with its `fetched_at`. Backfill (step 5) cannot fill either
+  once a later snapshot exists.
 - **No retry runner.** The daily sweep is a scheduled node (#21), but nothing runs the
   unresolved retry queue.
 - **No returns.** Nothing turns prices into returns, so no covariance can be computed; the only
   way one enters the system today is a vendor import.
 - **No portfolio.** ADR-0001's `Portfolio`, `Trade`, `Position` and `PortfolioSnapshot` are
   designed and unimplemented.
-- **No running instance.** `cointoss.cli:main` prints `TBD`. The namespace woodglue would mount
-  exists (#21), but nothing writes a `woodglue.yaml` or starts it (#22).
 
 ## Direction
 

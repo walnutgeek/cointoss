@@ -20,7 +20,7 @@ build:
 	uv build
 
 serve:
-	uv run cointoss server start
+	uv run wgl --data="$${COINTOSS_HOME:-$$HOME/.local/share/cointoss}" start
 
 clean:
 	-rm -rf dist/

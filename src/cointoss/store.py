@@ -1637,6 +1637,13 @@ class Store:
         instrument = InstrumentId(survivor.instrument_id)
         return [self._bar_from(chosen[day], instrument) for day in sorted(chosen)]
 
+    def latest_bar_date(self) -> date | None:
+        """The latest date any bar is stored for, from any source; None before the first."""
+        cursor = self.conn.cursor()
+        execute_sql(cursor, "SELECT MAX(bar_date) FROM Bar")
+        (latest,) = cursor.fetchone()
+        return None if latest is None else date.fromisoformat(latest)
+
     def member_bars(self, definition: str, when: date) -> dict[InstrumentId, Bar | None]:
         """The resolved bar on `when` for every member of a universe on that date.
 

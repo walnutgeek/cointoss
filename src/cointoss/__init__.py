@@ -11,8 +11,3 @@ from __future__ import annotations
 from lythonic.frame import FrameData
 
 __all__ = ["FrameData"]
-
-
-def main() -> None:
-    """Entry point for the cointoss CLI."""
-    print("TBD")
