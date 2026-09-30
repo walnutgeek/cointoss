@@ -10,7 +10,9 @@ both and asserts they agree -- on the loaded Series, on `members_at` at every da
 writes are refused, on the Run each write reports, and on `universes_containing` over random
 ranges. Members are handed to the store in random order and to the fold sorted, because the
 store keeps no order and projects members sorted by Instrument Id; the fold keeps caller order,
-so only a sorted feed can be compared with `==`.
+so only a sorted feed can be compared with `==`. Each step runs under a Definition revision that
+occasionally moves forward, so the two must also agree on every entry's Revision Stamp --
+including that a new revision producing the same membership stamps nothing.
 """
 
 from __future__ import annotations
@@ -68,8 +70,11 @@ def coins(store: Store, *symbols: str) -> list[InstrumentId]:
     return ids
 
 
-def define(store: Store, name: str) -> None:
-    store.save_universe(UniverseDefinition.create(name, UniverseParameters(), D1))
+def define(store: Store, name: str, revisions: int = 1) -> None:
+    definition = UniverseDefinition.create(name, UniverseParameters(), D1)
+    for revision in range(2, revisions + 1):
+        definition = definition.edited(D1, enter_rank=revision, exit_rank=revision)
+    store.save_universe(definition)
 
 
 # -- universes_containing --
@@ -174,11 +179,30 @@ def test_a_stored_series_loads_as_the_value_object(db_path: Path):
     assert series == UniverseSeries(
         name="top",
         entries=(
-            DatedUniverse(as_of=D1, universe=Universe(sorted([btc, eth]))),
-            DatedUniverse(as_of=D3, universe=Universe(sorted([btc, sol]))),
-            DatedUniverse(as_of=D4, universe=Universe([])),
+            DatedUniverse(as_of=D1, universe=Universe(sorted([btc, eth])), revision=1),
+            DatedUniverse(as_of=D3, universe=Universe(sorted([btc, sol])), revision=1),
+            DatedUniverse(as_of=D4, universe=Universe([]), revision=1),
         ),
     )
+
+
+def test_each_loaded_entry_carries_its_revision_stamp(db_path: Path):
+    """A new revision stamps an entry only where it changed the membership."""
+    with Store(db_path) as store:
+        btc, eth = coins(store, "BTC", "ETH")
+        define(store, "top", revisions=3)
+        store.record_membership("top", D1, [btc], revision=1)
+        store.record_membership("top", D2, [btc], revision=2)
+        store.record_membership("top", D3, [btc, eth], revision=3)
+        series = store.load_universe_series("top")
+    assert [(e.as_of, e.revision) for e in series.entries] == [(D1, 1), (D3, 3)]
+    folded = (
+        UniverseSeries(name="top")
+        .append(D1, [btc], revision=1)
+        .append(D2, [btc], revision=2)
+        .append(D3, sorted([btc, eth]), revision=3)
+    )
+    assert series == folded
 
 
 def test_a_definition_never_evaluated_loads_as_an_empty_series(db_path: Path):
@@ -209,10 +233,14 @@ def test_series_of_different_definitions_do_not_leak(db_path: Path):
 # -- The append-equivalence guard --
 
 
+REVISIONS = 3
+
+
 @dataclass(frozen=True)
 class Step:
     when: date
     members: tuple[InstrumentId, ...]
+    revision: int
 
 
 def generate(rng: random.Random, pool: list[InstrumentId], length: int) -> list[Step]:
@@ -221,12 +249,16 @@ def generate(rng: random.Random, pool: list[InstrumentId], length: int) -> list[
     Mostly moves forward by a few days, but also repeats a date (same-day reruns, both with the
     same and a different result), repeats the previous membership (no-change evaluations),
     produces empty memberships, lets members leave and rejoin, and occasionally steps backwards
-    so the refusals are exercised too. Members come in random order.
+    so the refusals are exercised too. Members come in random order. The revision occasionally
+    moves forward, as a Definition's does when it is edited between runs.
     """
     steps: list[Step] = []
     when = D1
+    revision = 1
     members: list[InstrumentId] = []
     for _ in range(length):
+        if revision < REVISIONS and rng.random() < 0.15:
+            revision += 1
         move = rng.random()
         if steps and move < 0.15:
             pass
@@ -252,21 +284,23 @@ def generate(rng: random.Random, pool: list[InstrumentId], length: int) -> list[
         else:
             members = rng.sample(pool, rng.randint(0, len(pool)))
         rng.shuffle(members)
-        steps.append(Step(when, tuple(members)))
+        steps.append(Step(when, tuple(members), revision))
     return steps
 
 
 def fold_step(series: UniverseSeries, step: Step) -> UniverseSeries | None:
     """The fold's answer to one step, or None when `append` refuses it."""
     try:
-        return series.append(step.when, sorted(step.members))
+        return series.append(step.when, sorted(step.members), revision=step.revision)
     except SeriesError:
         return None
 
 
 def store_step(store: Store, name: str, step: Step) -> RunOutcome | None:
     try:
-        return store.record_membership(name, step.when, step.members).outcome
+        return store.record_membership(
+            name, step.when, step.members, revision=step.revision
+        ).outcome
     except EntryOrder:
         return None
 
@@ -294,12 +328,22 @@ def test_the_store_is_the_fold(db_path: Path):
         series_by_name: dict[str, UniverseSeries] = {}
         latest_run: dict[str, date] = {}
         kinds = dict.fromkeys(
-            ("heartbeat", "empty", "rejoin", "same_day", "same_day_conflict", "stricter"), 0
+            (
+                "heartbeat",
+                "empty",
+                "rejoin",
+                "same_day",
+                "same_day_conflict",
+                "stricter",
+                "restamped",
+                "new_revision_unchanged",
+            ),
+            0,
         )
         for seed in SEEDS:
             rng = random.Random(seed)
             name = f"u{seed}"
-            define(store, name)
+            define(store, name, revisions=REVISIONS)
             series = UniverseSeries(name=name)
             ever: set[str] = set()
             for step in generate(rng, pool, rng.randint(10, 30)):
@@ -323,6 +367,9 @@ def test_the_store_is_the_fold(db_path: Path):
                 assert (outcome is RunOutcome.CHANGED) == (folded is not before), (seed, step)
                 if outcome is RunOutcome.UNCHANGED:
                     kinds["heartbeat"] += 1
+                last_stamp = before.entries[-1].revision if before.entries else None
+                if last_stamp is not None and step.revision != last_stamp:
+                    kinds["restamped" if folded is not before else "new_revision_unchanged"] += 1
                 if not step.members:
                     kinds["empty"] += 1
                 if before.entries and step.when == before.entries[-1].as_of:

@@ -98,12 +98,17 @@ class ExposureSemantics(StrEnum):
 
 
 class DatedUniverse(BaseModel):
-    """One whole Universe, in force from its date until the next entry."""
+    """One whole Universe, in force from its date until the next entry.
+
+    `revision` is the Revision Stamp (ADR-0007): the Universe Definition revision the entry was
+    produced under. None for a Series built by hand rather than evaluated from a Definition.
+    """
 
     model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True)
 
     as_of: date
     universe: Universe
+    revision: int | None = None
 
 
 class DatedMatrix(BaseModel):
@@ -192,7 +197,9 @@ class UniverseSeries(BaseModel):
         """The Universe in force on `when`. A date before the first entry raises."""
         return self.entries[_position(self.dates(), when, self.name)].universe
 
-    def append(self, when: date, universe: Universe | Iterable[str]) -> UniverseSeries:
+    def append(
+        self, when: date, universe: Universe | Iterable[str], *, revision: int | None = None
+    ) -> UniverseSeries:
         """A new Series with one more entry, or this one if membership did not change.
 
         Series are immutable. An unchanged membership is not an entry: `dates` are the dates the
@@ -200,6 +207,10 @@ class UniverseSeries(BaseModel):
         fold must not either. Membership is compared as a set, so reordering is not a change.
         An earlier date is refused before that comparison, so a misordered replay fails even
         when it would have changed nothing.
+
+        `revision` stamps the new entry. A different revision alone is not a change either: the
+        stamp records which recipe produced the membership in force, so an edit that leaves the
+        membership as it was keeps the stamp of the entry that produced it.
         """
         universe = Universe(universe)
         if self.entries:
@@ -208,7 +219,7 @@ class UniverseSeries(BaseModel):
                 raise EntryOrder(f"{self.name}: {when} precedes the last entry {last.as_of}")
             if set(universe) == set(last.universe):
                 return self
-        entry = DatedUniverse(as_of=when, universe=universe)
+        entry = DatedUniverse(as_of=when, universe=universe, revision=revision)
         return UniverseSeries(name=self.name, entries=(*self.entries, entry))
 
     def change(self, start: date, end: date) -> UniverseChange:

@@ -1087,7 +1087,9 @@ class Store:
         intervals are diffed against `members`: the dropped are closed at `when`, the admitted
         opened from it, and a Series entry stamped with `revision` is written. A membership equal to
         the one in force writes no interval and no entry, only the Run, which is then the sole
-        evidence the job is alive. The first evaluation always writes an entry, empty or not.
+        evidence the job is alive -- even under a newer revision, whose stamp then lives on the
+        Run alone, as `UniverseSeries.append` keeps the stamp of the entry in force. The first
+        evaluation always writes an entry, empty or not.
 
         The diff is taken after folding Supersession on both sides, so a member re-expressed
         under its survivor is not a change and dropping a survivor closes the intervals recorded
@@ -1281,13 +1283,15 @@ class Store:
         The expensive path: it reads every entry and every interval the Definition has, where
         `members_at` answers one date with one indexed query. Use it only where a caller is
         typed on `UniverseSeries`. Each entry's members are ordered by Instrument Id and folded
-        to their survivors, as `members_at` returns them. A Definition never evaluated loads as a
-        Series with no entries, whose `as_of` raises `NotYetStarted`.
+        to their survivors, as `members_at` returns them, and each entry carries the Revision
+        Stamp it was recorded with. A Definition never evaluated loads as a Series with no
+        entries, whose `as_of` raises `NotYetStarted`.
         """
         definition_id = self._require_universe(name)
-        entry_dates = sorted(
-            row.as_of for row in UniverseEntryRow.select(self.conn, definition=definition_id)
-        )
+        stamps = {
+            row.as_of: row.revision
+            for row in UniverseEntryRow.select(self.conn, definition=definition_id)
+        }
         cursor = self.conn.cursor()
         execute_sql(
             cursor,
@@ -1318,8 +1322,9 @@ class Store:
                         }
                     )
                 ),
+                revision=stamps[when],
             )
-            for when in entry_dates
+            for when in sorted(stamps)
         )
         return UniverseSeries(name=name, entries=entries)
 

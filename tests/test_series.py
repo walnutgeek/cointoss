@@ -209,6 +209,25 @@ def test_appending_an_unchanged_universe_adds_no_entry() -> None:
         series.append(Q1, ["AAPL"])
 
 
+def test_each_entry_is_stamped_with_the_revision_it_was_produced_under() -> None:
+    """ADR-0007: an old entry stays interpretable after the recipe is edited."""
+    series = (
+        UniverseSeries(name="midcap")
+        .append(Q1, ["AAPL"], revision=1)
+        .append(Q2, ["AAPL", "NVDA"], revision=2)
+    )
+    assert [e.revision for e in series.entries] == [1, 2]
+    unstamped = UniverseSeries(name="midcap").append(Q1, ["AAPL"])
+    assert unstamped.entries[0].revision is None
+
+
+def test_a_new_revision_that_changes_no_membership_adds_no_entry() -> None:
+    """The stamp says which recipe produced the membership in force, not which one ran last."""
+    series = UniverseSeries(name="midcap").append(Q1, ["AAPL"], revision=1)
+    assert series.append(Q2, ["AAPL"], revision=2) == series
+    assert series.append(Q1, ["AAPL"], revision=2) == series
+
+
 def test_appending_leaves_the_original_readable_and_unchanged() -> None:
     first = UniverseSeries(name="midcap").append(Q1, ["AAPL"])
     second = first.append(Q2, ["AAPL", "NVDA"])
@@ -219,7 +238,11 @@ def test_appending_leaves_the_original_readable_and_unchanged() -> None:
 
 def test_a_series_round_trips_through_serialization() -> None:
     """Both types serialize on their own, so persistence stays a later choice."""
-    scope = UniverseSeries(name="midcap").append(Q1, ["AAPL"]).append(Q2, ["AAPL", "NVDA"])
+    scope = (
+        UniverseSeries(name="midcap")
+        .append(Q1, ["AAPL"], revision=1)
+        .append(Q2, ["AAPL", "NVDA"], revision=2)
+    )
     restored = UniverseSeries.model_validate_json(scope.model_dump_json())
     assert restored == scope
     assert list(restored.as_of(Q2)) == ["AAPL", "NVDA"]

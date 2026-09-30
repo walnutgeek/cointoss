@@ -150,8 +150,8 @@ def test_a_loaded_series_is_folded_like_the_point_read(db_path: Path):
         assert series == UniverseSeries(
             name="top",
             entries=(
-                DatedUniverse(as_of=D1, universe=Universe([btc])),
-                DatedUniverse(as_of=D2, universe=Universe(sorted([btc, eth]))),
+                DatedUniverse(as_of=D1, universe=Universe([btc]), revision=1),
+                DatedUniverse(as_of=D2, universe=Universe(sorted([btc, eth])), revision=1),
             ),
         )
         for day in (D1, D2, D3):
