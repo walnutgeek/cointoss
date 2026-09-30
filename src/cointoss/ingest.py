@@ -31,6 +31,12 @@ The resolution policy, in order, following ADR-0004:
   Instrument at a time.
 - Anything the registry flags for review, or a symbol two Instruments hold at once, leaves the
   member stored unresolved, and the edit still succeeds.
+
+A symbol typed against CoinGecko that reaches the registry also carries the coin's CoinGecko
+`id` as a provider External Reference, the one the sweep identifies coins by. Without it a coin
+pinned before its first sweep could not be matched by that sweep -- a FIGI-anchored Instrument
+is out of reach of the symbol tier -- and `crypto.native.btc_2` would be minted beside it. See
+`_coingecko_coin` for how a symbol several coins share is decided.
 """
 
 from __future__ import annotations
@@ -38,10 +44,12 @@ from __future__ import annotations
 import copy
 import logging
 from collections.abc import Iterable, Sequence
+from dataclasses import replace
 from datetime import UTC, date, datetime, time, timedelta
 from typing import ClassVar
 
 from pydantic import BaseModel, ConfigDict
+from tornado.httpclient import HTTPClientError
 
 from cointoss.instrument import (
     AmbiguousSymbol,
@@ -247,13 +255,21 @@ async def resolve_typed_symbol(
     *,
     scope: str | None = None,
     figi: OpenFigiClient | None = None,
+    coingecko: CoinGeckoClient | None = None,
+    coingecko_id: str | None = None,
 ) -> InstrumentId | None:
     """Resolve a symbol typed against a source on a date, persisting whatever it establishes.
 
     Builds the `Observation`, makes the FIGI attempt, and resolves it by the policy in the module
     docstring. Returns None when no Instrument can be named, which is a result rather than an
     error.
+
+    For a CoinGecko symbol that is not already found in the Ticker History, the coin's CoinGecko
+    id is looked up and recorded on the Observation; `coingecko_id` names the coin outright
+    when the symbol is shared. It is only valid against CoinGecko.
     """
+    if coingecko_id is not None and source is not Source.COINGECKO:
+        raise ValueError(f"a CoinGecko id names a coin, not a symbol typed against {source}")
     instrument_type = _SOURCE_TYPE[source]
     scope = scope or _DEFAULT_SCOPE[instrument_type]
     job = figi_job(source, symbol, scope)
@@ -279,11 +295,71 @@ async def resolve_typed_symbol(
             return None
         if held is not None:
             return held
+    if source is Source.COINGECKO:
+        obs = await _with_coingecko_id(obs, coingecko or CoinGeckoClient(), coingecko_id)
     result = _identify(store, obs)
     if result.instrument is None:
         log.warning("%s at %s flagged for review: %s", symbol, source, result.review)
         return None
     return result.instrument.id
+
+
+async def _with_coingecko_id(
+    obs: Observation, client: CoinGeckoClient, coingecko_id: str | None
+) -> Observation:
+    """The Observation with its coin's CoinGecko id, or unchanged when no one coin is named.
+
+    The lookup is a convenience for the sweep's later match, not a condition of the pin, so an
+    outage leaves the Observation as it was.
+    """
+    try:
+        coin = await _coingecko_coin(client, obs.symbol, coingecko_id)
+    except (HTTPClientError, OSError) as exc:
+        log.warning("%s: CoinGecko id not looked up: %s", obs.symbol, exc)
+        return obs
+    if coin is None:
+        return obs
+    return replace(
+        obs,
+        name=obs.name or coin.name,
+        references=(*obs.references, ExternalReference.provider_id(Source.COINGECKO, coin.id)),
+    )
+
+
+async def _coingecko_coin(
+    client: CoinGeckoClient, symbol: str, coingecko_id: str | None
+) -> CoinsMarketItem | None:
+    """The CoinGecko coin a symbol names, by market cap, or the one `coingecko_id` names.
+
+    Symbols are shared freely -- the live API answers twelve coins to `btc` -- so a symbol names
+    the ranked coin with the highest market cap. That is the coin a person most plausibly means,
+    and the one the sweep, listing by market cap, sees first and mints the bare Instrument Id
+    for. With no ranked coin, only a symbol exactly one coin carries is taken; otherwise nothing
+    is recorded and the Instrument is left to the symbol tier. `/coins/markets` is asked rather
+    than the cacheable `/coins/list`, which carries no ranking to decide a shared symbol by.
+
+    An explicit id is still checked against the symbol, so a mistyped id is not recorded as the
+    identity of a different coin.
+    """
+    if coingecko_id is not None:
+        found = await client.fetch_coins_markets(ids=coingecko_id.strip().lower())
+    else:
+        found = await client.fetch_coins_markets(
+            symbols=symbol.strip().lower(), include_tokens="all"
+        )
+    wanted = normalize_symbol(symbol)
+    coins = [c for c in found if normalize_symbol(c.symbol) == wanted]
+    if coingecko_id is not None and not coins:
+        log.warning(
+            "CoinGecko id %s is not a coin with symbol %s; not recorded", coingecko_id, symbol
+        )
+        return None
+    ranked = [c for c in coins if c.market_cap_rank is not None]
+    if ranked:
+        return min(ranked, key=lambda c: c.market_cap_rank or 0)
+    if len(coins) > 1:
+        log.warning("%s names %d unranked CoinGecko coins; no id recorded", symbol, len(coins))
+    return coins[0] if len(coins) == 1 else None
 
 
 async def pin_member(
@@ -296,6 +372,8 @@ async def pin_member(
     *,
     scope: str | None = None,
     figi: OpenFigiClient | None = None,
+    coingecko: CoinGeckoClient | None = None,
+    coingecko_id: str | None = None,
 ) -> UniverseMemberRecord:
     """Add a typed ticker to a Universe Definition, pinned to an Instrument if it resolves.
 
@@ -309,7 +387,16 @@ async def pin_member(
     for member in store.load_universe_members(name):
         if _stands_as(member, definition.revision, role, source, symbol):
             return member
-    instrument_id = await resolve_typed_symbol(store, source, symbol, at, scope=scope, figi=figi)
+    instrument_id = await resolve_typed_symbol(
+        store,
+        source,
+        symbol,
+        at,
+        scope=scope,
+        figi=figi,
+        coingecko=coingecko,
+        coingecko_id=coingecko_id,
+    )
     revised = _with_member(definition, at, role, instrument_id)
     record = UniverseMemberRecord(
         role=role,
