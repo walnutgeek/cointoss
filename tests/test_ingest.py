@@ -2,7 +2,9 @@
 
 Every test opens a real `Store` on a temporary file and answers OpenFIGI through the same seam
 `tests/test_openfigi.py` uses: `AsyncHTTPClient` is patched in `cointoss.sources.openfigi`, so
-nothing touches the network and the requests actually sent can be read back. Assertions are on
+nothing touches the network and the requests actually sent can be read back. CoinGecko is
+answered the same way, in `cointoss.sources.coingecko`, from the recorded `markets` listing
+`tests/test_sweep.py` uses. Assertions are on
 what a caller sees -- the member record returned, the Definition and Instruments read back from
 the store -- not on the rows behind them.
 """
@@ -11,16 +13,17 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterator
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 from tornado.httpclient import HTTPClientError
 
-from cointoss.ingest import pin_member, retry_resolution
+from cointoss.ingest import pin_member, retry_resolution, sweep
 from cointoss.instrument import (
     ExternalReference,
     FigiResolution,
@@ -40,6 +43,10 @@ AAPL_FIGI = "BBG000B9XRY4"
 PROSHARES_FIGI = "BBG00PROSHARE1"
 BTC_FIGI = "KKG000000M81"
 NOT_FOUND = {"warning": "No identifier found."}
+MARKETS = Path(__file__).parent / "data" / "coingecko_markets_top250.json"
+SWEEP_AT = datetime(2026, 9, 30, 0, 5, tzinfo=UTC)
+PIN_DAY = date(2026, 9, 29)
+Coin = dict[str, Any]
 
 
 def hit(composite: str, share_class: str | None = None) -> dict[str, Any]:
@@ -62,6 +69,47 @@ def openfigi(*bodies: Any) -> MagicMock:
 
 def sent_jobs(client: MagicMock) -> list[dict[str, Any]]:
     return [json.loads(call.kwargs["body"])[0] for call in client.fetch.call_args_list]
+
+
+def recorded_coins() -> list[Coin]:
+    return [coin for page in json.loads(MARKETS.read_text())["pages"] for coin in page]
+
+
+def coingecko(coins: list[Coin] | None = None) -> MagicMock:
+    """An `AsyncHTTPClient` answering `/coins/markets` as CoinGecko does.
+
+    A `symbols` query with `include_tokens=all` answers every coin with that symbol and an `ids`
+    query the coins named, both case-insensitively and in market-cap order, as measured against
+    the live API on 2026-09-29. Any other query answers the listing page it names.
+    """
+    listing = recorded_coins() if coins is None else coins
+
+    async def fetch(url: str) -> MagicMock:
+        query = {k: v[0] for k, v in parse_qs(urlparse(url).query).items()}
+        if "symbols" in query:
+            wanted = set(query["symbols"].lower().split(","))
+            answer = [c for c in listing if c["symbol"] in wanted]
+        elif "ids" in query:
+            wanted = set(query["ids"].lower().split(","))
+            answer = [c for c in listing if c["id"] in wanted]
+        else:
+            page = int(query.get("page", "1"))
+            answer = listing[(page - 1) * 250 : page * 250]
+        response = MagicMock()
+        response.body = json.dumps(answer).encode()
+        return response
+
+    client = MagicMock()
+    client.fetch = AsyncMock(side_effect=fetch)
+    return client
+
+
+def coin_queries(client: MagicMock) -> list[dict[str, str]]:
+    sent: list[dict[str, str]] = []
+    for call in client.fetch.call_args_list:
+        url: str = call.args[0]
+        sent.append({k: v[0] for k, v in parse_qs(urlparse(url).query).items()})
+    return sent
 
 
 @pytest.fixture(autouse=True)
@@ -88,9 +136,16 @@ async def pin(
     source: Source = Source.YAHOO,
     scope: str | None = None,
     name: str = "watchlist",
+    markets: MagicMock | None = None,
+    coingecko_id: str | None = None,
 ):
-    with patch("cointoss.sources.openfigi.AsyncHTTPClient", return_value=client):
-        return await pin_member(store, name, role, source, symbol, at, scope=scope)
+    with (
+        patch("cointoss.sources.openfigi.AsyncHTTPClient", return_value=client),
+        patch("cointoss.sources.coingecko.AsyncHTTPClient", return_value=markets or coingecko()),
+    ):
+        return await pin_member(
+            store, name, role, source, symbol, at, scope=scope, coingecko_id=coingecko_id
+        )
 
 
 def seed(store: Store, *observations: Observation) -> None:
@@ -309,7 +364,10 @@ async def test_a_coin_resolves_on_its_asset_figi(store: Store):
     assert record.instrument_id == InstrumentId("crypto.native.btc")
     instrument = store.load_instrument("crypto.native.btc")
     assert instrument is not None
-    assert instrument.references == [ExternalReference.asset_figi(BTC_FIGI)]
+    assert instrument.references == [
+        ExternalReference.asset_figi(BTC_FIGI),
+        ExternalReference.provider_id("coingecko", "bitcoin"),
+    ]
     assert instrument.identity_source is Source.COINGECKO
 
 
@@ -399,3 +457,174 @@ async def test_a_ticker_two_known_instruments_share_pins_nothing(store: Store):
     record = await pin(store, openfigi(NOT_FOUND), "FB", date(2014, 1, 2))
     assert record.instrument_id is None
     assert store.unresolved_members("watchlist") == [record]
+
+
+# -- A pinned coin records its CoinGecko id, so the daily sweep matches it --
+
+
+def coin_ids(store: Store, instrument_id: str) -> list[str]:
+    instrument = store.load_instrument(instrument_id)
+    assert instrument is not None
+    return [
+        r.value
+        for r in instrument.references
+        if r == ExternalReference.provider_id("coingecko", r.value)
+    ]
+
+
+async def sweep_recorded(store: Store) -> Any:
+    with patch("cointoss.sources.coingecko.AsyncHTTPClient", return_value=coingecko()):
+        return await sweep(store, SWEEP_AT, ())
+
+
+async def pin_coin(
+    store: Store,
+    symbol: str,
+    *,
+    figi_answer: Any = NOT_FOUND,
+    markets: MagicMock | None = None,
+    coingecko_id: str | None = None,
+    at: date = PIN_DAY,
+    name: str = "watchlist",
+):
+    return await pin(
+        store,
+        openfigi(figi_answer),
+        symbol,
+        at,
+        source=Source.COINGECKO,
+        name=name,
+        markets=markets,
+        coingecko_id=coingecko_id,
+    )
+
+
+@pytest.mark.parametrize(
+    "figi_answer", [NOT_FOUND, {"data": [{"figi": BTC_FIGI}]}], ids=["figi-miss", "figi-hit"]
+)
+async def test_a_coin_pinned_before_the_first_sweep_is_matched_by_it(
+    store: Store, figi_answer: Any
+):
+    record = await pin_coin(store, "BTC", figi_answer=figi_answer)
+    assert record.instrument_id == InstrumentId("crypto.native.btc")
+
+    report = await sweep_recorded(store)
+
+    assert report.matched == 1
+    assert store.load_instrument("crypto.native.btc_2") is None
+    assert coin_ids(store, "crypto.native.btc") == ["bitcoin"]
+    (bar,) = store.bars_for(InstrumentId("crypto.native.btc"), SWEEP_AT.date(), SWEEP_AT.date())
+    assert bar.close == 83227
+
+
+async def test_a_pinned_coin_carries_the_coingecko_id_of_its_symbol(store: Store):
+    markets = coingecko()
+    await pin_coin(store, "btc", markets=markets)
+    assert coin_queries(markets) == [
+        {"vs_currency": "usd", "symbols": "btc", "include_tokens": "all"}
+    ]
+    assert coin_ids(store, "crypto.native.btc") == ["bitcoin"]
+    instrument = store.load_instrument("crypto.native.btc")
+    assert instrument is not None
+    assert instrument.name == "Bitcoin"
+
+
+async def test_a_symbol_several_coins_share_names_the_highest_market_cap(store: Store):
+    # The recording lists two USDF coins, ranked 67 and 269.
+    await pin_coin(store, "USDF")
+    assert coin_ids(store, "crypto.native.usdf") == ["falcon-finance"]
+
+
+async def test_an_explicit_coingecko_id_names_the_coin_and_the_sweep_keeps_it_apart(
+    store: Store,
+):
+    markets = coingecko()
+    record = await pin_coin(store, "USDF", markets=markets, coingecko_id="Astherus-USDF")
+    assert coin_queries(markets) == [{"vs_currency": "usd", "ids": "astherus-usdf"}]
+    assert coin_ids(store, "crypto.native.usdf") == ["astherus-usdf"]
+
+    await sweep_recorded(store)
+
+    # Falcon's USDF, which the sweep lists, is another coin, so it is not joined by symbol.
+    assert record.instrument_id == InstrumentId("crypto.native.usdf")
+    assert coin_ids(store, "crypto.native.usdf") == ["astherus-usdf"]
+    assert coin_ids(store, "crypto.native.usdf_2") == ["falcon-finance"]
+
+
+async def test_an_explicit_coingecko_id_for_another_symbol_is_not_recorded(
+    store: Store, caplog: pytest.LogCaptureFixture
+):
+    record = await pin_coin(store, "USDF", coingecko_id="bitcoin")
+    assert record.instrument_id == InstrumentId("crypto.native.usdf")
+    assert coin_ids(store, "crypto.native.usdf") == []
+    assert "bitcoin" in caplog.text
+
+
+async def test_a_symbol_only_unranked_coins_share_records_no_coingecko_id(store: Store):
+    unranked = [
+        {"id": "wrapped-xyz", "symbol": "xyz", "name": "Wrapped XYZ", "market_cap_rank": None},
+        {"id": "bridged-xyz", "symbol": "xyz", "name": "Bridged XYZ", "market_cap_rank": None},
+    ]
+    record = await pin_coin(store, "XYZ", markets=coingecko(unranked))
+    assert record.instrument_id == InstrumentId("crypto.native.xyz")
+    assert coin_ids(store, "crypto.native.xyz") == []
+
+
+async def test_a_single_unranked_coin_is_its_symbols_coingecko_id(store: Store):
+    only = [{"id": "tiny-xyz", "symbol": "xyz", "name": "Tiny XYZ", "market_cap_rank": None}]
+    await pin_coin(store, "XYZ", markets=coingecko(only))
+    assert coin_ids(store, "crypto.native.xyz") == ["tiny-xyz"]
+
+
+async def test_a_coingecko_outage_still_pins_the_coin(store: Store):
+    failing = MagicMock()
+    failing.fetch = AsyncMock(side_effect=HTTPClientError(503, "Service Unavailable"))
+    record = await pin_coin(store, "BTC", markets=failing)
+    assert record.instrument_id == InstrumentId("crypto.native.btc")
+    assert coin_ids(store, "crypto.native.btc") == []
+
+
+async def test_a_coin_the_ticker_history_names_needs_no_coingecko_lookup(store: Store):
+    await sweep_recorded(store)
+    markets = coingecko()
+    record = await pin_coin(store, "ETH", markets=markets, at=SWEEP_AT.date())
+    assert record.instrument_id == InstrumentId("crypto.native.eth")
+    assert markets.fetch.call_count == 0
+
+
+async def test_a_figi_hit_records_the_coingecko_id_on_a_coin_pinned_without_it(store: Store):
+    # Pinned before CoinGecko ids were recorded: FIGI-anchored and holding no provider id.
+    seed(
+        store,
+        Observation(
+            type=InstrumentType.CRYPTO,
+            symbol="BTC",
+            scope="native",
+            observed_at=date(2024, 3, 1),
+            source=Source.COINGECKO,
+            references=(ExternalReference.asset_figi(BTC_FIGI),),
+            figi_resolution=FigiResolution.RESOLVED,
+        ),
+    )
+    store.save_universe(UniverseDefinition.create("other", UniverseParameters(), date(2024, 1, 1)))
+    await pin_coin(store, "BTC", figi_answer={"data": [{"figi": BTC_FIGI}]}, name="other")
+    assert coin_ids(store, "crypto.native.btc") == ["bitcoin"]
+
+    report = await sweep_recorded(store)
+
+    assert report.matched == 1
+    assert store.load_instrument("crypto.native.btc_2") is None
+
+
+async def test_a_yahoo_ticker_makes_no_coingecko_lookup(store: Store):
+    markets = coingecko()
+    await pin(store, openfigi(hit(AAPL_FIGI)), "AAPL", date(2024, 3, 1), markets=markets)
+    assert markets.fetch.call_count == 0
+
+
+async def test_a_coingecko_id_for_a_yahoo_ticker_is_refused(store: Store):
+    with pytest.raises(ValueError, match="CoinGecko id"):
+        await pin(store, openfigi(), "AAPL", date(2024, 3, 1), coingecko_id="apple")
+    reloaded = store.load_universe("watchlist")
+    assert reloaded is not None
+    assert reloaded.revision == 1
