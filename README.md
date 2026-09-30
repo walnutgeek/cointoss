@@ -7,8 +7,9 @@ composition, CLI) and [woodglue](https://github.com/walnutgeek/woodglue)
 (async server, Caddy integration).
 
 A running instance sweeps CoinGecko `markets` once a day, shortly after 00:00 UTC, records
-the configured universes (by default `cg-top-100`: enter at rank 100, exit at 120) and a
-snapshot bar per coin, and serves the result over JSON-RPC on `127.0.0.1`.
+the configured universes (by default `cg-top-100`: enter at rank 100, exit at 120) and the
+day's bar per coin (close, volume, market cap), and serves the result over JSON-RPC on
+`127.0.0.1`.
 
 ## Install
 
@@ -29,8 +30,9 @@ uv run cointoss init --systemd
 
 This creates the data directory and writes into it:
 
-- `cointoss.yaml`: the declared universes and `top_n`, the width of the listing each sweep
-  fetches.
+- `cointoss.yaml`: the declared universes; `top_n`, the width of the listing each sweep
+  fetches; and `bar_window_hours` (default 3), how long after 00:00 UTC a sweep still writes
+  the day's bars.
 - `woodglue.yaml`: the `cointoss` namespace with its API exposed and its engine running, the
   daily sweep trigger (`5 0 * * *`, UTC), host `127.0.0.1`, port `5321`, and auth on.
 - `cointoss.db`, with the declared universes stored.
@@ -52,7 +54,8 @@ loginctl enable-linger "$USER"    # keep it running while you are logged out
 The unit runs `wgl --data=<data dir> start` in the foreground and restarts it on failure.
 Before starting the server, it runs `cointoss sweep`. That call does nothing if today is
 already swept, and it catches up a sweep missed while the service was down. It is limited to
-two minutes, and a failure there never stops the API from starting.
+two minutes by coreutils' `timeout` (found on `PATH` when the unit is written), and a failure
+there never stops the API from starting.
 
 Without systemd, run `make serve` or `uv run wgl --data ~/.local/share/cointoss start`.
 
@@ -83,10 +86,14 @@ uv run cointoss sweep            # today's (UTC) sweep; a no-op if already done
 uv run cointoss sweep --force    # re-fetch today's listing anyway
 ```
 
-A sweep records CoinGecko's current listing as today's bar, so it cannot run for a past date.
-`--date D` is refused unless D is today in UTC. A day missed entirely stays missing. Run late
-in the day, a sweep's bar is the price at that moment, and its `fetched_at` records when that
-was.
+A sweep records CoinGecko's current listing for today (UTC), so it cannot run for a past date.
+A day's bar is its price at 00:00 UTC, so bars are written only by a sweep within
+`bar_window_hours` of midnight; a later sweep records membership and says `no bars`. A
+re-sweep never replaces a bar already stored for the day. Days without bars are left for a
+future backfill.
+
+Only one sweep runs at a time per data directory: a second one, such as a manual sweep while
+the scheduled one runs, exits at once with `another sweep holds .../sweep.lock`.
 
 ## Where the data lives
 
@@ -102,6 +109,7 @@ The unit sets `COINTOSS_HOME`, and `woodglue.yaml` names the directory too, in t
 | `auth.db` | API tokens. |
 | `mounts/` | woodglue engine state: triggers, DAG runs, cache. Rebuildable. |
 | `wgl.log`, `wgl.pid` | Server log and pid. |
+| `sweep.lock` | Held while a sweep runs. Safe to delete when none is. |
 
 ## Backup
 

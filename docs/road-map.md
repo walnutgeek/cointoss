@@ -4,11 +4,11 @@ Where cointoss is, where it is going, and what has to be decided before it gets 
 as directions change. Decisions that survive belong in `docs/adr/`; vocabulary belongs in
 `CONTEXT.md`. This file holds the parts that are still moving.
 
-Last updated: 2026-09-29, at `9bb02d6`.
+Last updated: 2026-09-29, at `8ee8d6e`.
 
 ## Where we are
 
-Nine ADRs. 347 tests, lint clean. The persistence layer (issue #5, ADR-0007, 0008 and 0009) is
+Nine ADRs. 445 tests, lint clean. The persistence layer (issue #5, ADR-0007, 0008 and 0009) is
 built: identity, Universe Definitions, membership intervals, Evaluation Runs, matrix entries and
 price history all persist, and every read folds supersession.
 
@@ -25,19 +25,19 @@ price history all persist, and every read folds supersession.
 | `cointoss.universe` | `UniverseDefinition` with a revision log, Inclusions and Exclusions, pure rank-band evaluation. ADR-0007. |
 | `cointoss.prices` | `Bar`, `CorporateAction`, `Restatement`, source mapping, split-aware restatement detection. ADR-0009. |
 | `cointoss.store` | The only module that touches SQL. Sixteen tables, enforced pragmas, `SchemaVersion`. Membership by date or Instrument, bars resolved through Price Sources. ADR-0008. |
-| `cointoss.ingest` | Pinning a typed ticker: the mandatory FIGI attempt, resolve or mint, retrying an unresolved Instrument. ADR-0004. The daily market sweep (#19): CoinGecko `markets` to Instruments, membership and snapshot bars. |
-| `cointoss.config` | Universe Definitions declared in config and reconciled into the store (#20). `Settings`: the data directory (`--data-dir`, `COINTOSS_HOME`, `~/.local/share/cointoss`), its `cointoss.db` and optional `cointoss.yaml` (#21). |
-| `cointoss.app` | The `CointossApp` namespace fragment (#21): a `sweep` node on a daily cron trigger, idempotent within a UTC day, and read nodes `members`, `changes`, `bars`, `universes_of`, `runs`, `universes` served over woodglue JSON-RPC. |
-| `cointoss.cli` | The `cointoss` command (#22): `init` writes `cointoss.yaml`, `woodglue.yaml` and the store, idempotently, and with `--systemd` the `systemd --user` unit; `sweep` runs today's sweep through the fragment's node; `status` and `token`. |
+| `cointoss.ingest` | Pinning a typed ticker: the mandatory FIGI attempt, resolve or mint, retrying an unresolved Instrument. ADR-0004. The daily market sweep (#19): CoinGecko `markets` to Instruments, membership and the day's bars with market cap, written only within the bar window after 00:00 UTC and never over a bar already stored. |
+| `cointoss.config` | Universe Declarations in config, reconciled into stored Universe Definitions (#20). `Settings`: the data directory (`--data-dir`, `COINTOSS_HOME`, `~/.local/share/cointoss`), its `cointoss.db` and optional `cointoss.yaml` with `top_n` and `bar_window_hours` (#21). |
+| `cointoss.app` | The `CointossApp` namespace fragment (#21): a `sweep` node on a daily cron trigger, idempotent within a UTC day and serialised by a lock file, and read nodes `members`, `changes`, `bars`, `universes_of`, `runs`, `universes` served over woodglue JSON-RPC. |
+| `cointoss.cli` | The `cointoss` command (#22): `init` writes `cointoss.yaml`, `woodglue.yaml` and the store, idempotently, and with `--systemd` the `systemd --user` unit; `sweep` runs today's sweep through the fragment's node, with no date to choose; `status` and `token`. |
 
 ### Not built
 
 Everything that makes it a system rather than a library:
 
-- **Missed days stay missed.** The unit catches up today's sweep when the service starts, but a
-  day the machine was down for is never swept; a sweep run late in the day records that
-  moment's price as the day's bar, with its `fetched_at`. Backfill (step 5) cannot fill either
-  once a later snapshot exists.
+- **Missed days have no bars.** The unit catches up today's sweep when the service starts, but a
+  day the machine was down for is never swept, and a sweep later than the bar window (default
+  three hours after 00:00 UTC) records membership and writes no bars (ADR-0009 amendment).
+  Both leave a date with no bar, which backfill (step 5) is to fill.
 - **No retry runner.** The daily sweep is a scheduled node (#21), but nothing runs the
   unresolved retry queue.
 - **No returns.** Nothing turns prices into returns, so no covariance can be computed; the only
@@ -96,10 +96,12 @@ early, because accumulated history is the one thing that cannot be produced late
 3. **Price storage.** Done (#16). ADR-0009's Bars, Corporate Actions and Restatements.
 4. **MVP: a running crypto instance (#18).** CoinGecko only. A daily sweep shortly after 00:00
    UTC turns `markets` into Instruments, `cg-top-100` membership (enter 100, exit 120,
-   configurable) and snapshot bars; a woodglue namespace serves it over JSON-RPC on 127.0.0.1;
+   configurable) and the day's bars; a woodglue namespace serves it over JSON-RPC on 127.0.0.1;
    `cointoss init`, `woodglue.yaml`, cron triggers and a `systemd --user` unit keep it running.
    Tickets #19-#22.
-5. **History backfill.** `market_chart` for members, filling only dates before the first snapshot.
+5. **History backfill.** `market_chart` for members, filling every date with no stored bar:
+   before the first sweep, days the machine was down, and days swept after the bar window. It
+   never overwrites a stored bar, so it files no Restatement.
 6. **UI.** A small page over the JSON-RPC API: universe today, joins and leaves, a coin's price
    history, scheduler health.
 7. **Portfolio.** ADR-0001's `Trade` as system of record, `Position`, `PortfolioSnapshot`, valued
@@ -136,8 +138,9 @@ the ADRs; what follows is only the index, so nothing here is re-litigated from m
   needs settling before stocks (step 8).
 - **CoinGecko and Yahoo crypto bars are about a day apart.** CoinGecko's 00:00 UTC point for day
   D is roughly D-1's close; Yahoo's bar closes at the end of D. `bars_for` falling back between
-  them splices series offset by a day. ADR-0009's "agree on what a crypto day is" holds for the
-  label only. Settle before Yahoo crypto bars are ingested alongside CoinGecko.
+  them splices series offset by a day. ADR-0009's amendment records that "agree on what a
+  crypto day is" holds for the label only; what to do about it is open. Settle before Yahoo
+  crypto bars are ingested alongside CoinGecko.
 - **A fixed `days` for `market_chart`.** Mostly settled by #19: a CoinGecko bar is the date's
   first (00:00) point, so hourly and daily windows agree, except on the first day of an hourly
   window, which has no 00:00 point. A backfill should ask for 90 days or more.

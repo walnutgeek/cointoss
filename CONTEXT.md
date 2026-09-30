@@ -76,6 +76,10 @@ _Avoid_: Watchlist, List, Screen, Instrument Set
 A named, editable recipe for producing a Universe Series. Revisions accumulate and are never removed.
 _Avoid_: universe model, spec, screen, config
 
+**Universe Declaration**:
+A Universe Definition's name and rank band as an instance's configuration states them now. Reconciled into the stored Definition by appending a revision where they differ; never the Definition itself.
+_Avoid_: spec, config entry
+
 **Universe Parameters**:
 The recipe held by a Universe Definition at one revision: an optional rank rule, an Inclusion set, and an Exclusion set.
 _Avoid_: rule, criteria, settings
@@ -111,7 +115,7 @@ _Avoid_: weight semantics, units, scale
 ### Price History
 
 **Bar**:
-One Instrument's open, high, low, close and volume for one session date from one source. Stored as fetched; two sources disagreeing about a date each keep their own Bar.
+One Instrument's open, high, low, close and volume, with market cap where the source reports it, for one session date from one source. Stored as fetched; two sources disagreeing about a date each keep their own Bar.
 _Avoid_: candle, quote, price point, tick
 
 **Provisional Bar**:
