@@ -1,4 +1,4 @@
-"""The daily market sweep, issue #19, through `cointoss.ingest.sweep`.
+"""The daily market sweep, through `cointoss.ingest.sweep`.
 
 Driven by a recorded CoinGecko `markets` listing (`tests/data/coingecko_markets_top250.json`):
 the full first page of 250 coins and the head of the second. `AsyncHTTPClient` is patched in
@@ -26,7 +26,7 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 
-from cointoss.ingest import SweepTooNarrow, sweep
+from cointoss.ingest import DEFAULT_BAR_WINDOW, SweepReport, SweepTooNarrow, sweep
 from cointoss.instrument import (
     ExternalReference,
     FigiResolution,
@@ -82,12 +82,13 @@ async def run(
     at: datetime = AT,
     definitions: tuple[str, ...] = ("cg-top-100", "cg-top-10"),
     top_n: int = 250,
-) -> Any:
+    bar_window: timedelta = DEFAULT_BAR_WINDOW,
+) -> SweepReport:
     with patch(
         "cointoss.sources.coingecko.AsyncHTTPClient",
         return_value=coingecko(*(recorded() if pages is None else pages)),
     ):
-        return await sweep(store, at, definitions, top_n=top_n)
+        return await sweep(store, at, definitions, top_n=top_n, bar_window=bar_window)
 
 
 def define(store: Store, name: str, enter: int, leave: int) -> None:
@@ -145,8 +146,11 @@ async def test_one_sweep_mints_records_membership_and_stores_bars(store: Store):
     (bar,) = store.bars_for(BTC, DAY, DAY, source=Source.COINGECKO)
     assert bar.close == 83227
     assert bar.volume == pytest.approx(28071563826)
+    assert bar.market_cap == 1672100896326
     assert bar.fetched_at == AT
     assert report.bars == 249
+    assert report.bars_kept == 0
+    assert not report.bars_skipped_late
     assert report.restatements == 0
 
 
@@ -162,7 +166,7 @@ async def test_coins_are_identified_by_coingecko_id_with_figi_not_attempted(stor
 
 
 async def test_a_swept_bar_is_final_not_provisional(store: Store):
-    """The post-midnight snapshot is date D's bar and is final when written (#18)."""
+    """The listing fetched just after midnight is date D's bar and is final when written."""
     await run(store)
     (bar,) = store.bars_for(ETH, DAY, DAY, source=Source.COINGECKO)
 
@@ -296,13 +300,63 @@ async def test_only_the_named_definitions_are_evaluated(store: Store):
     assert store.load_evaluation_runs("cg-top-100") == []
 
 
-async def test_a_definition_refusing_the_date_is_reported_not_raised(store: Store):
-    """A same-day rerun on a moved market would put two memberships on one date."""
-    await run(store)
+async def test_a_same_day_resweep_returns_the_days_runs_rather_than_reevaluating(store: Store):
+    """A moved market later the same day would otherwise put two memberships on one date."""
+    first = await run(store)
     reordered = [c for c in recorded()[0] if c["id"] != "bitcoin"]
 
     report = await run(store, [reordered], at=AT + timedelta(minutes=30))
 
+    assert report.failed == {}
+    assert report.runs == first.runs
+    assert len(store.load_evaluation_runs("cg-top-10")) == 1
+    assert BTC in store.members_at("cg-top-10", DAY)
+
+
+async def test_a_definition_refusing_the_date_is_reported_not_raised(store: Store):
+    """A day earlier than one already evaluated cannot be slotted in behind it."""
+    await run(store, at=AT + timedelta(days=1))
+
+    report = await run(store, at=AT)
+
     assert set(report.failed) == {"cg-top-100", "cg-top-10"}
     assert report.runs == ()
-    assert BTC in store.members_at("cg-top-10", DAY)
+
+
+async def test_a_resweep_keeps_the_stored_bar_and_files_no_restatement(store: Store):
+    """The day's bar is the 00:00 price; a later fetch the same day is not a new vintage of it."""
+    await run(store)
+    moved = [{**c, "current_price": 90000.0} if c["id"] == "bitcoin" else c for c in recorded()[0]]
+
+    report = await run(store, [moved], at=AT + timedelta(hours=1))
+
+    assert report.bars == 0
+    assert report.bars_kept == 249
+    assert report.restatements == 0
+    assert store.restatements_for(BTC) == []
+    (bar,) = store.bars_for(BTC, DAY, DAY, source=Source.COINGECKO)
+    assert (bar.close, bar.fetched_at) == (83227, AT)
+
+
+async def test_a_sweep_after_the_bar_window_records_membership_but_no_bars(store: Store):
+    late = datetime(2026, 9, 30, 3, 1, tzinfo=UTC)
+
+    report = await run(store, at=late)
+
+    assert report.bars_skipped_late
+    assert report.bars == 0
+    assert store.bars_for(BTC, DAY, DAY) == []
+    assert [r.definition for r in report.runs] == ["cg-top-100", "cg-top-10"]
+    assert len(store.members_at("cg-top-10", DAY)) == 10
+
+
+async def test_the_bar_window_is_the_callers_to_set(store: Store):
+    at_edge = datetime(2026, 9, 30, 3, 0, tzinfo=UTC)
+    assert not (await run(store, at=at_edge)).bars_skipped_late
+
+    later = datetime(2026, 10, 1, 5, 0, tzinfo=UTC)
+    report = await run(store, at=later, bar_window=timedelta(hours=6))
+
+    assert not report.bars_skipped_late
+    (bar,) = store.bars_for(BTC, DAY + timedelta(days=1), DAY + timedelta(days=1))
+    assert bar.fetched_at == later

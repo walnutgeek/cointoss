@@ -4,7 +4,7 @@
 -- so the invariant lives here, at the only place an `Observation` is built from outside data.
 It holds two paths in. Pinning a typed ticker (issue #14): a researcher types a symbol against
 a source, and it is resolved to an Instrument once, at edit time, per ADR-0007. And the daily
-market sweep (issue #19), `sweep`, which turns one CoinGecko `markets` listing into Instruments,
+market sweep, `sweep`, which turns one CoinGecko `markets` listing into Instruments,
 membership and bars. The unresolved retry runner is a later step.
 
 It sits apart from its neighbours because it is the one layer that combines them: it makes a
@@ -38,7 +38,7 @@ from __future__ import annotations
 import copy
 import logging
 from collections.abc import Iterable, Sequence
-from datetime import date, datetime
+from datetime import UTC, date, datetime, time, timedelta
 from typing import ClassVar
 
 from pydantic import BaseModel, ConfigDict
@@ -73,9 +73,11 @@ from cointoss.universe import (
 )
 
 __all__ = [
+    "DEFAULT_BAR_WINDOW",
     "DEFAULT_TOP_N",
     "SweepReport",
     "SweepTooNarrow",
+    "check_listing_width",
     "figi_job",
     "pin_member",
     "resolve_typed_symbol",
@@ -355,14 +357,29 @@ def _with_member(
     return UniverseDefinition(name=definition.name, revisions=(*definition.revisions, entry))
 
 
-# -- The daily market sweep, issue #19 --
-
 DEFAULT_TOP_N = 250
 """How many coins a sweep lists by default: one full `markets` page."""
+
+DEFAULT_BAR_WINDOW = timedelta(hours=3)
+"""How long after 00:00 UTC a listing's price still stands for that date's 00:00 price."""
 
 
 class SweepTooNarrow(ValueError):
     """The listing asked for is narrower than a Definition's exit rank, so members would vanish."""
+
+
+def check_listing_width(top_n: int, exit_ranks: Iterable[int | None]) -> None:
+    """Refuse a listing of `top_n` coins that stops short of the widest exit rank.
+
+    >>> check_listing_width(120, [120, None, 12])
+    >>> check_listing_width(119, [120])
+    Traceback (most recent call last):
+    ...
+    cointoss.ingest.SweepTooNarrow: top_n 119 is narrower than exit rank 120
+    """
+    widest = max((rank or 0 for rank in exit_ranks), default=0)
+    if top_n < widest:
+        raise SweepTooNarrow(f"top_n {top_n} is narrower than exit rank {widest}")
 
 
 class SweepReport(BaseModel):
@@ -371,22 +388,32 @@ class SweepReport(BaseModel):
     `skipped` maps a CoinGecko coin id to why no Instrument was named for it; `failed` maps a
     Definition name to why its membership was not recorded. Neither aborts the sweep. `runs`
     are the Evaluation Runs in the order the Definitions were named, including one already
-    recorded by an earlier sweep with the same `at`.
+    recorded by an earlier sweep the same day.
+
+    `bars` counts the bars written. `bars_kept` counts coins whose bar for the day was already
+    stored and was left as it was. `bars_skipped_late` means the sweep ran after the bar window,
+    so it wrote no bars at all.
     """
 
     model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True)
 
     at: datetime
-    bar_date: date
     listed: int
     minted: int
     matched: int
     superseded: int
     skipped: dict[str, str]
     bars: int
+    bars_kept: int
+    bars_skipped_late: bool
     restatements: int
     runs: tuple[EvaluationRun, ...]
     failed: dict[str, str]
+
+    @property
+    def day(self) -> date:
+        """The UTC date the sweep recorded membership and bars for."""
+        return as_utc(self.at).date()
 
 
 async def sweep(
@@ -395,14 +422,21 @@ async def sweep(
     definitions: Iterable[str],
     *,
     top_n: int = DEFAULT_TOP_N,
+    bar_window: timedelta = DEFAULT_BAR_WINDOW,
     coingecko: CoinGeckoClient | None = None,
 ) -> SweepReport:
     """Turn one CoinGecko `markets` listing into Instruments, membership and bars for a day.
 
-    `at` is the moment of the sweep. Its UTC date is the date everything is recorded for, and
-    it stamps the bars' `fetched_at` and the Runs' `run_at`, so a repeat with the same `at` and
-    the same listing changes nothing. Run shortly after 00:00 UTC, the snapshot is that date's
-    final bar (#18): CoinGecko labels its own 00:00 point the same way.
+    `at` is the moment of the sweep, when the listing is fetched. Its UTC date is the date
+    everything is recorded for, and it stamps the bars' `fetched_at` and the Runs' `run_at`.
+
+    A day's bar is the price at its 00:00 UTC, which is what CoinGecko labels its own daily
+    point with, and a listing's `current_price` is that price only when fetched soon after
+    midnight. So bars are written only when `at` is within `bar_window` of the day's 00:00 UTC,
+    and are then final, not Provisional. A later sweep still resolves Instruments and records
+    membership, and reports `bars_skipped_late`; the day's bars are left for a backfill. Nor is
+    a bar already stored for the day from CoinGecko overwritten: a re-sweep's later price is not
+    a new vintage of the 00:00 price, and overwriting it would file a false Restatement.
 
     The top `top_n` coins are listed by market cap, paging as needed. Each coin is one
     `Observation` whose FIGI attempt is recorded `NOT_ATTEMPTED` -- the crypto FIGI request is
@@ -413,10 +447,12 @@ async def sweep(
 
     Each named Definition is evaluated against CoinGecko's own `market_cap_rank`, not the
     listing position, which the API does not keep equal to it; a coin with no rank, or not
-    listed, is absent. The Definitions are named by the caller rather than read from the store,
-    because a Definition dropped from configuration stays stored. `top_n` must reach the widest
-    exit rank among them, or `SweepTooNarrow` is raised before anything is fetched; an unknown
-    name raises `UnknownUniverse`.
+    listed, is absent. A Definition is evaluated once per day: when a Run for the day is already
+    stored, it is returned rather than evaluated again, since a moved market would otherwise
+    put two memberships on one date. The Definitions are named by the caller rather than read
+    from the store, because a Definition dropped from configuration stays stored. `top_n` must
+    reach the widest exit rank among them, or `SweepTooNarrow` is raised before anything is
+    fetched; an unknown name raises `UnknownUniverse`.
 
     A coin whose Observation cannot be formed, or that the registry flags for review, is logged
     and skipped. A Definition whose membership the store refuses for this date is logged and
@@ -425,9 +461,7 @@ async def sweep(
     moment = as_utc(at)
     day = moment.date()
     loaded = [store.require_universe(name) for name in definitions]
-    widest = max((d.parameters.exit_rank or 0 for d in loaded), default=0)
-    if top_n < widest:
-        raise SweepTooNarrow(f"top_n {top_n} is narrower than exit rank {widest}")
+    check_listing_width(top_n, (d.parameters.exit_rank for d in loaded))
 
     listing = await _list_markets(coingecko or CoinGeckoClient(), top_n)
     identified, outcomes, skipped = _identify_listing(store, listing, day)
@@ -444,22 +478,32 @@ async def sweep(
     failed: dict[str, str] = {}
     for definition in loaded:
         try:
-            runs.append(_record(store, definition, ranks, day, moment))
+            runs.append(_evaluate_once_a_day(store, definition, ranks, day, moment))
         except EntryOrder as exc:
             log.warning("sweep %s: %s not recorded: %s", day, definition.name, exc)
             failed[definition.name] = str(exc)
 
-    bars = _bars(listing, identified, moment)
+    late = moment - datetime.combine(day, time(), UTC) > bar_window
+    bars: list[Bar] = []
+    kept = 0
+    if late:
+        log.warning("sweep %s: at %s, after the %s bar window; no bars", day, moment, bar_window)
+    else:
+        bars = _bars(listing, identified, moment)
+        already_priced = store.instruments_with_bars(Source.COINGECKO, day)
+        kept = sum(bar.instrument_id in already_priced for bar in bars)
+        bars = [bar for bar in bars if bar.instrument_id not in already_priced]
     restated = store.upsert_bars(bars)
     return SweepReport(
         at=moment,
-        bar_date=day,
         listed=len(listing),
         minted=outcomes.count(Outcome.MINTED),
         matched=outcomes.count(Outcome.MATCHED),
         superseded=outcomes.count(Outcome.SUPERSEDED),
         skipped=skipped,
         bars=len(bars),
+        bars_kept=kept,
+        bars_skipped_late=late,
         restatements=len(restated),
         runs=tuple(runs),
         failed=failed,
@@ -528,22 +572,20 @@ def _coin_observation(coin: CoinsMarketItem, day: date) -> Observation:
     )
 
 
-def _record(
+def _evaluate_once_a_day(
     store: Store,
     definition: UniverseDefinition,
     ranks: dict[InstrumentId, int],
     day: date,
     moment: datetime,
 ) -> EvaluationRun:
-    """Evaluate one Definition against the day's ranks and record it, once per `moment`.
+    """Evaluate one Definition against the day's ranks and record it, unless the day has a Run.
 
-    The membership in force on `day` is the previous one for hysteresis. On a repeat with the
-    same `moment` that is the membership the first run recorded, which the same ranks
-    reproduce, so the repeat returns the Run already stored instead of writing a second.
+    The membership in force on `day` is the previous one for hysteresis.
     """
-    for held in store.load_evaluation_runs(definition.name):
-        if held.source_asof == day and as_utc(held.run_at) == moment:
-            return held
+    days_runs = store.runs_on(definition.name, day)
+    if days_runs:
+        return days_runs[0]
     try:
         previous = frozenset(InstrumentId(i) for i in store.members_at(definition.name, day))
     except NotYetStarted:
@@ -557,7 +599,10 @@ def _record(
 def _bars(
     listing: Sequence[CoinsMarketItem], identified: dict[str, InstrumentId], moment: datetime
 ) -> list[Bar]:
-    """One close-and-volume Bar per priced, identified coin, keyed by the sweep's UTC date."""
+    """One Bar per priced, identified coin, keyed by the sweep's UTC date.
+
+    Close, volume and market cap are what a `markets` listing reports.
+    """
     bars: dict[InstrumentId, Bar] = {}
     for coin in listing:
         instrument_id = identified.get(coin.id)
@@ -570,6 +615,7 @@ def _bars(
                 bar_date=moment.date(),
                 close=coin.current_price,
                 volume=coin.total_volume,
+                market_cap=coin.market_cap,
                 fetched_at=moment,
             )
         except PriceError as exc:
