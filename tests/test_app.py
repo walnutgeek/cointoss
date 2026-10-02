@@ -410,7 +410,8 @@ class TestThroughWoodglue(tornado.testing.AsyncHTTPTestCase):
         self.home = TemporaryDirectory()
         data_dir = Path(self.home.name)
         (data_dir / "cointoss.yaml").write_text(yaml.safe_dump(CONFIG))
-        entry = NamespaceEntry(entries=[fragment_entry(data_dir=data_dir)], run_engine=True)
+        # No `init.data_dir`: the fragment takes woodglue's data directory from its mount.
+        entry = NamespaceEntry(entries=[fragment_entry()], run_engine=True)
         namespaces = load_namespaces({"cointoss": entry}, data_dir)
         self.ns = namespaces["cointoss"][0]
         return create_app(namespaces=namespaces)
@@ -435,8 +436,12 @@ class TestThroughWoodglue(tornado.testing.AsyncHTTPTestCase):
         members = self.rpc("cointoss.data:members", universe="cg-top-10", date="2026-09-30")
         assert len(members["result"]["members"]) == 10
 
-    def test_an_unknown_universe_is_an_error_response_not_a_traceback(self) -> None:
+    def test_an_api_error_reaches_the_client_with_its_code_and_message(self) -> None:
+        Store(Path(self.home.name) / "cointoss.db").close()
         answer = self.rpc("cointoss.data:runs", universe="nope")
         assert "result" not in answer
-        assert answer["error"]["code"] < 0
+        assert answer["error"]["code"] == NotFound.code == -32001
+        assert "nope" in answer["error"]["message"]
         assert "Traceback" not in json.dumps(answer)
+        bad = self.rpc("cointoss.data:members", universe="cg-top-10", date="yesterday")
+        assert bad["error"]["code"] == BadRequest.code

@@ -94,7 +94,7 @@ early, because accumulated history is the one thing that cannot be produced late
 2. **Universe Definitions.** Done. ADR-0007's recipe, revision log, Inclusions and Exclusions, the
    pure evaluator, and pinning a typed ticker.
 3. **Price storage.** Done (#16). ADR-0009's Bars, Corporate Actions and Restatements.
-4. **MVP: a running crypto instance (#18).** CoinGecko only. A daily sweep shortly after 00:00
+4. **MVP: a running crypto instance (#18).** Done, running since 2026-09-30. CoinGecko only. A daily sweep shortly after 00:00
    UTC turns `markets` into Instruments, `cg-top-100` membership (enter 100, exit 120,
    configurable) and the day's bars; a woodglue namespace serves it over JSON-RPC on 127.0.0.1;
    `cointoss init`, `woodglue.yaml`, cron triggers and a `systemd --user` unit keep it running.

@@ -52,10 +52,8 @@ loginctl enable-linger "$USER"    # keep it running while you are logged out
 ```
 
 The unit runs `wgl --data=<data dir> start` in the foreground and restarts it on failure.
-Before starting the server, it runs `cointoss sweep`. That call does nothing if today is
-already swept, and it catches up a sweep missed while the service was down. It is limited to
-two minutes by coreutils' `timeout` (found on `PATH` when the unit is written), and a failure
-there never stops the API from starting.
+If the daily sweep was missed while the service was down, it fires once when the server
+starts. The sweep does nothing if today is already swept.
 
 Without systemd, run `make serve` or `uv run wgl --data ~/.local/share/cointoss start`.
 
@@ -63,7 +61,7 @@ Without systemd, run `make serve` or `uv run wgl --data ~/.local/share/cointoss 
 
 ```bash
 uv run cointoss status             # server, last Evaluation Run per universe, last bar
-journalctl --user -u cointoss -e   # service log; woodglue also writes wgl.log in the data dir
+journalctl --user -u cointoss -e   # service log (without systemd: wgl.log in the data dir)
 ```
 
 The API needs the bearer token:
@@ -77,7 +75,27 @@ curl -s http://127.0.0.1:5321/rpc \
 
 The other methods are `cointoss.data:members` (`universe`, `date`), `changes` (`universe`,
 `start`, `end`), `bars` (`instrument_id`, `start`, `end`), `universes_of` (`instrument_id`,
-`start`, `end`) and `runs` (`universe`, `limit`). Dates are `YYYY-MM-DD`.
+`start`, `end`) and `runs` (`universe`, `limit`). Dates are `YYYY-MM-DD`. A request the store
+cannot answer is a JSON-RPC error: `-32001` for an unknown universe or Instrument, or a date
+with nothing stored; `-32002` before `init`; `-32602` for a malformed parameter.
+
+To replace the token with a new one (the old one stops working at once):
+
+```bash
+uv run wgl --data ~/.local/share/cointoss token --new
+```
+
+## Pause the daily sweep
+
+```bash
+curl -s http://127.0.0.1:5321/rpc \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"system.deactivate_trigger",
+       "params":{"namespace":"cointoss","name":"daily_sweep"}}'
+```
+
+The trigger stays paused across restarts. Resume it with `system.activate_trigger` and the
+same params. A sweep missed while paused is not caught up.
 
 ## Sweep by hand
 
@@ -98,9 +116,10 @@ the scheduled one runs, exits at once with `another sweep holds .../sweep.lock`.
 ## Where the data lives
 
 The data directory is `--data-dir`, else `$COINTOSS_HOME`, else `~/.local/share/cointoss`.
-The unit sets `COINTOSS_HOME`, and `woodglue.yaml` names the directory too, in the fragment's
-`init.data_dir`. If you move the directory, update both files, or delete them and re-run
-`init --data-dir NEW --systemd`.
+The server takes it from `wgl --data`, which the unit sets, along with `COINTOSS_HOME`. If you
+move the directory, delete the unit and re-run `init --data-dir NEW --systemd`. A
+`woodglue.yaml` written before woodglue 0.0.7 names the directory in the fragment's
+`init.data_dir`. That still works, but it overrides `wgl --data`, so remove it before moving.
 
 | File | What |
 | --- | --- |
@@ -108,7 +127,7 @@ The unit sets `COINTOSS_HOME`, and `woodglue.yaml` names the directory too, in t
 | `cointoss.yaml`, `woodglue.yaml` | Configuration. |
 | `auth.db` | API tokens. |
 | `mounts/` | woodglue engine state: triggers, DAG runs, cache. Rebuildable. |
-| `wgl.log`, `wgl.pid` | Server log and pid. |
+| `wgl.log`, `wgl.pid` | Server log (only when not under systemd, which logs to the journal) and pid. |
 | `sweep.lock` | Held while a sweep runs. Safe to delete when none is. |
 
 ## Backup

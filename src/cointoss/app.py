@@ -11,7 +11,6 @@ namespaces:
       - type: fragment
         gref: "cointoss.app:CointossApp"
         nsref: "data:"
-        init: {data_dir: /home/me/.local/share/cointoss}   # optional
         configs:
           sweep:
             triggers: [{name: daily_sweep, schedule: "5 0 * * *"}]
@@ -22,9 +21,12 @@ and so on. `sweep` is not: it writes and calls CoinGecko, so it runs from its tr
 woodglue's `system.fire_trigger`, or from the CLI, never from an ordinary API call.
 
 Runtime settings come from the data directory (`cointoss.config.Settings`): `init.data_dir` if
-given, else `$COINTOSS_HOME`, else `~/.local/share/cointoss`. They are read once, when the
-fragment is built, so a bad `cointoss.yaml` stops woodglue at startup rather than failing the
-next sweep silently. A config edit takes effect on restart.
+given, else woodglue's instance data directory (`current_mount`), else `$COINTOSS_HOME`, else
+`~/.local/share/cointoss`. A `woodglue.yaml` written by `cointoss init` carries no
+`init.data_dir`, so a copied instance serves its own store; older files that carry one still
+work. Settings are read once, when the fragment is built, so a bad `cointoss.yaml` stops
+woodglue at startup rather than failing the next sweep silently. A config edit takes effect on
+restart.
 
 Each call opens the store and closes it before returning, rather than holding one connection
 for the fragment's life. woodglue calls a sync node on the IOLoop thread while lythonic's
@@ -43,9 +45,8 @@ IOLoop while the first finished, only to find the day already swept.
 
 A request the store cannot answer -- an unknown universe or Instrument, a date before a
 universe's first entry, a malformed date -- raises an `ApiError` carrying a JSON-RPC error code
-and a message naming what was not found. woodglue 0.0.6 answers any exception from a node with
-`-32603 Internal error` and logs the traceback server-side, so the message reaches a Python
-caller but not yet a JSON-RPC client.
+and a message naming what was not found. `ApiError` is a woodglue `RpcError`, so a JSON-RPC
+client receives that code and message, and woodglue logs it without a traceback.
 """
 
 from __future__ import annotations
@@ -60,6 +61,8 @@ from typing import Any, ClassVar
 
 from lythonic.compose.namespace import NamespaceFragment, nsnode
 from pydantic import BaseModel, ConfigDict
+from woodglue.apps.rpc import RpcError
+from woodglue.mount import current_mount
 
 from cointoss import ingest
 from cointoss.config import Settings, UniverseReconciled, ensure_universes
@@ -117,7 +120,7 @@ def fragment_entry(
 
     lythonic reads triggers only from configuration, so the default schedule lives here and in
     whatever `cointoss init` writes from it. Without `data_dir` the fragment resolves the data
-    directory itself when it is built.
+    directory itself when it is built, from woodglue's mount when there is one.
     """
     entry: dict[str, Any] = {
         "type": "fragment",
@@ -130,36 +133,28 @@ def fragment_entry(
     return entry
 
 
-class ApiError(Exception):
-    """A read never creates anything: against a data directory with no `cointoss.db` it raises
-    `NotInitialized`, naming `cointoss init`. Only `init` and the sweep create the store.
+class ApiError(RpcError):
+    """A request the store cannot answer, with the JSON-RPC error code it stands for."""
 
-    One sweep runs at a time per data directory. The sweep node takes an exclusive `flock` on
-    `sweep.lock` there, without waiting: a second sweep, such as a manual `cointoss sweep` while the
-    scheduled one runs, raises `SweepInProgress` and does nothing. Waiting would block woodglue's
-    IOLoop while the first finished, only to find the day already swept.
-
-    A request the store cannot answer, with the JSON-RPC error code it stands for."""
-
-    code: ClassVar[int] = -32000
+    code: int = -32000
 
 
 class NotFound(ApiError):
     """The universe or Instrument named is not stored, or holds nothing on the date asked."""
 
-    code: ClassVar[int] = -32001
+    code: int = -32001
 
 
 class NotInitialized(ApiError):
     """The data directory holds no database yet."""
 
-    code: ClassVar[int] = -32002
+    code: int = -32002
 
 
 class BadRequest(ApiError):
     """A parameter is malformed: not an ISO date, a range ending before it starts."""
 
-    code: ClassVar[int] = -32602
+    code: int = -32602
 
 
 class SweepInProgress(Exception):
@@ -257,7 +252,12 @@ class CointossApp(NamespaceFragment):
     settings: Settings
 
     def __init__(self, data_dir: str | None = None) -> None:
-        self.settings = Settings.load(Path(data_dir) if data_dir is not None else None)
+        if data_dir is not None:
+            home = Path(data_dir)
+        else:
+            mount = current_mount.get(None)
+            home = mount.data_dir if mount is not None else None
+        self.settings = Settings.load(home)
 
     @contextmanager
     def _store(self) -> Iterator[Store]:
