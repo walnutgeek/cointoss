@@ -1,0 +1,862 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Crypto coin portfolio tracker and research platform">
+      
+      
+      
+        <link rel="canonical" href="https://walnutgeek.github.io/cointoss/superpowers/plans/2026-09-29-persistence-layer-handoff/">
+      
+      
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>Persistence Layer Handoff - Cointoss</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../../assets/_mkdocstrings.css">
+    
+    <script>__md_scope=new URL("../../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="teal" data-md-color-accent="teal">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#persistence-layer-handoff" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../../.." title="Cointoss" class="md-header__button md-logo" aria-label="Cointoss" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Cointoss
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Persistence Layer Handoff
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="teal" data-md-color-accent="teal"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="teal" data-md-color-accent="teal"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/walnutgeek/cointoss" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    walnutgeek/cointoss
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../../.." title="Cointoss" class="md-nav__button md-logo" aria-label="Cointoss" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Cointoss
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/walnutgeek/cointoss" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    walnutgeek/cointoss
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    API Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/core.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    cointoss
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/models.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    cointoss.models
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/sources.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    cointoss.sources
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/pipeline.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    cointoss.pipeline
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/server.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    cointoss.server
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#read-these-first-in-this-order" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Read these first, in this order
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-is-built" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What is built
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#remaining-tickets" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Remaining tickets
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Remaining tickets">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#12-membership-intervals-and-evaluation-runs-unblocked" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        #12 — Membership intervals and Evaluation Runs (unblocked)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#13-universe-reads-and-the-append-equivalence-guard-blocked-by-12" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        #13 — Universe reads and the append-equivalence guard (blocked by #12)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#14-pinning-a-typed-ticker-unblocked" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        #14 — Pinning a typed ticker (unblocked)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#16-bars-accumulate-blocked-by-12" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        #16 — Bars accumulate (blocked by #12)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#things-that-will-bite" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Things that will bite
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#open-questions-i-would-not-decide-alone" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Open questions I would not decide alone
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#after-5-closes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        After #5 closes
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="persistence-layer-handoff">Persistence Layer Handoff<a class="headerlink" href="#persistence-layer-handoff" title="Permanent link">&para;</a></h1>
+<p>Written 2026-09-29 at <code>d508fd0</code>, to resume work on another machine. Issue #5 is the spec;
+tickets #6-#17 are its sub-issues. Eight are closed, four remain.</p>
+<p><strong>State of <code>main</code>:</strong> 237 tests, <code>make lint</code> clean, <code>store.py</code> at 99% coverage. Nothing is
+half-finished and nothing is uncommitted.</p>
+<h2 id="read-these-first-in-this-order">Read these first, in this order<a class="headerlink" href="#read-these-first-in-this-order" title="Permanent link">&para;</a></h2>
+<ol>
+<li><code>CONTEXT.md</code> — the vocabulary. Every term below is defined there.</li>
+<li><code>docs/adr/0007</code>, <code>0008</code>, <code>0009</code>, and the amendment lines in <code>0004</code>. These carry the
+   reasoning and the rejected alternatives; the tickets only carry what to build.</li>
+<li>GitHub issue #5 — the spec, including the table sketch.</li>
+<li>The closing comment on each closed ticket. Every one carries an explicit low-confidence
+   list naming the choices its implementer was unsure about. Those are the places a
+   follow-on ticket is most likely to trip.</li>
+</ol>
+<h2 id="what-is-built">What is built<a class="headerlink" href="#what-is-built" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Module</th>
+<th>Owns</th>
+<th>Coverage</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>cointoss.instrument</code></td>
+<td>Identity, minting, supersession, source-attributed Ticker History, <code>Source</code>, <code>identity_source</code>, <code>price_sources</code></td>
+<td>99%</td>
+</tr>
+<tr>
+<td><code>cointoss.universe</code></td>
+<td>Universe Definition, revisions, Inclusions/Exclusions, pure <code>evaluate</code> with the rank band</td>
+<td>100%</td>
+</tr>
+<tr>
+<td><code>cointoss.prices</code></td>
+<td><code>Bar</code>, <code>CorporateAction</code>, <code>Restatement</code>, Yahoo and CoinGecko mapping, split-aware restatement detection</td>
+<td>95%</td>
+</tr>
+<tr>
+<td><code>cointoss.store</code></td>
+<td>The only module that touches SQL. Ten tables, pragmas, <code>SchemaVersion</code></td>
+<td>99%</td>
+</tr>
+<tr>
+<td><code>cointoss.sources.coingecko</code></td>
+<td>Coin list, markets, detail, OHLC, <code>fetch_market_chart</code></td>
+<td>92%</td>
+</tr>
+</tbody>
+</table>
+<p><code>Store</code> surface today: <code>save_instrument(s)</code>, <code>load_instrument(s)</code>, <code>load_registry</code>,
+<code>resolve_symbol</code>, <code>save_universe</code>, <code>load_universe</code>, <code>load_universe_members</code>,
+<code>unresolved_members</code>, <code>save_exposure_series</code>, <code>load_exposure_series</code>,
+<code>save_covariance_series</code>, <code>load_covariance_series</code>, <code>save_risk_model</code>, <code>load_risk_model</code>.</p>
+<p>Tables in <code>TABLES</code> (the dict is both the schema and the ADR-0008 durable/rebuildable
+classification, so the two cannot drift): <code>SchemaVersion</code>, <code>InstrumentRow</code>,
+<code>InstrumentReferenceRow</code>, <code>TickerRecordRow</code>, <code>ExposureEntryRow</code>, <code>RiskModelRow</code>,
+<code>RiskModelRevisionRow</code>, <code>CovarianceEntryRow</code>, <code>UniverseDefinitionRow</code>, <code>UniverseRevisionRow</code>,
+<code>UniverseMemberRow</code>.</p>
+<h2 id="remaining-tickets">Remaining tickets<a class="headerlink" href="#remaining-tickets" title="Permanent link">&para;</a></h2>
+<p>Dependency order. #12 and #14 are both unblocked and touch different parts of <code>store.py</code>.</p>
+<h3 id="12-membership-intervals-and-evaluation-runs-unblocked">#12 — Membership intervals and Evaluation Runs (unblocked)<a class="headerlink" href="#12-membership-intervals-and-evaluation-runs-unblocked" title="Permanent link">&para;</a></h3>
+<p>The write path: <code>record_membership(definition, when, members)</code> reads the intervals open at
+<code>when</code>, diffs against what evaluation produced, closes leavers, opens joiners, writes the
+<code>EvaluationRun</code> row. Plus <code>members_at(definition, when)</code> as one indexed query.</p>
+<p>The point nobody should lose: <strong>an evaluation that changed nothing writes no interval rows
+at all</strong>, so the Run is the only evidence the scheduler is alive. Both tables are needed and
+neither substitutes for the other.</p>
+<p>Needs two new tables, <code>UniverseMembershipRow</code> (durable) and <code>EvaluationRunRow</code>
+(rebuildable), plus an index — the membership lookup starts from <code>(definition, date)</code>, which
+no existing alternative key serves.</p>
+<h3 id="13-universe-reads-and-the-append-equivalence-guard-blocked-by-12">#13 — Universe reads and the append-equivalence guard (blocked by #12)<a class="headerlink" href="#13-universe-reads-and-the-append-equivalence-guard-blocked-by-12" title="Permanent link">&para;</a></h3>
+<p><code>universes_containing(instrument_id, start, end)</code> — the cross-cutting query that decided the
+whole storage shape in ADR-0008 — and <code>load_universe_series(name)</code> returning the value
+object for callers typed on it.</p>
+<p><strong>This is the riskiest ticket in the set and the easiest to skip.</strong> It holds the property
+test: replay one sequence of dated memberships through <code>store.record_membership</code> and through
+<code>UniverseSeries.append</code>, assert the results are equal. The store's diff-and-close logic and
+the value type's fold are two implementations of one rule and nothing structural forces them
+to agree. #12 will look finished without this; it will not be.</p>
+<h3 id="14-pinning-a-typed-ticker-unblocked">#14 — Pinning a typed ticker (unblocked)<a class="headerlink" href="#14-pinning-a-typed-ticker-unblocked" title="Permanent link">&para;</a></h3>
+<p>Source plus symbol goes in, an <code>Observation</code> is built with the mandatory FIGI attempt, the
+registry resolves or mints, the result is persisted, the member is pinned. Failure stores the
+member unresolved and does not reject the edit.</p>
+<p><code>pin_member</code> was deliberately <strong>removed</strong> from #11 and belongs entirely here — it was the
+tail of the resolution flow wearing a storage name, and two tickets claiming to own "how a
+member becomes pinned" was the ambiguity worth killing. <code>save_universe</code> already writes a
+member with or without a pin, which is all this ticket needs.</p>
+<p>Tests must not make live network calls, so the OpenFIGI client needs a seam. Check how
+<code>tests/test_openfigi.py</code> does it before inventing one.</p>
+<h3 id="16-bars-accumulate-blocked-by-12">#16 — Bars accumulate (blocked by #12)<a class="headerlink" href="#16-bars-accumulate-blocked-by-12" title="Permanent link">&para;</a></h3>
+<p><code>upsert_bars</code> idempotent on <code>(instrument, source, bar_date)</code>, corporate actions stored,
+<code>detect_restatements</code> called before overwriting so the pure logic stays testable, <code>bars_for</code>
+resolving per date through the instrument's <code>price_sources</code>, and the bars for every member of
+a universe on a date (which is why it waits on #12).</p>
+<p>Two things to handle rather than discover:</p>
+<ul>
+<li><strong>The partial-day bar.</strong> CoinGecko's <code>market_chart</code> emits a trailing "now" point sharing a
+  date with that day's 00:00 point, so the last bar is partial. Re-fetching changes its
+  close, and <code>detect_restatements</code> — which only excuses split rescales — will file it as a
+  Restatement. That is a false positive generated by normal operation. Suppression belongs in
+  the write path, not in the pure mapping.</li>
+<li><strong><code>source</code> is still a plain <code>str</code> in <code>cointoss.prices</code>.</strong> #6 landed a typed <code>Source</code> enum;
+  #8 was written concurrently and did not use it. #11 harmonised <code>cointoss.universe</code> and
+  immediately caught a test constructing a member with <code>source="cg"</code>, which is not a value
+  the vocabulary has. Do the same here.</li>
+</ul>
+<h2 id="things-that-will-bite">Things that will bite<a class="headerlink" href="#things-that-will-bite" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong><code>lythonic.state.select</code> and <code>None</code>.</strong> Fixed upstream in 0.0.25 (walnutgeek/lythonic#11,
+  reported from here). A <code>None</code> filter now correctly means <code>IS NULL</code>; before, it rendered
+  <code>field = NULL</code> and silently matched nothing. <code>pyproject.toml</code> requires <code>&gt;=0.0.25</code>. If you
+  ever see an empty result from a nullable-column filter, check the installed version first.</li>
+<li><strong>The filter operator is a prefix</strong>, not a suffix: <code>ne__instrument=None</code>, not
+  <code>instrument__ne=None</code>. 0.0.25 raises a message naming the correct form.</li>
+<li><strong><code>(AK)</code> markers go at the start of the field description</strong>, stripped in the order <code>(PK)</code>,
+  <code>(FK:...)</code>, <code>(AK)</code>, so a field that is both writes
+  <code>description="(FK:Instrument.instrument_row_id)(AK) ..."</code>. A field cannot be both <code>(AK)</code>
+  and nullable.</li>
+<li><strong><code>self.conn.commit()</code> at the end of every write method.</strong> sqlite3 opens an implicit
+  transaction on DML. Nothing reminds you.</li>
+<li><strong>Do not bump <code>SCHEMA_VERSION</code> or add to <code>MIGRATIONS</code>.</strong> There is no released schema;
+  adding tables before first release is still version 1.</li>
+<li><strong><code>make test</code> and <code>uv run pytest tests/</code> are not the same.</strong> The Makefile adds doctests —
+  raw pytest reports ~40 fewer tests and misleading coverage. Always verify with <code>make test</code>.</li>
+<li><strong>The registry is durable, not rebuildable</strong>, despite being derived from source data.
+  Instrument Ids are minted from the first symbol seen in <code>mint_seq</code> order; re-ingesting in a
+  different order mints different ids, and every membership row and matrix axis references
+  them.</li>
+</ul>
+<h2 id="open-questions-i-would-not-decide-alone">Open questions I would not decide alone<a class="headerlink" href="#open-questions-i-would-not-decide-alone" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong><code>save_universe</code> silently discards</strong> inclusion/exclusion sets on a passed-in
+  <code>UniverseParameters</code> when no matching member rows come with it. Member rows are the system
+  of record and the sets are projected back on load, which is what ADR-0007 specifies — but
+  the silence is wrong. It should probably raise. Flagged twice, deliberately not changed.</li>
+<li><strong>#10 and #17 have no implementer's self-report.</strong> Their agents were killed by the host
+  sleeping; the work was recovered and reviewed, but the low-confidence notes on those two
+  tickets are reconstructed from reading the diff, not written by whoever made the choices.
+  Weaker evidence than the other six.</li>
+<li><strong>Restatement tolerance is <code>1e-6</code>, relative.</strong> If real re-fetches start filing spurious
+  restatements on a split, <code>1e-4</code> is the fix. The split-date boundary uses
+  <code>action_date &gt; bar_date</code> strictly, verified against Yahoo's NVDA 2024-06-10 frame; that is
+  the assumption most likely to be wrong for another source.</li>
+<li><strong><code>adj_close</code> is not exempt from restatement detection.</strong> A re-fetch recomputing it across
+  a new dividend will be reported. That may be correct or may become noise.</li>
+</ul>
+<h2 id="after-5-closes">After #5 closes<a class="headerlink" href="#after-5-closes" title="Permanent link">&para;</a></h2>
+<p><code>docs/agents/road-map.md</code> has the build order. Steps 3 (ingest), 4 (the running instance),
+6 (returns) and 7 (the estimator) come next, and its "Still open" section lists what must be
+decided before step 3 — chiefly <strong>delisting versus absence</strong>, which nothing currently
+distinguishes.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../../..", "features": ["navigation.sections", "navigation.expand", "navigation.top", "search.highlight", "search.suggest", "content.code.copy"], "search": "../../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>

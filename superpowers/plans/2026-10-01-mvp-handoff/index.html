@@ -1,0 +1,826 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Crypto coin portfolio tracker and research platform">
+      
+      
+      
+        <link rel="canonical" href="https://walnutgeek.github.io/cointoss/superpowers/plans/2026-10-01-mvp-handoff/">
+      
+      
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>MVP Handoff - Cointoss</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../../assets/_mkdocstrings.css">
+    
+    <script>__md_scope=new URL("../../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="teal" data-md-color-accent="teal">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#mvp-handoff" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../../.." title="Cointoss" class="md-header__button md-logo" aria-label="Cointoss" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Cointoss
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              MVP Handoff
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="teal" data-md-color-accent="teal"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="teal" data-md-color-accent="teal"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/walnutgeek/cointoss" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    walnutgeek/cointoss
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../../.." title="Cointoss" class="md-nav__button md-logo" aria-label="Cointoss" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Cointoss
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/walnutgeek/cointoss" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    walnutgeek/cointoss
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    API Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/core.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    cointoss
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/models.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    cointoss.models
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/sources.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    cointoss.sources
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/pipeline.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    cointoss.pipeline
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/server.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    cointoss.server
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#read-these-first" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Read these first
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-live-instance" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The live instance
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-the-upgrade-gives-us" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What the upgrade gives us
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#small-fixes-noticed-while-writing-this" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Small fixes noticed while writing this
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-comes-next" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What comes next
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#things-that-will-bite" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Things that will bite
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="mvp-handoff">MVP Handoff<a class="headerlink" href="#mvp-handoff" title="Permanent link">&para;</a></h1>
+<p>Written 2026-10-01 (UTC 2026-10-02 04:30) at <code>722b54a</code>, after upgrading to woodglue 0.0.7 and
+lythonic 0.0.26. Issue #18 is the MVP spec; #19-#21 are closed, #22 is open only for the record
+of the live check below. #5 (persistence) is closed and its handoff,
+<code>2026-09-29-persistence-layer-handoff.md</code>, is superseded by this one.</p>
+<p><strong>Update 2026-10-02:</strong> #22 and #18 are closed. #25 (adopt woodglue 0.0.7 / lythonic 0.0.26) landed
+on <code>main</code> in <code>74c4bb7</code> and <code>8280e02</code>, covering the first three rows of the table below, the
+docstring fix and the README notes. Its live-machine steps are still outstanding: re-render the
+unit, restart, rotate the token, delete <code>wgl.log</code>, and optionally drop <code>init.data_dir</code> from the
+live <code>woodglue.yaml</code>. See the closing comment on #25.</p>
+<p><strong>State of <code>main</code>:</strong> 458 tests, <code>make lint</code> clean. Nothing half-finished. Two local commits are
+not pushed at the time of writing: the dependency upgrade and this file.</p>
+<h2 id="read-these-first">Read these first<a class="headerlink" href="#read-these-first" title="Permanent link">&para;</a></h2>
+<ol>
+<li><code>docs/road-map.md</code>: build order (the MVP is step 4) and the "Still open" list.</li>
+<li><code>CONTEXT.md</code>: vocabulary, especially Universe Declaration, Survivor and Provisional Bar.</li>
+<li>ADR-0009 with its 2026-09-29 amendments. These define a CoinGecko daily bar as the price at
+   00:00 UTC, explain the bar window, and record that a stored bar is never overwritten.</li>
+<li>The closing comments on #19, #20 and #21. Each one lists Standouts and Low confidence
+   choices.</li>
+</ol>
+<h2 id="the-live-instance">The live instance<a class="headerlink" href="#the-live-instance" title="Permanent link">&para;</a></h2>
+<p>It runs on this machine as a <code>systemd --user</code> service (<code>cointoss.service</code>, enabled, linger on).
+The data directory is <code>~/.local/share/cointoss</code>. On 2026-10-02 04:22 UTC it reported:</p>
+<table>
+<thead>
+<tr>
+<th>Sweep</th>
+<th>When</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>2026-09-30</td>
+<td>23:03 UTC, the catch-up when the service was installed</td>
+<td>100 admitted, <strong>no bars</strong> (after the bar window), by design</td>
+</tr>
+<tr>
+<td>2026-10-01</td>
+<td>00:05 UTC, scheduled</td>
+<td>unchanged, 249 bars</td>
+</tr>
+<tr>
+<td>2026-10-02</td>
+<td>00:05 UTC, scheduled</td>
+<td>+1 admitted (101 members, within the 100/120 band), 249 bars</td>
+</tr>
+</tbody>
+</table>
+<p>0 Restatements, 253 Instruments. One coin is skipped on every sweep: <code>bianrensheng</code>, whose
+symbol <code>币安人生</code> normalises to empty.</p>
+<p><strong>The service still runs woodglue 0.0.6 in memory.</strong> <code>uv sync</code> replaced the venv, so the next
+start runs 0.0.7. Restart it after the changes below land, not before. 0.0.7's lythonic 0.0.26
+catch-up and cointoss's own <code>ExecStartPre</code> catch-up would otherwise both run. That is harmless,
+since the sweep is idempotent for the day, but it is redundant.</p>
+<p>The live check for #22 is satisfied: the service is active, JSON-RPC answers with the token
+(<code>runs</code> returned the three runs above), and scheduled sweeps landed on two consecutive days.
+Post that on #22 and close it, then close #18.</p>
+<h2 id="what-the-upgrade-gives-us">What the upgrade gives us<a class="headerlink" href="#what-the-upgrade-gives-us" title="Permanent link">&para;</a></h2>
+<p>All five issues filed from cointoss are fixed upstream (woodglue #4-#7, lythonic #12).
+woodglue #8 and #9 also landed. Nothing in cointoss broke: tests and lint passed unchanged.
+Each fix lets cointoss drop a workaround:</p>
+<table>
+<thead>
+<tr>
+<th>Upstream change</th>
+<th>cointoss workaround it retires</th>
+<th>Work</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>woodglue #4: <code>woodglue.apps.rpc.RpcError(code, message, data)</code> is passed through to the client</td>
+<td><code>ApiError</code> already carries a class-level <code>code</code>, but it subclasses <code>Exception</code>, so clients get <code>-32603 "Internal error"</code></td>
+<td>Make <code>ApiError</code> subclass <code>RpcError</code>, and add a JSON-RPC test asserting that <code>NotFound</code> arrives as <code>-32001</code> with its message. One-line change, plus the test.</td>
+</tr>
+<tr>
+<td>woodglue #6: <code>current_mount.get(None).data_dir</code> is set while the namespace is built and during trigger runs</td>
+<td><code>cointoss init</code> writes <code>init.data_dir</code> into <code>woodglue.yaml</code>, and the unit exports <code>COINTOSS_HOME</code></td>
+<td>Have <code>CointossApp()</code> resolve the data dir from <code>current_mount</code>, falling back to <code>resolve_data_dir()</code>. Drop <code>init.data_dir</code> from <code>fragment_entry()</code>. Keep <code>COINTOSS_HOME</code> for the CLI only. Existing <code>woodglue.yaml</code> files with <code>init.data_dir</code> must keep working.</td>
+</tr>
+<tr>
+<td>lythonic #12: a trigger missed while the process was down fires once on start</td>
+<td>The <code>ExecStartPre=-$timeout 120 … cointoss sweep</code> catch-up, and the <code>shutil.which("timeout")</code> resolution when the unit is rendered</td>
+<td>Remove <code>ExecStartPre</code> and <code>$timeout</code> from the template and from <code>render_unit</code>. The release notes say to remove external catch-ups "to avoid a double run". <code>TimeoutStartSec</code> can go too. Re-render the installed unit with <code>cointoss init --systemd</code>, after deleting the old one.</td>
+</tr>
+<tr>
+<td>woodglue #7: <code>wgl token [--new]</code>, and the token is no longer printed on start</td>
+<td><code>cointoss token</code></td>
+<td>Keep it: it resolves <code>--data-dir</code>/<code>COINTOSS_HOME</code> like every other cointoss command. Optionally mention <code>wgl --data … token --new</code> for rotation in the README. The token printed by 0.0.6 is already in the journal, so rotate it once with <code>--new</code> after the restart.</td>
+</tr>
+<tr>
+<td>woodglue #5: SIGTERM handled, <code>wgl.pid</code> removed</td>
+<td><code>_server_state</code> in <code>cli.py</code> checks that the pid is alive</td>
+<td>Keep the check. It is cheap and still guards against <code>kill -9</code>. Its docstring and comment should stop blaming woodglue.</td>
+</tr>
+<tr>
+<td>woodglue #8: journald logging under systemd, no <code>wgl.log</code>, rotation</td>
+<td>Nothing, but <code>~/.local/share/cointoss/wgl.log</code> (written by 0.0.6) will stop growing</td>
+<td>Delete the stale <code>wgl.log</code> after the restart. <code>PYTHONUNBUFFERED=1</code> in the unit can stay; it still helps the CLI's own output.</td>
+</tr>
+<tr>
+<td>woodglue #9: a trigger deactivated through the system API stays disabled across restarts</td>
+<td>Nothing</td>
+<td>Document in the README how to pause the daily sweep (JSON-RPC <code>system.deactivate_trigger</code> with <code>{"namespace": "cointoss", "name": "daily_sweep"}</code>) and resume it.</td>
+</tr>
+</tbody>
+</table>
+<p>The default log level is now INFO, not DEBUG. That is a breaking change in 0.0.7 and a quieter
+journal for us.</p>
+<p>lythonic #13 is still open: a <code>poll_fn</code> returning <code>None</code> is re-polled every second. cointoss
+uses <code>schedule</code> triggers only, so it does not affect us.</p>
+<p><strong>Suggested ticket:</strong> a single child of #18, "Adopt woodglue 0.0.7 / lythonic 0.0.26 and retire
+the workarounds", covering the first three rows plus the README notes. Then restart the service,
+rotate the token, and delete <code>wgl.log</code>.</p>
+<h2 id="small-fixes-noticed-while-writing-this">Small fixes noticed while writing this<a class="headerlink" href="#small-fixes-noticed-while-writing-this" title="Permanent link">&para;</a></h2>
+<ul>
+<li>The <code>ApiError</code> docstring in <code>app.py</code> starts with two paragraphs about reads and the sweep lock,
+  left by a merge. They belong in the module docstring or on <code>sweep_lock</code>. Fix this in the same
+  ticket.</li>
+<li><code>cointoss status</code> reports the latest run only. 2026-09-30 has membership but no bars, and
+  nothing points that out. <code>status</code> could flag days with runs but no bars, which backfill will
+  fill.</li>
+</ul>
+<h2 id="what-comes-next">What comes next<a class="headerlink" href="#what-comes-next" title="Permanent link">&para;</a></h2>
+<p>From <code>docs/road-map.md</code>, in order:</p>
+<ol>
+<li><strong>History backfill (step 5).</strong> It is already needed. 2026-09-30 has no bars, and any future
+   late catch-up leaves a gap the same way. <code>market_chart</code> with <code>days &gt;= 90</code> for members fills
+   only dates that have no bar and never overwrites one (ADR-0009 amendment). Rate limits:
+   CoinGecko's free tier is about 30 calls a minute, so a few coins per run, or a separate
+   trigger. Decide whether backfill covers every coin listed or only universe members.</li>
+<li><strong>UI (step 6).</strong> A small page over the JSON-RPC API: universe today, joins and leaves, a coin's
+   price and market-cap history, run health. Decide whether it is a woodglue UI plugin or a
+   static page served by woodglue. Check what 0.0.7's <code>/ui/</code> offers before choosing.</li>
+<li><strong>Portfolio (step 7)</strong>, valued from stored bars.</li>
+</ol>
+<p>Still-open items that the next work will touch (full list in the road map):</p>
+<ul>
+<li><strong>Delisting versus absence.</strong> It needs settling before stocks.</li>
+<li><strong>Unfolded reads.</strong> <code>corporate_actions_for</code>, <code>restatements_for</code> and <code>bars_for</code> consult only the
+  Survivor's Price Sources.</li>
+<li><strong>No review queue for flagged identity.</strong> Flags are only logged.</li>
+<li><strong><code>save_universe</code> silently discards</strong> inclusion and exclusion sets that arrive without member
+  rows.</li>
+</ul>
+<h2 id="things-that-will-bite">Things that will bite<a class="headerlink" href="#things-that-will-bite" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong><code>make test</code> is not the same as <code>uv run pytest tests/</code>.</strong> The Makefile adds doctests. Always
+  verify with <code>make test</code>.</li>
+<li><strong><code>self.conn.commit()</code> at the end of every store write method.</strong> Do not bump <code>SCHEMA_VERSION</code>;
+  there is no released schema yet. <strong>Except:</strong> there is now a live <code>cointoss.db</code> on this machine.
+  A column added to a table needs a manual <code>ALTER TABLE</code> there, or a dropped and re-fetched
+  rebuildable table. A change to a durable table (registry, definitions, membership) needs real
+  care, because that data cannot be re-fetched. This is the first point where a migration
+  matters.</li>
+<li><strong>lythonic filters take prefix operators:</strong> <code>ne__instrument=None</code>, not <code>instrument__ne=None</code>.</li>
+<li><strong>Never fetch <code>markets</code> through the cached namespace node</strong> (<code>fetch_coins_markets</code> is
+  <code>@require_cache</code>). It would replay yesterday's listing as today's bars.</li>
+<li><strong>A sweep after the 3-hour bar window writes no bars on purpose.</strong> Manual <code>cointoss sweep</code>
+  runs during the day print <code>no bars</code>.</li>
+<li><strong>One sweep at a time.</strong> A second concurrent sweep exits with <code>SweepInProgress</code>. It does not
+  wait.</li>
+<li><strong>A CoinGecko pin looks up the coin's CoinGecko id</strong> (through <code>markets</code>, highest market cap per
+  symbol), so the sweep matches it. A pin made during a CoinGecko outage carries no id, and the
+  sweep can then mint a <code>_2</code>; such a pin is logged.</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../../..", "features": ["navigation.sections", "navigation.expand", "navigation.top", "search.highlight", "search.suggest", "content.code.copy"], "search": "../../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>
