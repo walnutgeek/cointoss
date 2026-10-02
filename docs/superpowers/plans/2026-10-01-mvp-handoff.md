@@ -5,6 +5,12 @@ lythonic 0.0.26. Issue #18 is the MVP spec; #19-#21 are closed, #22 is open only
 of the live check below. #5 (persistence) is closed and its handoff,
 `2026-09-29-persistence-layer-handoff.md`, is superseded by this one.
 
+**Update 2026-10-02:** #22 and #18 are closed. #25 (adopt woodglue 0.0.7 / lythonic 0.0.26) landed
+on `main` in `74c4bb7` and `8280e02`, covering the first three rows of the table below, the
+docstring fix and the README notes. Its live-machine steps are still outstanding: re-render the
+unit, restart, rotate the token, delete `wgl.log`, and optionally drop `init.data_dir` from the
+live `woodglue.yaml`. See the closing comment on #25.
+
 **State of `main`:** 458 tests, `make lint` clean. Nothing half-finished. Two local commits are
 not pushed at the time of writing: the dependency upgrade and this file.
 
