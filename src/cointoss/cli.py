@@ -7,14 +7,17 @@
 
 The data directory is `--data-dir`, else `$COINTOSS_HOME`, else `~/.local/share/cointoss`
 (`cointoss.config.resolve_data_dir`). It holds `cointoss.db`, `cointoss.yaml`, `woodglue.yaml`
-and woodglue's own stores (`auth.db`, `mounts/`, `wgl.log`).
+and woodglue's own stores (`auth.db`, `mounts/`, and `wgl.log` when not under systemd).
 
 `init` writes each config only when it is missing, so an edited one is never overwritten, then
-validates both, so a re-run doubles as a config check. The `woodglue.yaml` it writes names the
-data directory in the fragment's `init.data_dir`, because woodglue does not pass its own data
-directory to a fragment; the file then describes the instance on its own, and `wgl --data D
-start` from a shell serves the same store the unit does. The unit also sets `COINTOSS_HOME`, for
-the `cointoss` commands it runs.
+validates both, so a re-run doubles as a config check. The `woodglue.yaml` it writes does not
+name the data directory: the fragment takes woodglue's own (`wgl --data D`), so `wgl --data D
+start` from a shell serves the same store the unit does, and a copied instance serves its own.
+The unit also sets `COINTOSS_HOME`, for any `cointoss` command run under it.
+
+A sweep missed while the server was down is caught up by lythonic when the server starts: a
+schedule trigger that missed its last firing fires once on start, so the unit needs no catch-up
+step of its own.
 
 `sweep` calls the fragment's own `sweep` node, so a manual run follows exactly the scheduled
 run's idempotency rule and takes the same lock. It records CoinGecko's current listing for
@@ -35,7 +38,6 @@ import asyncio
 import datetime as dt
 import logging
 import os
-import shutil
 import sys
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
@@ -81,23 +83,14 @@ def user_unit_dir() -> Path:
     return base / "systemd" / "user"
 
 
-def render_unit(*, bin_dir: Path, data_dir: Path, timeout: Path | None = None) -> str:
+def render_unit(*, bin_dir: Path, data_dir: Path) -> str:
     """The shipped `cointoss.service` template with this install's paths filled in.
-
-    `timeout` is coreutils' `timeout`, found on `PATH` when not given; it bounds the catch-up
-    sweep, since systemd's own `TimeoutStartSec` would fail the whole unit rather than let the
-    server start without it. Raises `ValueError` when it cannot be found.
 
     systemd splits `Exec*=` lines on whitespace, so a path containing any is refused rather than
     quoted into a unit that might still be misread. A `%` is doubled, since systemd would read
     it as the start of a specifier.
     """
-    if timeout is None:
-        found = shutil.which("timeout")
-        if found is None:
-            raise ValueError("`timeout` (coreutils) not found on PATH")
-        timeout = Path(found)
-    paths = {"bin_dir": bin_dir, "data_dir": data_dir, "timeout": timeout}
+    paths = {"bin_dir": bin_dir, "data_dir": data_dir}
     for path in paths.values():
         if any(c.isspace() for c in str(path)):
             raise ValueError(f"path contains whitespace, not supported in the unit: {path}")
@@ -111,7 +104,7 @@ def render_unit(*, bin_dir: Path, data_dir: Path, timeout: Path | None = None) -
     return header + Template(body).substitute(escaped)
 
 
-def woodglue_config(data_dir: Path) -> dict[str, Any]:
+def woodglue_config() -> dict[str, Any]:
     """The `woodglue.yaml` a new instance starts from: the cointoss namespace, local, with auth."""
     return {
         "host": "127.0.0.1",
@@ -121,7 +114,7 @@ def woodglue_config(data_dir: Path) -> dict[str, Any]:
             NAMESPACE: {
                 "expose_api": True,
                 "run_engine": True,
-                "entries": [fragment_entry(data_dir=data_dir)],
+                "entries": [fragment_entry()],
             }
         },
     }
@@ -215,7 +208,7 @@ def cmd_init(data_dir: Path, systemd: bool) -> None:
         data_dir / WOODGLUE_CONFIG,
         _yaml(
             "# woodglue: serves the cointoss namespace and runs its daily sweep trigger.\n",
-            woodglue_config(data_dir),
+            woodglue_config(),
         ),
     )
     print(f"{WOODGLUE_CONFIG}: {'created' if written else 'kept'}")
@@ -284,8 +277,8 @@ def cmd_sweep(data_dir: Path, force: bool) -> int:
 def _server_state(data_dir: Path) -> str:
     """Whether the `wgl start` named in its pid file is alive.
 
-    The file alone is not enough: `wgl start` removes it only on a clean exit, and a SIGTERM from
-    `systemctl stop` kills it before its cleanup runs.
+    The file alone is not enough: a server killed outright, such as by `kill -9`, leaves it
+    behind.
     """
     pid_file = data_dir / "wgl.pid"
     if not pid_file.exists():

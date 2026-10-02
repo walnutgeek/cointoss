@@ -9,6 +9,7 @@ unit is written into a temporary directory and only its text is checked.
 from __future__ import annotations
 
 import json
+import shutil
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
@@ -80,15 +81,29 @@ def test_init_writes_a_config_woodglue_loads_mounting_the_cointoss_namespace(
     node, trigger = ns.get_trigger(SWEEP_TRIGGER)
     assert node is ns.get("data:sweep")
     assert trigger.schedule == "5 0 * * *"
-    # The fragment is told its data directory, since woodglue does not pass its own.
     assert {n.nsref.name for n in ns.query("api")} >= {"universes", "members", "runs"}
+    # The fragment takes woodglue's data directory, so the file names none.
     assert entry.entries is not None
-    assert entry.entries[0]["init"] == {"data_dir": str(home)}
+    assert "init" not in entry.entries[0]
 
     assert Settings.load(home).universes == DEFAULT_UNIVERSES
     with Store(home / "cointoss.db") as store:
         assert store.universe_names() == [s.name for s in DEFAULT_UNIVERSES]
     assert (home / "auth.db").exists()
+
+
+def test_a_copied_instance_serves_its_own_store(
+    home: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+):
+    assert run(capsys, "init", "--data-dir", str(home))[0] == 0
+    copy = tmp_path / "copy"
+    shutil.copytree(home, copy)
+    (home / "cointoss.db").unlink()
+    # woodglue's data directory wins over the environment the CLI resolves.
+    monkeypatch.setenv(HOME_ENV, str(home))
+    (ns, _) = load_namespaces(load_config(copy).namespaces, copy)["cointoss"]
+    names = [u.name for u in ns.get("data:universes")()]
+    assert names == [s.name for s in DEFAULT_UNIVERSES]
 
 
 def test_a_second_init_leaves_edited_configs_untouched(
@@ -272,40 +287,23 @@ def test_init_systemd_writes_the_unit_for_this_install(
     assert (unit_dir / "cointoss.service").read_text().endswith("# edited\n")
 
 
-def test_the_rendered_unit_runs_woodglue_in_the_foreground_with_a_catch_up_sweep():
-    unit = render_unit(
-        bin_dir=Path("/opt/ct/bin"), data_dir=Path("/srv/ct"), timeout=Path("/opt/cu/timeout")
-    )
+def test_the_rendered_unit_runs_woodglue_in_the_foreground():
+    unit = render_unit(bin_dir=Path("/opt/ct/bin"), data_dir=Path("/srv/ct"))
     lines = unit.splitlines()
     assert "ExecStart=/opt/ct/bin/wgl --data=/srv/ct start" in lines
     assert "Type=simple" in lines
-    # '-' so a failed catch-up (no network at boot) does not stop the API from starting.
-    assert "ExecStartPre=-/opt/cu/timeout 120 /opt/ct/bin/cointoss sweep" in lines
+    # lythonic catches up a missed sweep when the server starts.
+    assert "ExecStartPre" not in unit
     assert "$" not in unit
     assert SHIPPED_UNIT.exists()
 
 
-def test_the_unit_finds_timeout_on_the_path_or_refuses():
-    with patch("cointoss.cli.shutil.which", return_value="/usr/local/bin/timeout"):
-        unit = render_unit(bin_dir=Path("/opt/ct/bin"), data_dir=Path("/srv/ct"))
-    assert "ExecStartPre=-/usr/local/bin/timeout 120 " in unit
-    with (
-        patch("cointoss.cli.shutil.which", return_value=None),
-        pytest.raises(ValueError, match="timeout"),
-    ):
-        render_unit(bin_dir=Path("/opt/ct/bin"), data_dir=Path("/srv/ct"))
-
-
 def test_a_percent_in_a_unit_path_is_escaped_for_systemd():
-    unit = render_unit(
-        bin_dir=Path("/opt/ct/bin"), data_dir=Path("/srv/100%ct"), timeout=Path("/bin/timeout")
-    )
+    unit = render_unit(bin_dir=Path("/opt/ct/bin"), data_dir=Path("/srv/100%ct"))
     assert "Environment=COINTOSS_HOME=/srv/100%%ct" in unit.splitlines()
     assert "ExecStart=/opt/ct/bin/wgl --data=/srv/100%%ct start" in unit.splitlines()
 
 
 def test_a_unit_path_with_whitespace_is_refused():
     with pytest.raises(ValueError, match="whitespace"):
-        render_unit(
-            bin_dir=Path("/opt/my ct/bin"), data_dir=Path("/srv/ct"), timeout=Path("/bin/timeout")
-        )
+        render_unit(bin_dir=Path("/opt/my ct/bin"), data_dir=Path("/srv/ct"))
