@@ -374,13 +374,19 @@ def test_init_keeps_a_woodglue_yaml_with_a_different_port_or_schedule_and_says_s
     assert "5 0 * * *" in differs[1] and "35 0 * * *" in differs[1]
 
     code, out = run(
-        capsys, "init", "--data-dir", str(home), "--port", "5321", "--schedule", "5 0 * * *"
+        capsys, "init", "--data-dir", str(home), "--port", "5321", "--schedule", "5  0 * * *"
     )
     assert code == 0, out
     assert "differs" not in out
 
+    # The kept file's schedule is what runs, so a late one asked for now is not warned about.
+    code, out = run(capsys, "init", "--data-dir", str(home), "--schedule", "0 12 * * *")
+    assert code == 0, out
+    assert "differs" in out
+    assert "warning" not in out
 
-def test_the_same_options_as_the_defaults_print_what_init_always_did(
+
+def test_an_explicit_default_unit_matches_a_plain_init(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ):
     unit_dir = tmp_path / "systemd"
@@ -392,7 +398,7 @@ def test_the_same_options_as_the_defaults_print_what_init_always_did(
             code, out = run(capsys, "init", "--data-dir", str(data_dir), "--systemd", *extra)
         assert code == 0, out
         outputs.append(out.replace(str(data_dir), "D").replace(str(unit_dir / name), "U"))
-        units.append((unit_dir / name / "cointoss.service").read_text().replace(name, "D"))
+        units.append((unit_dir / name / "cointoss.service").read_text().replace(str(data_dir), "D"))
         assert (data_dir / "woodglue.yaml").read_text() == (
             tmp_path / "plain" / "woodglue.yaml"
         ).read_text()
@@ -410,6 +416,7 @@ def test_the_same_options_as_the_defaults_print_what_init_always_did(
         ["--unit", "cointoss-dev"],
         ["--schedule", "not cron"],
         ["--schedule", "0 0 * * * *"],
+        ["--schedule", "0 0 30 2 *"],
         ["--port", "0"],
         ["--port", "70000"],
     ],

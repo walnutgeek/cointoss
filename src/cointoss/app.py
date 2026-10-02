@@ -87,6 +87,7 @@ __all__ = [
     "SweepOutcome",
     "UniverseView",
     "fragment_entry",
+    "fragment_schedule",
     "sweep_lock",
     "utc_today",
     "utcnow",
@@ -131,6 +132,20 @@ def fragment_entry(
     if data_dir is not None:
         entry["init"] = {"data_dir": str(data_dir)}
     return entry
+
+
+def fragment_schedule(entry: dict[str, Any]) -> str | None:
+    """The daily sweep schedule in a namespace entry shaped like `fragment_entry`'s, if any.
+
+    >>> fragment_schedule(fragment_entry(schedule="35 0 * * *"))
+    '35 0 * * *'
+    >>> fragment_schedule({"type": "fragment"}) is None
+    True
+    """
+    for trigger in entry.get("configs", {}).get("sweep", {}).get("triggers", []):
+        if trigger.get("name") == SWEEP_TRIGGER:
+            return trigger.get("schedule")
+    return None
 
 
 class ApiError(RpcError):

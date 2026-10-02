@@ -43,6 +43,7 @@ import asyncio
 import datetime as dt
 import logging
 import os
+import string
 import sys
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
@@ -52,7 +53,7 @@ from string import Template
 from typing import Any
 
 import yaml
-from croniter import croniter
+from croniter import CroniterError, croniter
 from lythonic.compose.engine import resolve_file
 from pydantic import ValidationError
 from ruamel.yaml import YAMLError as WoodglueYAMLError
@@ -66,6 +67,7 @@ from cointoss.app import (
     CointossApp,
     SweepInProgress,
     fragment_entry,
+    fragment_schedule,
     utc_today,
 )
 from cointoss.config import (
@@ -85,7 +87,7 @@ UNIT_TEMPLATE = "cointoss.service"
 DEFAULT_UNIT = "cointoss"
 DEFAULT_PORT = 5321
 NAMESPACE = "cointoss"
-UNIT_NAME_CHARS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-")
+UNIT_NAME_CHARS = frozenset(string.ascii_letters + string.digits + "_.-")
 
 
 class CliError(Exception):
@@ -136,9 +138,20 @@ def check_unit_name(name: str) -> None:
 
 
 def check_schedule(schedule: str) -> None:
-    """Refuse anything but a 5-field cron expression, read as UTC by lythonic's trigger."""
+    """Refuse anything but a 5-field cron expression, read as UTC by lythonic's trigger, that fires.
+
+    >>> check_schedule("0 0 30 2 *")
+    Traceback (most recent call last):
+    ...
+    cointoss.cli.CliError: --schedule '0 0 30 2 *': never fires
+    """
     if len(schedule.split()) != 5 or not croniter.is_valid(schedule):
         raise CliError(f"--schedule {schedule!r}: not a 5-field cron expression")
+    # A valid expression can still name no real day, such as 30 February.
+    try:
+        first_daily_firing(schedule)
+    except CroniterError as exc:
+        raise CliError(f"--schedule {schedule!r}: never fires") from exc
 
 
 def first_daily_firing(schedule: str) -> dt.timedelta:
@@ -177,10 +190,8 @@ def _sweep_schedule(config: WoodglueConfig) -> str | None:
     """The `daily_sweep` schedule a loaded `woodglue.yaml` gives the cointoss fragment, if any."""
     namespace = config.namespaces.get(NAMESPACE)
     for entry in (namespace.entries or []) if namespace else []:
-        triggers = entry.get("configs", {}).get("sweep", {}).get("triggers", [])
-        for trigger in triggers:
-            if trigger.get("name") == SWEEP_TRIGGER:
-                return trigger.get("schedule")
+        if (schedule := fragment_schedule(entry)) is not None:
+            return schedule
     return None
 
 
@@ -306,7 +317,7 @@ def cmd_init(
     auth_db = _auth_db(data_dir, config)
     if not written:
         _report_differences(config, port=port, schedule=schedule)
-    if schedule is not None:
+    elif schedule is not None:
         _warn_after_bar_window(schedule, settings.bar_window)
 
     with Store(settings.db_path) as store:
@@ -330,7 +341,7 @@ def _report_differences(config: WoodglueConfig, *, port: int | None, schedule: s
     if port is not None and config.port != port:
         print(f"{WOODGLUE_CONFIG}: port {config.port} differs from --port {port}; {fix}")
     configured = _sweep_schedule(config)
-    if schedule is not None and configured != schedule:
+    if schedule is not None and (configured or "").split() != schedule.split():
         print(
             f"{WOODGLUE_CONFIG}: {SWEEP_TRIGGER} schedule {configured!r} differs from "
             f"--schedule {schedule!r}; {fix}"
