@@ -44,6 +44,26 @@ checkout's `.venv/bin`. The template is `src/cointoss/cointoss.service`.
 `init` is idempotent. It never overwrites a config or unit file that already exists, so edit
 them freely, and re-run `init` to validate them. Changes take effect when the service restarts.
 
+### A second instance on the same host
+
+`--unit NAME` installs the unit as `NAME.service` (only with `--systemd`). `--port N` and
+`--schedule CRON` (5-field, UTC) set the port and the `daily_sweep` schedule in a newly
+written `woodglue.yaml`. For example, a dev checkout beside an instance installed from PyPI,
+each with its own virtualenv:
+
+```bash
+cointoss init --systemd                                  # the installed instance: cointoss.service
+uv run cointoss init --systemd --data-dir ~/.local/share/cointoss-dev \
+  --unit cointoss-dev --port 5322 --schedule "35 0 * * *"
+systemctl --user daemon-reload && systemctl --user enable --now cointoss-dev
+```
+
+Give each instance its own `--data-dir`, unit name and port. A different schedule keeps the
+two from calling CoinGecko at the same minute. A schedule that first fires later than
+`bar_window_hours` after 00:00 UTC is accepted with a warning: those sweeps record membership
+but no bars. If `woodglue.yaml` already exists, `init` keeps it and says which of `--port` and
+`--schedule` it differs from.
+
 ## Start
 
 ```bash
