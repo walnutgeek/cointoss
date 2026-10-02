@@ -24,9 +24,9 @@ Runtime settings come from the data directory (`cointoss.config.Settings`): `ini
 given, else woodglue's instance data directory (`current_mount`), else `$COINTOSS_HOME`, else
 `~/.local/share/cointoss`. A `woodglue.yaml` written by `cointoss init` carries no
 `init.data_dir`, so a copied instance serves its own store; older files that carry one still
-work. They are read once, when the
-fragment is built, so a bad `cointoss.yaml` stops woodglue at startup rather than failing the
-next sweep silently. A config edit takes effect on restart.
+work. Settings are read once, when the fragment is built, so a bad `cointoss.yaml` stops
+woodglue at startup rather than failing the next sweep silently. A config edit takes effect on
+restart.
 
 Each call opens the store and closes it before returning, rather than holding one connection
 for the fragment's life. woodglue calls a sync node on the IOLoop thread while lythonic's

@@ -437,8 +437,7 @@ class TestThroughWoodglue(tornado.testing.AsyncHTTPTestCase):
         assert len(members["result"]["members"]) == 10
 
     def test_an_api_error_reaches_the_client_with_its_code_and_message(self) -> None:
-        with market(DAY1_AT, day1_pages()):
-            self.io_loop.run_sync(self.ns.get("data:sweep"))
+        Store(Path(self.home.name) / "cointoss.db").close()
         answer = self.rpc("cointoss.data:runs", universe="nope")
         assert "result" not in answer
         assert answer["error"]["code"] == NotFound.code == -32001
