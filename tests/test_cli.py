@@ -307,3 +307,131 @@ def test_a_percent_in_a_unit_path_is_escaped_for_systemd():
 def test_a_unit_path_with_whitespace_is_refused():
     with pytest.raises(ValueError, match="whitespace"):
         render_unit(bin_dir=Path("/opt/my ct/bin"), data_dir=Path("/srv/ct"))
+
+
+def test_two_instances_install_side_by_side_under_their_own_unit_names(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    unit_dir = tmp_path / "systemd"
+    integration, dev = tmp_path / "integration", tmp_path / "dev"
+    with patch("cointoss.cli.user_unit_dir", return_value=unit_dir):
+        code, out = run(capsys, "init", "--data-dir", str(integration), "--systemd")
+        assert code == 0, out
+        code, out = run(
+            capsys,
+            "init",
+            "--data-dir",
+            str(dev),
+            "--systemd",
+            "--unit",
+            "cointoss-dev",
+            "--port",
+            "5322",
+        )
+        assert code == 0, out
+    assert "systemctl --user enable --now cointoss-dev" in out
+    for name, data_dir in (("cointoss", integration), ("cointoss-dev", dev)):
+        lines = (unit_dir / f"{name}.service").read_text().splitlines()
+        assert f"Environment=COINTOSS_HOME={data_dir}" in lines
+        assert any(ln.startswith("ExecStart=") and f"--data={data_dir} " in ln for ln in lines)
+        assert any(ln.startswith(f"Description={name}: ") for ln in lines)
+    assert sorted(p.name for p in unit_dir.iterdir()) == [
+        "cointoss-dev.service",
+        "cointoss.service",
+    ]
+
+
+def test_init_writes_the_port_and_schedule_it_is_given(
+    home: Path, capsys: pytest.CaptureFixture[str]
+):
+    code, out = run(
+        capsys, "init", "--data-dir", str(home), "--port", "5322", "--schedule", "35 0 * * *"
+    )
+    assert code == 0, out
+    assert "warning" not in out
+    config = load_config(home)
+    assert config.port == 5322
+    (ns, _) = load_namespaces(config.namespaces, home)["cointoss"]
+    _, trigger = ns.get_trigger(SWEEP_TRIGGER)
+    assert trigger.schedule == "35 0 * * *"
+
+
+def test_init_keeps_a_woodglue_yaml_with_a_different_port_or_schedule_and_says_so(
+    home: Path, capsys: pytest.CaptureFixture[str]
+):
+    assert run(capsys, "init", "--data-dir", str(home))[0] == 0
+    before = (home / "woodglue.yaml").read_text()
+
+    code, out = run(
+        capsys, "init", "--data-dir", str(home), "--port", "5322", "--schedule", "35 0 * * *"
+    )
+
+    assert code == 0, out
+    assert (home / "woodglue.yaml").read_text() == before
+    differs = [ln for ln in out.splitlines() if "differs" in ln]
+    assert len(differs) == 2
+    assert "5321" in differs[0] and "5322" in differs[0]
+    assert "5 0 * * *" in differs[1] and "35 0 * * *" in differs[1]
+
+    code, out = run(
+        capsys, "init", "--data-dir", str(home), "--port", "5321", "--schedule", "5 0 * * *"
+    )
+    assert code == 0, out
+    assert "differs" not in out
+
+
+def test_the_same_options_as_the_defaults_print_what_init_always_did(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    unit_dir = tmp_path / "systemd"
+    outputs: list[str] = []
+    units: list[str] = []
+    for name, extra in (("plain", []), ("explicit", ["--unit", "cointoss"])):
+        data_dir = tmp_path / name
+        with patch("cointoss.cli.user_unit_dir", return_value=unit_dir / name):
+            code, out = run(capsys, "init", "--data-dir", str(data_dir), "--systemd", *extra)
+        assert code == 0, out
+        outputs.append(out.replace(str(data_dir), "D").replace(str(unit_dir / name), "U"))
+        units.append((unit_dir / name / "cointoss.service").read_text().replace(name, "D"))
+        assert (data_dir / "woodglue.yaml").read_text() == (
+            tmp_path / "plain" / "woodglue.yaml"
+        ).read_text()
+    assert outputs[0] == outputs[1]
+    assert units[0] == units[1]
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--systemd", "--unit", "a/b"],
+        ["--systemd", "--unit", "x.service"],
+        ["--systemd", "--unit", ""],
+        ["--systemd", "--unit", "cointoss@dev"],
+        ["--unit", "cointoss-dev"],
+        ["--schedule", "not cron"],
+        ["--schedule", "0 0 * * * *"],
+        ["--port", "0"],
+        ["--port", "70000"],
+    ],
+)
+def test_init_refuses_a_bad_option_with_one_line_and_writes_nothing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], args: list[str]
+):
+    data_dir, unit_dir = tmp_path / "instance", tmp_path / "systemd"
+    with patch("cointoss.cli.user_unit_dir", return_value=unit_dir):
+        code, out = run(capsys, "init", "--data-dir", str(data_dir), *args)
+    assert code == 1
+    (line,) = out.strip().splitlines()
+    assert line.startswith("cointoss init: ")
+    assert not data_dir.exists()
+    assert not unit_dir.exists()
+
+
+def test_a_schedule_after_the_bar_window_is_written_with_a_warning(
+    home: Path, capsys: pytest.CaptureFixture[str]
+):
+    code, out = run(capsys, "init", "--data-dir", str(home), "--schedule", "0 12 * * *")
+    assert code == 0, out
+    (warning,) = [ln for ln in out.splitlines() if ln.startswith("warning")]
+    assert "12:00" in warning and "no bars" in warning
+    assert "0 12 * * *" in (home / "woodglue.yaml").read_text()

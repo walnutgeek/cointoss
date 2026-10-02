@@ -1,11 +1,11 @@
 # systemd --user unit for a cointoss instance.
 #
 # A template: `cointoss init --systemd` fills in $bin_dir (the virtualenv's bin directory,
-# e.g. /home/me/cointoss/.venv/bin) and $data_dir, and installs the result as
-# ~/.config/systemd/user/cointoss.service.
+# e.g. /home/me/cointoss/.venv/bin), $data_dir and $unit (`--unit`, default cointoss), and
+# installs the result as ~/.config/systemd/user/$unit.service.
 
 [Unit]
-Description=cointoss: daily CoinGecko sweep and JSON-RPC API on woodglue
+Description=$unit: daily CoinGecko sweep and JSON-RPC API on woodglue
 Documentation=https://github.com/walnutgeek/cointoss
 
 [Service]

@@ -385,6 +385,7 @@ wheels = [
 name = "cointoss"
 source = { editable = "." }
 dependencies = [
+    { name = "croniter" },
     { name = "lythonic" },
     { name = "pyyaml" },
     { name = "ruamel-yaml" },
@@ -421,6 +422,7 @@ docs = [
 
 [package.metadata]
 requires-dist = [
+    { name = "croniter", specifier = ">=6.2.2" },
     { name = "lythonic", specifier = ">=0.0.26" },
     { name = "openpyxl", marker = "extra == 'scripts'" },
     { name = "pyyaml", specifier = ">=6.0.3" },
