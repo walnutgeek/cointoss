@@ -423,11 +423,11 @@ docs = [
 [package.metadata]
 requires-dist = [
     { name = "croniter", specifier = ">=6.2.2" },
-    { name = "lythonic", specifier = ">=0.0.26" },
+    { name = "lythonic", specifier = ">=0.0.27" },
     { name = "openpyxl", marker = "extra == 'scripts'" },
     { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "ruamel-yaml", specifier = ">=0.18.17" },
-    { name = "woodglue", specifier = ">=0.0.7" },
+    { name = "woodglue", specifier = ">=0.0.8" },
     { name = "yfinance", specifier = ">=1.4.1" },
 ]
 provides-extras = ["scripts"]
@@ -1259,16 +1259,16 @@ wheels = [
 
 [[package]]
 name = "lythonic"
-version = "0.0.26"
+version = "0.0.27"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "croniter" },
     { name = "pydantic" },
     { name = "pyyaml" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ca/52/5397fb9e28b0bb9adf81cf3b455f7dcd9052fab6cb6be70b8d0adf6ff31c/lythonic-0.0.26.tar.gz", hash = "sha256:f54475850211e100ab200aa50328e01766302ac0dc6c15299d8fd69f1c909b8b", size = 291461, upload-time = "2026-10-01T02:49:42.005Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/02/6b/c8ad645671c986f6a3e5a2ea13fcb431b3ddf97763af31a7eb1db9759cdb/lythonic-0.0.27.tar.gz", hash = "sha256:5228471f9c01ecebc4ed26d3f5144a923d23f14de4ad5621792b6831571ae679", size = 291668, upload-time = "2026-10-04T06:03:36.115Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e5/79/8f7be6c0d4afb9dfa341adc876a86ebaefa0f0556452b3ec499f3f1dff41/lythonic-0.0.26-py3-none-any.whl", hash = "sha256:852f156360fae069c34b24c050f6f9ff4e6774eeece2a2b19597f26aceefce27", size = 98633, upload-time = "2026-10-01T02:49:40.61Z" },
+    { url = "https://files.pythonhosted.org/packages/ef/46/346c4cf7d73b5231a723f3a4c69d2ac19ae2d315384caf51d993c61a0aba/lythonic-0.0.27-py3-none-any.whl", hash = "sha256:e49a73a7d4e06d6e6f5e269c86b6bbcf8021ac19e00ecb0156a0c1928f0af732", size = 98630, upload-time = "2026-10-04T06:03:34.625Z" },
 ]
 
 [[package]]
@@ -3015,7 +3015,7 @@ wheels = [
 
 [[package]]
 name = "woodglue"
-version = "0.0.7"
+version = "0.0.8"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "cryptography" },
@@ -3024,9 +3024,9 @@ dependencies = [
     { name = "pydantic-yaml" },
     { name = "tornado" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/b7/a0/1918ca3efa322b02744cbb2b065224cebf608ca971afcf898cb4b807cb02/woodglue-0.0.7.tar.gz", hash = "sha256:87d0c8b95938fe3fa230db86f5b0c3427f7362388f7c7ca2d2bd807b7525e671", size = 750327, upload-time = "2026-10-02T04:08:48.181Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/db/cf/8bba794c125d7a48c1ae7cf4c14663e6f73967ae593e5cca75bfbe9ea298/woodglue-0.0.8.tar.gz", hash = "sha256:52598d8a8182c13d805d75014c942bf1ddabd9d5395cbec390ba8ecd63aebf4d", size = 750656, upload-time = "2026-10-04T06:03:15.787Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a7/60/f0af74d6056d1142b0125b2c482d3a12e0fe478bbb936059c70d90e239a2/woodglue-0.0.7-py3-none-any.whl", hash = "sha256:ebc84324f495738d0b0079ee3779d7970c866cbb6cc4fae39b7d079a7ccb4478", size = 77569, upload-time = "2026-10-02T04:08:46.658Z" },
+    { url = "https://files.pythonhosted.org/packages/76/1a/a700322f1f7675e57a90410811ea92cc091e640893e269ed31df0a94274d/woodglue-0.0.8-py3-none-any.whl", hash = "sha256:701f4b6b2c52b14a63d333af2b5d85a5e8e6902a77af97012b575d0b7f77f144", size = 77650, upload-time = "2026-10-04T06:03:14.287Z" },
 ]
 
 [[package]]

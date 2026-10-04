@@ -30,8 +30,8 @@ classifiers = [
 # ---- Main dependencies ----
 
 dependencies = [
-    "woodglue>=0.0.7",
-    "lythonic>=0.0.26",
+    "woodglue>=0.0.8",
+    "lythonic>=0.0.27",
     "yfinance>=1.4.1",
     "pyyaml>=6.0.3",
     "ruamel-yaml>=0.18.17",
