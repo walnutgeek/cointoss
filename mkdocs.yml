@@ -56,8 +56,14 @@ markdown_extensions:
   - toc:
       permalink: true
 
+not_in_nav: |
+  /release_notes/v*.md
+
 nav:
   - Home: index.md
+  - Releases:
+      - v0.0.1: release_notes/v0.0.1.md
+      - "...": release_notes/index.md
   - API Reference:
       - cointoss: reference/core.md
       - cointoss.models: reference/models.md
