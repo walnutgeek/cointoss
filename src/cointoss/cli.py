@@ -57,9 +57,9 @@ from croniter import CroniterError, croniter
 from lythonic.compose.engine import resolve_file
 from pydantic import ValidationError
 from ruamel.yaml import YAMLError as WoodglueYAMLError
+from woodglue.auth_store import AuthStore
 from woodglue.config import CONFIG_FILENAME as WOODGLUE_CONFIG
 from woodglue.config import WoodglueConfig, load_config
-from woodglue.token_store import ensure_token, get_single_token
 
 from cointoss.app import (
     DEFAULT_SWEEP_SCHEDULE,
@@ -228,11 +228,12 @@ def _load_woodglue(data_dir: Path) -> WoodglueConfig:
         raise CliError(f"{data_dir / WOODGLUE_CONFIG}: {_one_line(exc)}") from exc
 
 
-def _auth_db(data_dir: Path, config: WoodglueConfig) -> Path | None:
+def _auth_store(data_dir: Path, config: WoodglueConfig) -> AuthStore | None:
     """The token database woodglue will use, or None when auth is off."""
     if not config.auth.enabled:
         return None
-    return resolve_file(data_dir, config.storage.auth_db, "auth.db")
+    auth_db = resolve_file(data_dir, config.storage.auth_db, "auth.db")
+    return AuthStore(auth_db, config.auth.resolved_roles())
 
 
 @contextmanager
@@ -314,7 +315,7 @@ def cmd_init(
     )
     print(f"{WOODGLUE_CONFIG}: {'created' if written else 'kept'}")
     config = _load_woodglue(data_dir)
-    auth_db = _auth_db(data_dir, config)
+    auth = _auth_store(data_dir, config)
     if not written:
         _report_differences(config, port=port, schedule=schedule)
     elif schedule is not None:
@@ -325,10 +326,11 @@ def cmd_init(
             print(f"universe {reconciled.name}: {reconciled.outcome} (rev {reconciled.revision})")
     print(f"database: {settings.db_path}")
 
-    if auth_db is None:
+    if auth is None:
         print("auth: disabled in woodglue.yaml")
     else:
-        created = ensure_token(auth_db) is not None
+        created = not auth.admin_tokens()
+        auth.ensure_admin_token()
         print(f"auth token: {'created' if created else 'exists'}; `cointoss token` prints it")
 
     if systemd:
@@ -460,14 +462,14 @@ def _universe_status(store: Store, name: str, today: dt.date) -> str:
 
 
 def cmd_token(data_dir: Path) -> None:
-    auth_db = _auth_db(data_dir, _load_woodglue(data_dir))
-    if auth_db is None:
+    auth = _auth_store(data_dir, _load_woodglue(data_dir))
+    if auth is None:
         raise CliError("auth is disabled in woodglue.yaml; no token is needed")
-    ensure_token(auth_db)
-    token = get_single_token(auth_db)
-    if token is None:
-        raise CliError(f"{auth_db} holds several tokens; read them from its `tokens` table")
-    print(token)
+    auth.ensure_admin_token()
+    tokens = auth.admin_tokens()
+    if len(tokens) > 1:
+        raise CliError(f"{auth.db_path} holds several admin tokens; `wgl token` lists them")
+    print(tokens[0])
 
 
 def _parser() -> argparse.ArgumentParser:
