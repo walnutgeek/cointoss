@@ -5,8 +5,8 @@
     cointoss sweep    [--data-dir D] [--force]
     cointoss status   [--data-dir D]
     cointoss token    [--data-dir D]               print the JSON-RPC bearer token
-    cointoss snapshot [--data-dir D] DEST          copy the database and configs into DEST
-    cointoss restore  [--data-dir D] SRC           copy a snapshot into a stopped instance
+    cointoss backup   [--data-dir D] DEST          copy the database and configs into DEST
+    cointoss restore  [--data-dir D] SRC           copy a backup into a stopped instance
 
 The data directory is `--data-dir`, else `$COINTOSS_HOME`, else `~/.local/share/cointoss`
 (`cointoss.config.resolve_data_dir`). It holds `cointoss.db`, `cointoss.yaml`, `woodglue.yaml`
@@ -31,9 +31,9 @@ run's idempotency rule and takes the same lock, but without waiting for it. It r
 CoinGecko's current listing for today (UTC), so it has no date to choose; a missed past day is
 history backfill.
 
-`snapshot` and `restore` are described in `cointoss.snapshot`. `snapshot` runs beside a serving
+`backup` and `restore` are described in `cointoss.backup`. `backup` runs beside a serving
 instance and waits for a sweep in progress; `restore` refuses while the server for its data
-directory runs, and checks the snapshot's configs as `init` checks an instance's before writing
+directory runs, and checks the backup's configs as `init` checks an instance's before writing
 anything. It leaves `auth.db` alone: `cointoss init` afterwards creates a token if there is none.
 
 Expected failures -- a config that does not load, a sweep already running, a missing store --
@@ -78,6 +78,7 @@ from cointoss.app import (
     fragment_schedule,
     utc_today,
 )
+from cointoss.backup import CONFIGS, BackupError, read_manifest, restore, take
 from cointoss.config import (
     CONFIG_FILENAME,
     ConfigError,
@@ -86,7 +87,6 @@ from cointoss.config import (
     resolve_data_dir,
 )
 from cointoss.prices import as_utc
-from cointoss.snapshot import CONFIGS, SnapshotError, read_manifest, restore, take
 from cointoss.store import Store, UnknownUniverse
 from cointoss.universe import UniverseError
 
@@ -481,13 +481,13 @@ def cmd_token(data_dir: Path) -> None:
     print(tokens[0])
 
 
-def cmd_snapshot(data_dir: Path, dest: Path) -> None:
+def cmd_backup(data_dir: Path, dest: Path) -> None:
     try:
         manifest = take(data_dir, dest)
-    except SnapshotError as exc:
+    except BackupError as exc:
         raise CliError(str(exc)) from exc
     copied = [name for name in CONFIGS if (dest / name).exists()]
-    print(f"snapshot: {dest}")
+    print(f"backup: {dest}")
     print(
         f"cointoss {manifest.cointoss_version}, schema version {manifest.schema_version}, "
         f"taken {manifest.taken_at.isoformat(timespec='seconds')}"
@@ -505,7 +505,7 @@ def cmd_restore(data_dir: Path, src: Path) -> None:
         if (src / WOODGLUE_CONFIG).exists():
             _load_woodglue(src)
         written = restore(src, data_dir)
-    except SnapshotError as exc:
+    except BackupError as exc:
         raise CliError(str(exc)) from exc
     print(f"data dir: {data_dir}")
     for line in written:
@@ -553,14 +553,14 @@ def _parser() -> argparse.ArgumentParser:
     )
     commands.add_parser("status", parents=[data], help="last Evaluation Run per universe")
     commands.add_parser("token", parents=[data], help="print the JSON-RPC bearer token")
-    snapshot = commands.add_parser(
-        "snapshot", parents=[data], help="copy the database and configs into a new directory"
+    backup = commands.add_parser(
+        "backup", parents=[data], help="copy the database and configs into a new directory"
     )
-    snapshot.add_argument("dest", type=Path, help="directory to write; must not exist or be empty")
+    backup.add_argument("dest", type=Path, help="directory to write; must not exist or be empty")
     restore = commands.add_parser(
-        "restore", parents=[data], help="copy a snapshot into an instance with no database"
+        "restore", parents=[data], help="copy a backup into an instance with no database"
     )
-    restore.add_argument("src", type=Path, help="a directory `cointoss snapshot` wrote")
+    restore.add_argument("src", type=Path, help="a directory `cointoss backup` wrote")
     return parser
 
 
@@ -584,8 +584,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 cmd_status(data_dir)
             case "token":
                 cmd_token(data_dir)
-            case "snapshot":
-                cmd_snapshot(data_dir, args.dest.expanduser().absolute())
+            case "backup":
+                cmd_backup(data_dir, args.dest.expanduser().absolute())
             case "restore":
                 cmd_restore(data_dir, args.src.expanduser().absolute())
             case _:

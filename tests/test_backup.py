@@ -1,4 +1,4 @@
-"""`cointoss snapshot` and `cointoss restore`, run through `cointoss.cli.main`.
+"""`cointoss backup` and `cointoss restore`, run through `cointoss.cli.main`.
 
 Each test builds an instance in a temporary directory with `init` and one sweep, CoinGecko
 answered from the recorded `markets` listing and the clock fixed, as `tests/test_cli.py` does.
@@ -23,9 +23,9 @@ import yaml
 from woodglue.config import load_config
 
 from cointoss.app import sweep_lock
+from cointoss.backup import BackupError, take
 from cointoss.cli import main
 from cointoss.config import HOME_ENV, UniverseDeclaration, ensure_universes
-from cointoss.snapshot import SnapshotError, take
 from cointoss.store import SCHEMA_VERSION, Store
 
 FIXTURE = Path(__file__).parent / "data" / "coingecko_markets_top250.json"
@@ -79,17 +79,17 @@ def status_lines(capsys: pytest.CaptureFixture[str], data_dir: Path) -> list[str
     return [ln for ln in out.splitlines() if not ln.startswith(("data dir:", "server:"))]
 
 
-def snapshot(capsys: pytest.CaptureFixture[str], home: Path, dest: Path) -> None:
-    code, out = run(capsys, "snapshot", "--data-dir", str(home), str(dest))
+def backup(capsys: pytest.CaptureFixture[str], home: Path, dest: Path) -> None:
+    code, out = run(capsys, "backup", "--data-dir", str(home), str(dest))
     assert code == 0, out
 
 
-def test_a_snapshot_beside_a_writer_is_consistent_and_restores_into_a_fresh_dir(
+def test_a_backup_beside_a_writer_is_consistent_and_restores_into_a_fresh_dir(
     home: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ):
-    dest = tmp_path / "snap"
+    dest = tmp_path / "bak"
     with Store(home / "cointoss.db") as writer:
-        # A committed write left in the WAL, and one still open when the snapshot is taken.
+        # A committed write left in the WAL, and one still open when the backup is taken.
         writer.conn.execute("PRAGMA wal_autocheckpoint = 0")
         declared = UniverseDeclaration(name="cg-top-50", enter_rank=50, exit_rank=60)
         ensure_universes(writer, [declared], AT.date())
@@ -98,7 +98,7 @@ def test_a_snapshot_beside_a_writer_is_consistent_and_restores_into_a_fresh_dir(
             "INSERT INTO SchemaVersion (version, applied_at) VALUES (?, ?)",
             (SCHEMA_VERSION + 1, AT.isoformat()),
         )
-        snapshot(capsys, home, dest)
+        backup(capsys, home, dest)
         writer.conn.rollback()
 
     assert sorted(p.name for p in dest.iterdir()) == [
@@ -129,52 +129,52 @@ def test_a_snapshot_beside_a_writer_is_consistent_and_restores_into_a_fresh_dir(
     assert any("last run 2026-09-30" in ln for ln in restored)
 
 
-def test_snapshot_waits_for_the_sweep_lock(
+def test_backup_waits_for_the_sweep_lock(
     home: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ):
     monkeypatch.setattr("cointoss.app.LOCK_POLL", 0.01)
     holder = ExitStack()
     holder.enter_context(sweep_lock(home))
     threading.Timer(0.1, holder.close).start()
-    snapshot(capsys, home, tmp_path / "snap")
-    assert (tmp_path / "snap" / "manifest.json").exists()
+    backup(capsys, home, tmp_path / "bak")
+    assert (tmp_path / "bak" / "manifest.json").exists()
 
 
-def test_snapshot_gives_up_when_the_lock_stays_held(
+def test_backup_gives_up_when_the_lock_stays_held(
     home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     monkeypatch.setattr("cointoss.app.LOCK_POLL", 0.01)
-    dest = tmp_path / "snap"
-    with sweep_lock(home), pytest.raises(SnapshotError, match="still held"):
+    dest = tmp_path / "bak"
+    with sweep_lock(home), pytest.raises(BackupError, match="still held"):
         take(home, dest, wait=0.05)
     assert not (dest / "manifest.json").exists()
 
 
-def test_snapshot_refuses_a_non_empty_dest_and_a_dir_without_a_database(
+def test_backup_refuses_a_non_empty_dest_and_a_dir_without_a_database(
     home: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ):
-    dest = tmp_path / "snap"
+    dest = tmp_path / "bak"
     dest.mkdir()
     (dest / "other").write_text("")
-    code, out = run(capsys, "snapshot", "--data-dir", str(home), str(dest))
+    code, out = run(capsys, "backup", "--data-dir", str(home), str(dest))
     assert code == 1
     assert out.strip().splitlines() == [
-        f"cointoss snapshot: {dest} exists and is not an empty directory"
+        f"cointoss backup: {dest} exists and is not an empty directory"
     ]
 
     empty = tmp_path / "empty"
     empty.mkdir()
-    code, out = run(capsys, "snapshot", "--data-dir", str(empty), str(tmp_path / "snap2"))
+    code, out = run(capsys, "backup", "--data-dir", str(empty), str(tmp_path / "bak2"))
     assert code == 1
     (line,) = out.strip().splitlines()
-    assert line == f"cointoss snapshot: no database at {empty / 'cointoss.db'}; nothing to snapshot"
+    assert line == f"cointoss backup: no database at {empty / 'cointoss.db'}; nothing to back up"
 
 
 def test_restore_refuses_a_newer_schema_with_one_line_and_writes_nothing(
     home: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ):
-    dest = tmp_path / "snap"
-    snapshot(capsys, home, dest)
+    dest = tmp_path / "bak"
+    backup(capsys, home, dest)
     manifest = json.loads((dest / "manifest.json").read_text())
     manifest["schema_version"] = SCHEMA_VERSION + 1
     (dest / "manifest.json").write_text(json.dumps(manifest))
@@ -183,15 +183,15 @@ def test_restore_refuses_a_newer_schema_with_one_line_and_writes_nothing(
     code, out = run(capsys, "restore", "--data-dir", str(fresh), str(dest))
     assert code == 1
     (line,) = out.strip().splitlines()
-    assert line.startswith(f"cointoss restore: snapshot is at schema version {SCHEMA_VERSION + 1}")
+    assert line.startswith(f"cointoss restore: backup is at schema version {SCHEMA_VERSION + 1}")
     assert not fresh.exists()
 
 
 def test_restore_removes_init_data_dir_from_an_old_woodglue_yaml(
     home: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ):
-    dest = tmp_path / "snap"
-    snapshot(capsys, home, dest)
+    dest = tmp_path / "bak"
+    backup(capsys, home, dest)
     config: dict[str, Any] = yaml.safe_load((dest / "woodglue.yaml").read_text())
     config["namespaces"]["cointoss"]["entries"][0]["init"] = {"data_dir": str(home)}
     (dest / "woodglue.yaml").write_text("# kept\n" + yaml.safe_dump(config, sort_keys=False))
@@ -207,11 +207,11 @@ def test_restore_removes_init_data_dir_from_an_old_woodglue_yaml(
     assert "init" not in entries[0]
 
 
-def test_restore_refuses_a_running_server_an_existing_database_and_a_non_snapshot(
+def test_restore_refuses_a_running_server_an_existing_database_and_a_non_backup(
     home: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ):
-    dest = tmp_path / "snap"
-    snapshot(capsys, home, dest)
+    dest = tmp_path / "bak"
+    backup(capsys, home, dest)
 
     fresh = tmp_path / "fresh"
     fresh.mkdir()
@@ -232,15 +232,15 @@ def test_restore_refuses_a_running_server_an_existing_database_and_a_non_snapsho
     code, out = run(capsys, "restore", "--data-dir", str(tmp_path / "other"), str(home))
     assert code == 1
     assert out.strip().splitlines() == [
-        f"cointoss restore: no manifest.json in {home}; not a cointoss snapshot"
+        f"cointoss restore: no manifest.json in {home}; not a cointoss backup"
     ]
 
 
 def test_restore_ignores_a_stale_pid_file(
     home: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ):
-    dest = tmp_path / "snap"
-    snapshot(capsys, home, dest)
+    dest = tmp_path / "bak"
+    backup(capsys, home, dest)
     fresh = tmp_path / "fresh"
     fresh.mkdir()
     # Past any pid the kernel hands out by default (pid_max is at most 2**22).

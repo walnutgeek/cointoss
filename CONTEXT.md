@@ -16,6 +16,10 @@ _Avoid_: history, timeline, log
 A materialized, immutable cache of something derivable, with inputs captured as observed. An audit point, never the system of record.
 _Avoid_: balance, state, checkpoint
 
+**Backup**:
+A consistent copy of an instance's database and configs, taken by `cointoss backup` and put back by `cointoss restore`. Holds the system of record itself, so it is not a Snapshot.
+_Avoid_: snapshot, dump
+
 ### Core Identity
 
 **Instrument**:

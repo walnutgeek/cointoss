@@ -39,9 +39,9 @@ A read never creates anything: against a data directory with no `cointoss.db` it
 `NotInitialized`, naming `cointoss init`. Only `init` and the sweep create the store.
 
 One sweep runs at a time per data directory. The sweep node takes an exclusive `flock` on
-`sweep.lock` there, which `cointoss snapshot` also holds while it copies. A scheduled firing
+`sweep.lock` there, which `cointoss backup` also holds while it copies. A scheduled firing
 waits for the lock, up to `SWEEP_LOCK_WAIT`: lythonic records a firing as the trigger's last run
-even when it fails, so a firing skipped because a snapshot held the lock would not be retried
+even when it fails, so a firing skipped because a backup held the lock would not be retried
 until the next day, losing that day's bars. It waits by retrying a non-blocking `flock` between
 `asyncio.sleep`s, never with a blocking `flock`, which would stall woodglue's IOLoop and the
 JSON-RPC API with it. A manual `cointoss sweep` passes `wait=0`, so one started while another
@@ -111,7 +111,7 @@ SWEEP_TRIGGER = "daily_sweep"
 FRAGMENT_GREF = "cointoss.app:CointossApp"
 SWEEP_LOCK = "sweep.lock"
 SWEEP_LOCK_WAIT = 600.0
-"""Seconds a scheduled sweep or a snapshot waits for the sweep lock before giving up."""
+"""Seconds a scheduled sweep or a backup waits for the sweep lock before giving up."""
 LOCK_POLL = 1.0
 """Seconds between attempts to take a held sweep lock."""
 
@@ -348,7 +348,7 @@ class CointossApp(NamespaceFragment):
 
         Creates the data directory and store if absent. Waits up to `wait` seconds for the sweep
         lock, since the trigger fires the node with no arguments, and raises `SweepInProgress` if
-        another sweep or a snapshot still holds it then.
+        another sweep or a backup still holds it then.
         """
         names = [declared.name for declared in self.settings.universes]
         self.settings.data_dir.mkdir(parents=True, exist_ok=True)
