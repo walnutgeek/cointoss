@@ -130,6 +130,12 @@ _Avoid_: event, adjustment, split factor
 A re-fetch that changed an already-stored Bar in a way no Corporate Action explains.
 _Avoid_: correction, revision, fixup
 
+### Reading
+
+**Dataset**:
+A named, typed, long-form table read through `frame`, one row per fact, with every column's type and role declared. A read projection over stored data, never written through; not a Series and not a Snapshot.
+_Avoid_: report, view, query, table
+
 ### Risk
 
 **Risk Model**:

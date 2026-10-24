@@ -8,7 +8,7 @@ Last updated: 2026-10-23, at `086a7cd` (v0.0.2).
 
 ## Where we are
 
-Nine ADRs. 477 tests, lint clean. Released as v0.0.1 and v0.0.2 on PyPI. The persistence layer
+Ten ADRs. 477 tests, lint clean. Released as v0.0.1 and v0.0.2 on PyPI. The persistence layer
 (issue #5, ADR-0007, 0008 and 0009) is built: identity, Universe Definitions, membership intervals,
 Evaluation Runs, matrix entries and price history all persist, and every read folds supersession.
 
@@ -116,7 +116,7 @@ early, because accumulated history is the one thing that cannot be produced late
    2. **History backfill (#26).** `market_chart` for members, filling every date with no stored bar:
       before the first sweep, days the machine was down, and days swept after the bar window. It
       never overwrites a stored bar, so it files no Restatement.
-   3. **A generic dataset API (#27)** on the cointoss namespace: `datasets()` names each dataset and
+   3. **A generic dataset API (#27, ADR-0010)** on the cointoss namespace: `datasets()` names each dataset and
       its columns, `frame(dataset, filters, start, end)` returns it as a table. First datasets:
       bars, membership, universe changes, and returns derived on read. A new collection (Yahoo,
       portfolio) becomes a new dataset, not new UI code.
@@ -156,9 +156,6 @@ the ADRs; what follows is only the index, so nothing here is re-litigated from m
 
 ## Still open
 
-- **Dataset API shape.** Table encoding over JSON-RPC (records or columns), filter vocabulary,
-  row limits, and whether `frame` is one generic node or a node per dataset. Settle before step
-  5.3; an ADR once it holds.
 - **Where Streamlit is installed.** int runs the released package as a `uv tool`; Streamlit and
   pandas probably belong in an optional extra (`cointoss[ui]`) so the API-only install stays small.
 - **Funnel exposes the whole server.** The login page, `/rpc` and docs become public; every method
