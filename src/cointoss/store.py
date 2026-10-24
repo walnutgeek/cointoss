@@ -134,12 +134,16 @@ __all__ = [
     "UnknownInstrument",
     "UnknownUniverse",
     "TickerRecordRow",
+    "TooManyRows",
     "backup_database",
     "UniverseDefinitionRow",
     "UniverseEntryRow",
     "UniverseMemberRow",
     "UniverseMembershipRow",
     "UniverseRevisionRow",
+    "BarRecord",
+    "ClosePair",
+    "MembershipInterval",
 ]
 
 
@@ -157,6 +161,18 @@ class MigrationGap(StoreError):
 
 class UnknownInstrument(StoreError):
     """A member pins an Instrument Id the store does not hold."""
+
+
+class TooManyRows(StoreError):
+    """A bulk read matched more rows than the caller's limit; `count` is how many it matched."""
+
+    count: int
+    limit: int
+
+    def __init__(self, count: int, limit: int) -> None:
+        super().__init__(f"{count} rows match, more than the limit of {limit}")
+        self.count = count
+        self.limit = limit
 
 
 class UnknownUniverse(StoreError):
@@ -624,6 +640,83 @@ _FAMILY_CTE = (
     "WITH RECURSIVE family(instrument_id) AS (SELECT ? UNION "
     "SELECT i.instrument_id FROM Instrument i JOIN family f ON i.superseded_by = f.instrument_id)"
 )
+
+
+def _fold_cte(survivors: int | None = None) -> str:
+    """The CTE pairing each stored Instrument's row with its survivor's row and its mint order.
+
+    The bulk reads behind Datasets fold every row they touch, so they chase every chain at once
+    rather than one Instrument at a time. `chase` walks forwards along `superseded_by` as in
+    `members_at`; a member is paired only with a stored, unsuperseded end, so a chain that
+    cycles or ends at an Instrument not stored pairs with nothing (see `_broken_chains`).
+    `survivors` is how many survivor row ids the CTE takes as parameters to narrow to, so a read
+    for a few Instruments seeks their bars rather than visiting every one. MATERIALIZED because
+    a read uses `fold` more than once and it must be computed once.
+    """
+    narrow = "" if survivors is None else f" AND s.instrument_row_id IN ({_marks(survivors)})"
+    return (
+        "WITH RECURSIVE chase(member, current) AS ("
+        "SELECT instrument_id, instrument_id FROM Instrument UNION "
+        "SELECT c.member, i.superseded_by FROM chase c "
+        "JOIN Instrument i ON i.instrument_id = c.current WHERE i.superseded_by IS NOT NULL), "
+        "fold(member_row, survivor_row, mint_seq) AS MATERIALIZED ("
+        "SELECT m.instrument_row_id, s.instrument_row_id, m.mint_seq FROM chase c "
+        "JOIN Instrument m ON m.instrument_id = c.member "
+        f"JOIN Instrument s ON s.instrument_id = c.current WHERE s.superseded_by IS NULL{narrow})"
+    )
+
+
+def _marks(n: int) -> str:
+    """`n` comma-separated SQL parameter marks.
+
+    >>> _marks(3)
+    '?, ?, ?'
+    """
+    return ", ".join("?" * n)
+
+
+# A Bar's position in its survivor's Price Sources, 0 when the source is not among them. The
+# commas around both sides keep one source name from matching inside another.
+_SOURCE_RANK = "instr(',' || s.price_sources || ',', ',' || b.source || ',')"
+
+
+class BarRecord(NamedTuple):
+    """One resolved Bar from a bulk read, under its survivor's id and current symbol."""
+
+    bar_date: date
+    instrument_id: InstrumentId
+    symbol: str
+    source: Source
+    open: float | None
+    high: float | None
+    low: float | None
+    close: float
+    adj_close: float | None
+    volume: float | None
+    market_cap: float | None
+    fetched_at: datetime
+
+
+class ClosePair(NamedTuple):
+    """Two consecutive stored closes of one Instrument from one source."""
+
+    bar_date: date
+    instrument_id: InstrumentId
+    symbol: str
+    source: Source
+    prev_date: date
+    prev_close: float
+    close: float
+
+
+class MembershipInterval(NamedTuple):
+    """One survivor's stretch in a universe, `[valid_from, valid_to)`; `valid_to` None is open."""
+
+    universe: str
+    instrument_id: InstrumentId
+    symbol: str
+    valid_from: date
+    valid_to: date | None
 
 
 class Migration(NamedTuple):
@@ -1706,6 +1799,326 @@ class Store:
             bars = self.bars_for(instrument_id, when, when)
             held[instrument_id] = bars[0] if bars else None
         return held
+
+    # -- Bulk reads behind Datasets, ADR-0010 --
+    #
+    # Each reads many Instruments in one statement, folding Supersession through `_fold_cte`
+    # rather than chasing one Instrument at a time. A read given a `limit` fetches one row past
+    # it, and only when that row exists counts the whole match, so a read within the limit runs
+    # one statement and one over it never holds more than `limit + 1` rows.
+    #
+    # An Instrument whose Supersession chain cycles or ends at an Instrument not stored has no
+    # survivor to read it as. A bulk read skips it, and logs one warning naming it, rather than
+    # failing a whole table over one Instrument; the single-Instrument reads still raise.
+
+    def resolved_bars(
+        self,
+        start: date,
+        end: date,
+        *,
+        instruments: Iterable[InstrumentId | str] | None = None,
+        source: Source | None = None,
+        universe: str | None = None,
+        ever: bool = False,
+        limit: int | None = None,
+    ) -> list[BarRecord]:
+        """Every Instrument's bars from `start` to `end` inclusive, as `bars_for` resolves them.
+
+        One row per survivor and date, chosen as `bars_for` chooses (`_picked_cte`); `source`
+        reads that one source instead. Rows are ordered by Instrument Id, then date.
+
+        `instruments` narrows to those Instruments' survivors, refusing any not stored with
+        `UnknownInstrument`. `universe` keeps a row only if its survivor was a member on the
+        row's own date, or with `ever` on any date of the range; membership recorded under a
+        predecessor counts, and an unstored universe raises `UnknownUniverse`. More than `limit`
+        rows raises `TooManyRows`.
+        """
+        scope, args = self._bar_scope(start, end, instruments, universe)
+        source_filter, source_args = self._source_filter(source)
+        member = self._member_filter(universe, ever, "b.bar_date", "f.survivor_row")
+        ctes = f"{scope}, " + self._picked_cte(
+            f"b.bar_date >= ? AND b.bar_date <= ? AND {source_filter} AND {member}"
+        )
+        args += [start.isoformat(), end.isoformat(), *source_args]
+        columns = (
+            "p.bar_date, s.instrument_id, s.symbol, p.source, p.open, p.high, p.low, p.close, "
+            "p.adj_close, p.volume, p.market_cap, p.fetched_at"
+        )
+        body = (
+            "FROM picked p JOIN Instrument s ON s.instrument_row_id = p.survivor_row "
+            "WHERE p.pick = 1"
+        )
+        rows = self._bounded(ctes, columns, body, "s.instrument_id, p.bar_date", args, limit)
+        return [
+            BarRecord(
+                date.fromisoformat(day),
+                InstrumentId(instrument_id),
+                symbol,
+                Source(source_name),
+                open_,
+                high,
+                low,
+                close,
+                adj_close,
+                volume,
+                market_cap,
+                datetime.fromisoformat(fetched_at),
+            )
+            for (
+                day,
+                instrument_id,
+                symbol,
+                source_name,
+                open_,
+                high,
+                low,
+                close,
+                adj_close,
+                volume,
+                market_cap,
+                fetched_at,
+            ) in rows
+        ]
+
+    def close_pairs(
+        self,
+        start: date,
+        end: date,
+        *,
+        instruments: Iterable[InstrumentId | str] | None = None,
+        source: Source | None = None,
+        universe: str | None = None,
+        ever: bool = False,
+        limit: int | None = None,
+    ) -> list[ClosePair]:
+        """Each resolved close from `start` to `end` with the resolved close before it.
+
+        The closes are the Bars `resolved_bars` gives, one per survivor and date: through the
+        Price Sources, or `source` alone. A pair joins a date's Bar with the survivor's previous
+        resolved Bar however many days apart, and only when both came from one source: where
+        the resolved source switches between them, that date has no pair, since a return across
+        two vendors' prices would be partly a difference between vendors. The first pair in the
+        range reaches back to the last Bar before `start`, so `start` has one.
+
+        `instruments`, `universe` and `ever` narrow as in `resolved_bars`; the universe test is on
+        the later date of the pair. Rows are ordered by Instrument Id, then date. More than
+        `limit` rows raises `TooManyRows`.
+        """
+        scope, args = self._bar_scope(start, end, instruments, universe)
+        source_filter, source_args = self._source_filter(source)
+        # The earlier Bar of a pair may precede the range and the universe, so `picked` keeps
+        # every Bar up to `end` of a survivor that was ever a member; the point-in-time test
+        # waits for the pairs.
+        ever_member = self._member_filter(universe, True, "b.bar_date", "f.survivor_row")
+        ctes = (
+            f"{scope}, "
+            + self._picked_cte(f"b.bar_date <= ? AND {source_filter} AND {ever_member}")
+            + ", paired AS (SELECT survivor_row, source, bar_date, close, "
+            "LAG(bar_date) OVER w AS prev_date, LAG(close) OVER w AS prev_close, "
+            "LAG(source) OVER w AS prev_source FROM picked WHERE pick = 1 "
+            "WINDOW w AS (PARTITION BY survivor_row ORDER BY bar_date))"
+        )
+        args += [end.isoformat(), *source_args, start.isoformat()]
+        member = self._member_filter(universe, ever, "p.bar_date", "p.survivor_row")
+        columns = (
+            "p.bar_date, s.instrument_id, s.symbol, p.source, p.prev_date, p.prev_close, p.close"
+        )
+        body = (
+            "FROM paired p JOIN Instrument s ON s.instrument_row_id = p.survivor_row "
+            f"WHERE p.bar_date >= ? AND p.prev_source = p.source AND {member}"
+        )
+        rows = self._bounded(ctes, columns, body, "s.instrument_id, p.bar_date", args, limit)
+        return [
+            ClosePair(
+                date.fromisoformat(day),
+                InstrumentId(instrument_id),
+                symbol,
+                Source(source_name),
+                date.fromisoformat(prev_date),
+                prev_close,
+                close,
+            )
+            for day, instrument_id, symbol, source_name, prev_date, prev_close, close in rows
+        ]
+
+    def membership_intervals(
+        self,
+        start: date,
+        end: date,
+        *,
+        universe: str | None = None,
+        instruments: Iterable[InstrumentId | str] | None = None,
+    ) -> list[MembershipInterval]:
+        """The membership intervals that begin, end or are in force within `[start, end]`.
+
+        Inclusive at both ends of the range, so an interval closed on `start` is returned: its
+        member left on a date inside the range. Folded to survivors, and a survivor's stretches
+        that meet or overlap -- recorded under a predecessor, then under the survivor -- are
+        merged into one, so they read as one stay rather than a leave and a rejoin.
+
+        `universe` narrows to one universe, refusing an unstored one with `UnknownUniverse`;
+        `instruments` to those Instruments' survivors, refusing any not stored. Ordered by
+        universe, Instrument Id, then start.
+        """
+        definition = None if universe is None else self._require_universe(universe)
+        survivors = self._survivor_rows(instruments)
+        args: list[Any] = [*(survivors or []), end.isoformat(), start.isoformat()]
+        sql = (
+            f"{_fold_cte(None if survivors is None else len(survivors))} "
+            "SELECT d.name, s.instrument_id, s.symbol, m.valid_from, m.valid_to "
+            "FROM UniverseMembership m JOIN fold f ON f.member_row = m.instrument "
+            "JOIN Instrument s ON s.instrument_row_id = f.survivor_row "
+            "JOIN UniverseDefinition d ON d.universe_definition_id = m.definition "
+            "WHERE m.valid_from <= ? AND (m.valid_to IS NULL OR m.valid_to >= ?)"
+        )
+        if definition is not None:
+            sql += " AND m.definition = ?"
+            args.append(definition)
+        cursor = self.conn.cursor()
+        execute_sql(cursor, f"{sql} ORDER BY d.name, s.instrument_id, m.valid_from", args)
+        merged: list[MembershipInterval] = []
+        for name, instrument_id, symbol, valid_from, valid_to in cursor.fetchall():
+            interval = MembershipInterval(
+                name,
+                InstrumentId(instrument_id),
+                symbol,
+                date.fromisoformat(valid_from),
+                None if valid_to is None else date.fromisoformat(valid_to),
+            )
+            last = merged[-1] if merged else None
+            if (
+                last is not None
+                and (last.universe, last.instrument_id) == (name, interval.instrument_id)
+                and (last.valid_to is None or last.valid_to >= interval.valid_from)
+            ):
+                reaches = (
+                    None
+                    if last.valid_to is None or interval.valid_to is None
+                    else max(last.valid_to, interval.valid_to)
+                )
+                merged[-1] = last._replace(valid_to=reaches)
+            else:
+                merged.append(interval)
+        return merged
+
+    def _broken_chains(self) -> set[InstrumentId]:
+        """Stored Instruments `_fold_cte` pairs with no survivor: their chain cycles or ends unstored."""
+        cursor = self.conn.cursor()
+        execute_sql(
+            cursor,
+            f"{_fold_cte()} SELECT instrument_id FROM Instrument "
+            "WHERE instrument_row_id NOT IN (SELECT member_row FROM fold)",
+        )
+        return {InstrumentId(row[0]) for row in cursor.fetchall()}
+
+    def _survivor_rows(self, instruments: Iterable[InstrumentId | str] | None) -> list[int] | None:
+        """The survivors' row ids for Instruments a caller named; None when none were named.
+
+        Refuses an Instrument not stored. Skips one with a broken chain, warning once per read
+        with every one skipped: those named, or with nothing named every one in the store, since
+        any of them could have been reached.
+        """
+        broken = self._broken_chains()
+        if instruments is None:
+            skipped, rows = broken, None
+        else:
+            named = {InstrumentId(self._require_instrument(i).instrument_id) for i in instruments}
+            skipped = named & broken
+            rows = sorted(
+                {
+                    self._require_instrument(self._survivor_id(i)).instrument_row_id
+                    for i in named - broken
+                }
+            )
+        if skipped:
+            log.warning(
+                "skipping %s: Supersession chain cycles or ends at an Instrument not stored",
+                ", ".join(sorted(skipped)),
+            )
+        return rows
+
+    def _bar_scope(
+        self,
+        start: date,
+        end: date,
+        instruments: Iterable[InstrumentId | str] | None,
+        universe: str | None,
+    ) -> tuple[str, list[Any]]:
+        """The CTEs a bulk bar read starts from, with their arguments.
+
+        `fold` narrowed to the survivors of `instruments`, and with a universe `spans`: its
+        intervals in force on some date of the range, under their survivors.
+        """
+        definition = None if universe is None else self._require_universe(universe)
+        survivors = self._survivor_rows(instruments)
+        sql = _fold_cte(None if survivors is None else len(survivors))
+        args: list[Any] = [*(survivors or [])]
+        if definition is not None:
+            sql += (
+                ", spans AS MATERIALIZED (SELECT f.survivor_row, m.valid_from, m.valid_to "
+                "FROM UniverseMembership m JOIN fold f ON f.member_row = m.instrument "
+                "WHERE m.definition = ? AND m.valid_from <= ? "
+                "AND (m.valid_to IS NULL OR m.valid_to > ?))"
+            )
+            args += [definition, end.isoformat(), start.isoformat()]
+        return sql, args
+
+    @staticmethod
+    def _picked_cte(where: str) -> str:
+        """The CTE ranking each survivor's candidate Bars per date; `pick = 1` is the chosen one.
+
+        The precedence of `bars_for`: the survivor's Price Sources in order, then the survivor's
+        own Bar before a predecessor's, then the earliest-minted predecessor's. `where` filters
+        the candidates, over `fold f`, `Bar b` and the survivor's row `s`.
+        """
+        return (
+            "picked AS (SELECT f.survivor_row, b.bar_date, b.source, b.open, b.high, b.low, "
+            "b.close, b.adj_close, b.volume, b.market_cap, b.fetched_at, "
+            "ROW_NUMBER() OVER (PARTITION BY f.survivor_row, b.bar_date "
+            f"ORDER BY {_SOURCE_RANK}, b.instrument != f.survivor_row, f.mint_seq) AS pick "
+            "FROM fold f CROSS JOIN Bar b ON b.instrument = f.member_row "
+            f"JOIN Instrument s ON s.instrument_row_id = f.survivor_row WHERE {where})"
+        )
+
+    @staticmethod
+    def _member_filter(universe: str | None, ever: bool, on: str, survivor: str) -> str:
+        """The condition `spans` puts on a row: a member on the date `on`, or with `ever` at all."""
+        if universe is None:
+            return "1"
+        if ever:
+            return f"{survivor} IN (SELECT survivor_row FROM spans)"
+        return (
+            f"EXISTS (SELECT 1 FROM spans x WHERE x.survivor_row = {survivor} "
+            f"AND x.valid_from <= {on} AND (x.valid_to IS NULL OR x.valid_to > {on}))"
+        )
+
+    @staticmethod
+    def _source_filter(source: Source | None) -> tuple[str, list[Any]]:
+        if source is None:
+            return f"{_SOURCE_RANK} > 0", []
+        return "b.source = ?", [source.value]
+
+    def _bounded(
+        self,
+        ctes: str,
+        columns: str,
+        body: str,
+        order: str,
+        args: list[Any],
+        limit: int | None,
+    ) -> list[Any]:
+        """`{ctes} SELECT {columns} {body}` in `order`, raising `TooManyRows` past `limit`."""
+        cursor = self.conn.cursor()
+        query = f"{ctes} SELECT {columns} {body} ORDER BY {order}"
+        if limit is None:
+            execute_sql(cursor, query, args)
+            return cursor.fetchall()
+        execute_sql(cursor, f"{query} LIMIT ?", [*args, limit + 1])
+        rows = cursor.fetchall()
+        if len(rows) > limit:
+            execute_sql(cursor, f"{ctes} SELECT COUNT(*) {body}", args)
+            raise TooManyRows(cursor.fetchone()[0], limit)
+        return rows
 
     def corporate_actions_for(
         self, instrument_id: InstrumentId | str, start: date, end: date

@@ -66,16 +66,18 @@ from pathlib import Path
 from typing import IO, Any, ClassVar
 
 from lythonic.compose.namespace import NamespaceFragment, nsnode
+from lythonic.frame import FrameData
 from pydantic import BaseModel, ConfigDict
 from woodglue.apps.rpc import RpcError
 from woodglue.mount import current_mount
 
 from cointoss import ingest
 from cointoss.config import Settings, UniverseReconciled, ensure_universes
+from cointoss.datasets import DatasetView, InvalidParams, UnknownDataset, describe, lookup
 from cointoss.instrument import InstrumentId, Source
 from cointoss.prices import Bar, as_utc
 from cointoss.series import NotYetStarted
-from cointoss.store import Store, UnknownInstrument, UnknownUniverse
+from cointoss.store import Store, TooManyRows, UnknownInstrument, UnknownUniverse
 from cointoss.universe import EvaluationRun
 
 __all__ = [
@@ -470,6 +472,34 @@ class CointossApp(NamespaceFragment):
             )
             for d in definitions
         ]
+
+    @nsnode(tags=["api"])
+    def datasets(self) -> list[DatasetView]:
+        """Every Dataset `frame` reads, with its columns and the JSON Schema of its params."""
+        return describe()
+
+    @nsnode(tags=["api"])
+    def frame(self, dataset: str, params: dict[str, Any] | None = None) -> FrameData:
+        """One Dataset as a long table, `params` validated against its model (see `datasets`).
+
+        An unknown Dataset is `NotFound`; params its model refuses, or a match over
+        `cointoss.datasets.ROW_CAP` rows, are `BadRequest`. Nothing matching is an empty frame.
+        """
+        try:
+            found = lookup(dataset)
+            parsed = found.parse(params)
+        except UnknownDataset as exc:
+            raise NotFound(str(exc)) from None
+        except InvalidParams as exc:
+            raise BadRequest(str(exc)) from None
+        with self._store() as store:
+            try:
+                return found.read(store, parsed)
+            except TooManyRows as exc:
+                raise BadRequest(
+                    f"{dataset}: {exc.count} rows match, over the cap of {exc.limit}; "
+                    "narrow the range, the instruments or the universe"
+                ) from None
 
 
 def _date(value: str, name: str) -> dt.date:

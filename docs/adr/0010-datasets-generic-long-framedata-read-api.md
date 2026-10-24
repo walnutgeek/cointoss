@@ -1,6 +1,6 @@
 # Datasets: a Generic, Long, FrameData Read API
 
-Status: accepted.
+Status: accepted, amended 2026-10-23.
 
 Context: The read nodes (`members`, `changes`, `bars`, `universes_of`, `runs`, `universes`) each answer one question in their own shape: one Instrument's bars, a universe's members nested in a view. An explorer built on them has to know every node, and every new collection (Yahoo, a Portfolio, derived returns) would mean new UI code. The explorer is to be a Streamlit app that discovers what it can read and lets a person filter, chart and pivot it. Woodglue Grants are per namespace, not per method, so splitting reads across nodes buys no access control.
 
@@ -16,6 +16,9 @@ Decision:
 - `returns` is derived on read, never stored: simple close-to-close over consecutive stored Bars of one source, never spliced across sources. A gap yields one return over the whole gap with a `gap_days` column. The read fetches one Bar before `start` so `start` has a return.
 - Datasets are additive: new Datasets and columns any time; a rename or removal gets a new Dataset name and a note in the release notes.
 - `cointoss.datasets.load(client, name, **params) -> pd.DataFrame` applies the column types to a frame. pandas is imported only there, from the `[ui]` extra.
+- Amended 2026-10-23: `returns` resolves the source per date as `bars` does. A date's return pairs the Bar `bars` shows for it with the Bar for the Instrument's previous date that has one, so there is one row per date and Instrument. Where the resolved source switches between the two, that date has no return rather than one spliced across vendors. With `source`, it is that source's consecutive Bars, as before.
+- Amended 2026-10-23: a Dataset read skips an Instrument whose Supersession chain cycles or ends at an Instrument not stored, and logs one warning naming it, whether it was named in `instruments` or reached through a range or universe. One bad chain does not fail a whole table. The single-Instrument read nodes still raise.
+- Amended 2026-10-23: `load` is async, because `WoodglueClient.call` is. A sync caller such as Streamlit wraps it in `asyncio.run`.
 
 Considered Options:
 - Replace the read nodes with Datasets. One way to read, at the cost of breaking released API for no gain to the callers that want one answer.

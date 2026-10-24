@@ -99,6 +99,21 @@ The other methods are `cointoss.data:members` (`universe`, `date`), `changes` (`
 cannot answer is a JSON-RPC error: `-32001` for an unknown universe or Instrument, or a date
 with nothing stored; `-32002` before `init`; `-32602` for a malformed parameter.
 
+For exploring, `cointoss.data:datasets` lists the Datasets -- `instruments`, `bars`, `returns`,
+`membership`, `changes`, `runs` -- each with its typed columns and the JSON Schema of its params,
+and `cointoss.data:frame` (`dataset`, `params`) returns one as a long table (`columns` plus
+row-major `data`), at most 250,000 rows:
+
+```bash
+curl -s http://127.0.0.1:5321/rpc \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"cointoss.data:frame","params":{"dataset":"returns",
+       "params":{"start":"2026-10-01","end":"2026-10-31","universe":"cg-top-10"}}}'
+```
+
+From Python, with the `ui` extra, `await cointoss.datasets.load(client, "bars", start=...,
+end=...)` returns a pandas DataFrame with its date columns typed.
+
 To replace the token with a new one (the old one stops working at once):
 
 ```bash
