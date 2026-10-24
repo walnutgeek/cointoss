@@ -22,6 +22,9 @@ uv sync --all-extras
 This puts `cointoss` and woodglue's `wgl` in `.venv/bin`. Run them with `uv run`, or by
 absolute path, as the systemd unit does.
 
+From PyPI, `uv tool install 'cointoss[ui]'`. The `ui` extra (pandas and Streamlit) is what the
+Dataset explorer needs; without it the API is served as before.
+
 ## Initialize
 
 ```bash
@@ -34,7 +37,8 @@ This creates the data directory and writes into it:
   fetches; and `bar_window_hours` (default 3), how long after 00:00 UTC a sweep still writes
   the day's bars.
 - `woodglue.yaml`: the `cointoss` namespace with its API exposed and its engine running, the
-  daily sweep trigger (`5 0 * * *`, UTC), host `127.0.0.1`, port `5321`, and auth on.
+  daily sweep trigger (`5 0 * * *`, UTC), host `127.0.0.1`, port `5321`, and auth on. When
+  Streamlit is installed, also the Dataset explorer as `uis.explore` (see [Explore](#explore)).
 - `cointoss.db`, with the declared universes stored.
 - `auth.db`, holding the bearer token.
 
@@ -119,6 +123,35 @@ To replace the token with a new one (the old one stops working at once):
 ```bash
 uv run wgl --data ~/.local/share/cointoss token --new
 ```
+
+## Explore
+
+With the `ui` extra, woodglue serves a Streamlit Dataset explorer at `/ui/explore/`, e.g.
+http://127.0.0.1:5321/ui/explore/. Sign in to woodglue, pick a Dataset, set its parameters
+and press Load; it shows the table, a chart (one line per Instrument, cumulative for returns),
+a pivot of dates by Instrument, and CSV downloads. It reads only through `datasets` and `frame`,
+as the signed-in User, so it shows what their Grants allow and never opens `cointoss.db`.
+
+`init` adds it to a new `woodglue.yaml`:
+
+```yaml
+uis:
+  explore:
+    kind: streamlit
+    app: /path/to/site-packages/cointoss/explorer_app.py
+    label: Explore
+    grants: [call cointoss]
+```
+
+`app` is the absolute path of the script in the environment that runs `wgl`, which woodglue
+runs it with (`python -m streamlit run`). `init` never edits an existing `woodglue.yaml`: if
+it has no `explore` UI, `init` prints the entry to paste in; if its `app` no longer exists
+(say, after reinstalling under another Python), `init` names this install's script. Restart
+the service after editing.
+
+The admin can open it. Anyone else needs a Role with `view ui:explore` and `call cointoss`.
+`grants` limits what the app can do as any viewer to calling the cointoss namespace; Grants are
+per namespace, so that includes `sweep`.
 
 ## Pause the daily sweep
 

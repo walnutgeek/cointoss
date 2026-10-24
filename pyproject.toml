@@ -40,7 +40,10 @@ dependencies = [
 
 [project.optional-dependencies]
 scripts = ["openpyxl"]
-ui = ["pandas>=2.2"]
+ui = [
+    "pandas>=2.2",
+    "streamlit>=1.40",
+]
 
 
 # [tool.uv.sources]

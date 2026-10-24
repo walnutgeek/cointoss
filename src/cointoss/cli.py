@@ -18,6 +18,12 @@ name the data directory: the fragment takes woodglue's own (`wgl --data D`), so 
 start` from a shell serves the same store the unit does, and a copied instance serves its own.
 The unit also sets `COINTOSS_HOME`, for any `cointoss` command run under it.
 
+When Streamlit is installed (the `ui` extra), a new `woodglue.yaml` also serves the Dataset
+explorer as `uis.explore`, naming the absolute path of `cointoss/explorer_app.py` in this
+install, since woodglue resolves a relative `app` against the data directory. woodglue runs it
+with its own Python, which is this environment's. A kept `woodglue.yaml` without it is reported
+with the entry to add, as a differing port is.
+
 A second instance on the same host, such as a dev checkout beside an installed one, takes its
 own `--data-dir`, `--unit` and `--port`. Each unit names its own virtualenv's `bin`, which is why
 it is a plain unit per instance rather than a `cointoss@.service` template.
@@ -49,6 +55,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import datetime as dt
+import importlib.util
 import logging
 import os
 import string
@@ -96,6 +103,8 @@ UNIT_TEMPLATE = "cointoss.service"
 DEFAULT_UNIT = "cointoss"
 DEFAULT_PORT = 5321
 NAMESPACE = "cointoss"
+EXPLORE_UI = "explore"
+EXPLORER_SCRIPT = Path(__file__).with_name("explorer_app.py")
 UNIT_NAME_CHARS = frozenset(string.ascii_letters + string.digits + "_.-")
 
 
@@ -177,11 +186,33 @@ def first_daily_firing(schedule: str) -> dt.timedelta:
     return dt.timedelta(seconds=fired % 86400)
 
 
-def woodglue_config(
-    *, port: int = DEFAULT_PORT, schedule: str = DEFAULT_SWEEP_SCHEDULE
-) -> dict[str, Any]:
-    """The `woodglue.yaml` a new instance starts from: the cointoss namespace, local, with auth."""
+def streamlit_installed() -> bool:
+    """Whether this environment, the one woodglue runs a Streamlit UI with, has Streamlit."""
+    return importlib.util.find_spec("streamlit") is not None
+
+
+def explorer_ui() -> dict[str, Any]:
+    """The `uis.explore` entry serving this install's Dataset explorer.
+
+    Its only Grant is `call` on the cointoss namespace, so whoever views it, the app can do no
+    more than call cointoss's nodes. Grants are per namespace, so that includes `sweep`.
+    """
     return {
+        "kind": "streamlit",
+        "app": str(EXPLORER_SCRIPT),
+        "label": "Explore",
+        "grants": [f"call {NAMESPACE}"],
+    }
+
+
+def woodglue_config(
+    *, port: int = DEFAULT_PORT, schedule: str = DEFAULT_SWEEP_SCHEDULE, explorer: bool = False
+) -> dict[str, Any]:
+    """The `woodglue.yaml` a new instance starts from: the cointoss namespace, local, with auth.
+
+    With `explorer`, it also serves the Dataset explorer at `/ui/explore/`.
+    """
+    config: dict[str, Any] = {
         "host": "127.0.0.1",
         "port": port,
         "auth": {"enabled": True},
@@ -193,6 +224,9 @@ def woodglue_config(
             }
         },
     }
+    if explorer:
+        config["uis"] = {EXPLORE_UI: explorer_ui()}
+    return config
 
 
 def _sweep_schedule(config: WoodglueConfig) -> str | None:
@@ -312,6 +346,7 @@ def cmd_init(
     print(f"{CONFIG_FILENAME}: {'created' if written else 'kept'}")
     settings = _settings(data_dir)
 
+    explorer = streamlit_installed()
     written = _write_new(
         data_dir / WOODGLUE_CONFIG,
         _yaml(
@@ -319,6 +354,7 @@ def cmd_init(
             woodglue_config(
                 port=DEFAULT_PORT if port is None else port,
                 schedule=schedule or DEFAULT_SWEEP_SCHEDULE,
+                explorer=explorer,
             ),
         ),
     )
@@ -329,6 +365,7 @@ def cmd_init(
         _report_differences(config, port=port, schedule=schedule)
     elif schedule is not None:
         _warn_after_bar_window(schedule, settings.bar_window)
+    _report_explorer(data_dir, config, installed=explorer)
 
     with Store(settings.db_path) as store:
         for reconciled in ensure_universes(store, settings.universes, utc_today()):
@@ -357,6 +394,30 @@ def _report_differences(config: WoodglueConfig, *, port: int | None, schedule: s
             f"{WOODGLUE_CONFIG}: {SWEEP_TRIGGER} schedule {configured!r} differs from "
             f"--schedule {schedule!r}; {fix}"
         )
+
+
+def _report_explorer(data_dir: Path, config: WoodglueConfig, *, installed: bool) -> None:
+    """Say whether `woodglue.yaml` serves the explorer, and what to change if it cannot."""
+    entry = config.uis.get(EXPLORE_UI)
+    if entry is None:
+        if not installed:
+            print("explorer: not served; install the `ui` extra (Streamlit) to have it")
+            return
+        snippet = yaml.safe_dump({"uis": {EXPLORE_UI: explorer_ui()}}, sort_keys=False)
+        print(f"{WOODGLUE_CONFIG}: no `{EXPLORE_UI}` UI; to serve the explorer, add:")
+        print("".join(f"  {line}" for line in snippet.splitlines(keepends=True)), end="")
+    elif not installed:
+        print(
+            f"{WOODGLUE_CONFIG}: uis.{EXPLORE_UI} is configured but Streamlit is not installed "
+            "here; install the `ui` extra or remove the UI"
+        )
+    elif entry.app is not None and not (data_dir / entry.app).exists():
+        print(
+            f"{WOODGLUE_CONFIG}: uis.{EXPLORE_UI} app {entry.app} does not exist; "
+            f"this install's is {EXPLORER_SCRIPT}; edit it"
+        )
+    else:
+        print(f"explorer: /ui/{EXPLORE_UI}/")
 
 
 def _warn_after_bar_window(schedule: str, bar_window: dt.timedelta) -> None:
