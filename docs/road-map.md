@@ -4,13 +4,24 @@ Where cointoss is, where it is going, and what has to be decided before it gets 
 as directions change. Decisions that survive belong in `docs/adr/`; vocabulary belongs in
 `CONTEXT.md`. This file holds the parts that are still moving.
 
-Last updated: 2026-09-29, at `8ee8d6e`.
+Last updated: 2026-10-23, at `086a7cd` (v0.0.2).
 
 ## Where we are
 
-Nine ADRs. 445 tests, lint clean. The persistence layer (issue #5, ADR-0007, 0008 and 0009) is
-built: identity, Universe Definitions, membership intervals, Evaluation Runs, matrix entries and
-price history all persist, and every read folds supersession.
+Nine ADRs. 477 tests, lint clean. Released as v0.0.1 and v0.0.2 on PyPI. The persistence layer
+(issue #5, ADR-0007, 0008 and 0009) is built: identity, Universe Definitions, membership intervals,
+Evaluation Runs, matrix entries and price history all persist, and every read folds supersession.
+
+Two instances run on one host as `systemd --user` units (#23), each sweeping CoinGecko daily:
+
+| Instance | Unit | Code | Bars since |
+| --- | --- | --- | --- |
+| dev | `cointoss` | this checkout's `.venv` | 2026-10-01 |
+| int | `cointoss-int` | the released package (`uv tool`) | 2026-10-06 |
+
+Both are snapshotted daily by a timer in the deployment repo (net00); #24 moves that into
+`cointoss snapshot` / `restore`. Auth is woodglue's `AuthStore` (0.0.9): a built-in admin User
+whose bearer token `cointoss token` prints; no Identity Provider is configured yet.
 
 ### Built
 
@@ -28,7 +39,7 @@ price history all persist, and every read folds supersession.
 | `cointoss.ingest` | Pinning a typed ticker: the mandatory FIGI attempt, resolve or mint, retrying an unresolved Instrument. ADR-0004. The daily market sweep (#19): CoinGecko `markets` to Instruments, membership and the day's bars with market cap, written only within the bar window after 00:00 UTC and never over a bar already stored. |
 | `cointoss.config` | Universe Declarations in config, reconciled into stored Universe Definitions (#20). `Settings`: the data directory (`--data-dir`, `COINTOSS_HOME`, `~/.local/share/cointoss`), its `cointoss.db` and optional `cointoss.yaml` with `top_n` and `bar_window_hours` (#21). |
 | `cointoss.app` | The `CointossApp` namespace fragment (#21): a `sweep` node on a daily cron trigger, idempotent within a UTC day and serialised by a lock file, and read nodes `members`, `changes`, `bars`, `universes_of`, `runs`, `universes` served over woodglue JSON-RPC. |
-| `cointoss.cli` | The `cointoss` command (#22): `init` writes `cointoss.yaml`, `woodglue.yaml` and the store, idempotently, and with `--systemd` the `systemd --user` unit; `sweep` runs today's sweep through the fragment's node, with no date to choose; `status` and `token`. |
+| `cointoss.cli` | The `cointoss` command (#22): `init` writes `cointoss.yaml`, `woodglue.yaml` and the store, idempotently, and with `--systemd` the `systemd --user` unit; `sweep` runs today's sweep through the fragment's node, with no date to choose; `status` and `token`. `init --unit`, `--port` and `--schedule` let instances run side by side (#23). |
 
 ### Not built
 
@@ -98,19 +109,31 @@ early, because accumulated history is the one thing that cannot be produced late
    UTC turns `markets` into Instruments, `cg-top-100` membership (enter 100, exit 120,
    configurable) and the day's bars; a woodglue namespace serves it over JSON-RPC on 127.0.0.1;
    `cointoss init`, `woodglue.yaml`, cron triggers and a `systemd --user` unit keep it running.
-   Tickets #19-#22.
-5. **History backfill.** `market_chart` for members, filling every date with no stored bar:
-   before the first sweep, days the machine was down, and days swept after the bar window. It
-   never overwrites a stored bar, so it files no Restatement.
-6. **UI.** A small page over the JSON-RPC API: universe today, joins and leaves, a coin's price
-   history, scheduler health.
-7. **Portfolio.** ADR-0001's `Trade` as system of record, `Position`, `PortfolioSnapshot`, valued
+   Tickets #19-#23; a second, integration instance runs the released package since 2026-10-06.
+5. **Next milestone: explorable data on int.** Decided 2026-10-23. Three weeks of bars is too
+   little to analyse, and the UI should not be tied to the datasets that exist today. In order:
+   1. **Snapshot and restore (#24).** Protects the history before anything else touches it.
+   2. **History backfill (#26).** `market_chart` for members, filling every date with no stored bar:
+      before the first sweep, days the machine was down, and days swept after the bar window. It
+      never overwrites a stored bar, so it files no Restatement.
+   3. **A generic dataset API (#27)** on the cointoss namespace: `datasets()` names each dataset and
+      its columns, `frame(dataset, filters, start, end)` returns it as a table. First datasets:
+      bars, membership, universe changes, and returns derived on read. A new collection (Yahoo,
+      portfolio) becomes a new dataset, not new UI code.
+   4. **A Streamlit explorer (#28)** served by woodglue at `/ui/<name>/` (`kind: streamlit`). It reads
+      only through the dataset API with the viewer's Delegated Token, never `cointoss.db`, and its
+      `grants` limit it to the read methods. Pick a dataset, filter, chart, pivot, download.
+   5. **Google and GitHub sign-in on int (#29)**, reachable over Tailscale Funnel as its public HTTPS
+      URL. Registering the OAuth apps is manual; `woodglue.yaml` gets the providers, `public_url`,
+      admission and roles.
+6. **Portfolio.** ADR-0001's `Trade` as system of record, `Position`, `PortfolioSnapshot`, valued
    from stored bars.
-8. **Yahoo and stocks.** The FIGI path in earnest, exchange calendars, corporate actions.
-9. **Returns.** Whatever representation the estimator needs.
-10. **The estimator.** Closes ADR-0005's gap so a covariance can be computed rather than only
+7. **Yahoo and stocks.** The FIGI path in earnest, exchange calendars, corporate actions.
+8. **Returns, stored.** Whatever representation the estimator needs, beyond the derived-on-read
+   dataset of step 5.
+9. **The estimator.** Closes ADR-0005's gap so a covariance can be computed rather than only
     imported.
-11. **The FIGI mapping cache.** ADR-0006's `(universe_name, as_of)` key.
+10. **The FIGI mapping cache.** ADR-0006's `(universe_name, as_of)` key.
 
 ## Settled in grilling
 
@@ -133,6 +156,13 @@ the ADRs; what follows is only the index, so nothing here is re-litigated from m
 
 ## Still open
 
+- **Dataset API shape.** Table encoding over JSON-RPC (records or columns), filter vocabulary,
+  row limits, and whether `frame` is one generic node or a node per dataset. Settle before step
+  5.3; an ADR once it holds.
+- **Where Streamlit is installed.** int runs the released package as a `uv tool`; Streamlit and
+  pandas probably belong in an optional extra (`cointoss[ui]`) so the API-only install stays small.
+- **Funnel exposes the whole server.** The login page, `/rpc` and docs become public; every method
+  still needs a Caller. Decide whether docs and the Console stay on, and who is admitted.
 - **Delisting versus absence.** Absence from a source is not the same fact as a delisting, and
   nothing yet distinguishes them. ADR-0007 drops an instrument from membership either way. This
   needs settling before stocks (step 8).
