@@ -50,6 +50,7 @@ from cointoss.instrument import (
     InstrumentType,
     Observation,
     Source,
+    SupersessionCycle,
 )
 from cointoss.prices import Bar
 from cointoss.store import Store, TooManyRows
@@ -211,20 +212,34 @@ def test_bars_cover_every_instrument_in_long_form(ns: Namespace):
     assert [r["instrument_id"] for r in rows] == sorted(r["instrument_id"] for r in rows)
 
 
-def test_returns_span_a_gap_once_and_never_mix_sources(ns: Namespace):
-    rows = frame(ns, "returns", start=iso(2), end=iso(7), instruments=[BTC])
-    assert pick(rows, "source", "prev_date", "date", "gap_days") == [
+def test_returns_pair_the_bars_that_bars_shows_and_span_a_gap_once(ns: Namespace):
+    rows = frame(ns, "returns", start=iso(2), end=iso(5))
+    assert len({(r["date"], r["instrument_id"]) for r in rows}) == len(rows)
+    btc = [r for r in rows if r["instrument_id"] == BTC]
+    assert pick(btc, "source", "prev_date", "date", "gap_days") == [
         ("coingecko", iso(1), iso(2), 1),
         ("coingecko", iso(2), iso(3), 1),
         ("coingecko", iso(3), iso(5), 2),
-        ("coingecko", iso(5), iso(6), 1),
-        ("coingecko", iso(6), iso(7), 1),
-        ("yahoo", iso(6), iso(7), 1),
     ]
-    gap = rows[2]
+    gap = btc[2]
     assert gap["close"] == 105.0
     assert gap["simple_return"] == pytest.approx(105.0 / 103.0 - 1)
+
+
+def test_no_return_across_a_switch_of_the_resolved_source(ns: Namespace):
+    """`bars` shows BTC from CoinGecko on day 5 and from Yahoo on days 6 and 7."""
+    rows = frame(ns, "returns", start=iso(5), end=iso(7), instruments=[BTC])
+    assert pick(rows, "source", "prev_date", "date", "close") == [
+        ("coingecko", iso(3), iso(5), 105.0),
+        ("yahoo", iso(6), iso(7), 220.0),
+    ]
     assert rows[-1]["simple_return"] == pytest.approx(0.1)
+    named = frame(ns, "returns", start=iso(5), end=iso(7), instruments=[BTC], source="coingecko")
+    assert pick(named, "prev_date", "date") == [
+        (iso(3), iso(5)),
+        (iso(5), iso(6)),
+        (iso(6), iso(7)),
+    ]
 
 
 def test_returns_reach_back_one_bar_before_start(ns: Namespace):
@@ -388,6 +403,101 @@ def test_bulk_bars_fold_supersession_as_bars_for_does(data_dir: Path):
         assert (stay.instrument_id, stay.valid_from, stay.valid_to) == (BTC, day(1), None)
 
 
+def test_bulk_bars_apply_the_precedence_of_bars_for(data_dir: Path):
+    """A predecessor's preferred-source Bar beats the survivor's fallback, and mint order breaks
+    a tie between predecessors. XBTC is minted before WBTC but stored after it."""
+    with Store(data_dir / "cointoss.db") as store:
+        registry = InstrumentRegistry()
+        xbtc, wbtc = (
+            registry.observe(
+                Observation(
+                    type=InstrumentType.CRYPTO,
+                    symbol=symbol,
+                    scope="native",
+                    observed_at=day(1),
+                    source=CG,
+                    references=(ExternalReference.provider_id("coingecko", symbol.lower()),),
+                    figi_resolution=FigiResolution.NOT_FOUND,
+                )
+            ).instrument
+            for symbol in ("XBTC", "WBTC")
+        )
+        assert xbtc is not None and wbtc is not None
+        assert xbtc.mint_seq < wbtc.mint_seq
+        store.save_instrument(wbtc)
+        store.save_instrument(xbtc)
+        store.upsert_bars(
+            [bar(wbtc.id, YH, 2, 500.0), bar(wbtc.id, CG, 4, 3.0), bar(xbtc.id, CG, 4, 4.0)]
+        )
+        supersede(store, wbtc.id, BTC)
+        supersede(store, xbtc.id, BTC)
+
+        single = store.bars_for(BTC, day(1), day(7))
+        bulk = store.resolved_bars(day(1), day(7), instruments=[BTC])
+
+    assert [(b.bar_date, b.source, b.close) for b in bulk] == [
+        (b.bar_date, b.source, b.close) for b in single
+    ]
+    closes = {b.bar_date: (b.source, b.close) for b in bulk}
+    assert closes[day(2)] == (YH, 500.0)
+    assert closes[day(4)] == (CG, 4.0)
+
+
+def broken_chains(store: Store) -> tuple[InstrumentId, InstrumentId, InstrumentId]:
+    """AAA and BBB supersede each other; GGG is superseded into an Instrument never stored."""
+    aaa, bbb, ggg = coins(store, "AAA", "BBB", "GGG")
+    store.upsert_bars([bar(i, CG, 2, 1.0) for i in (aaa, bbb, ggg)])
+    store.record_membership("top", day(6), [BTC, ETH, aaa, ggg])
+    supersede(store, aaa, bbb)
+    supersede(store, bbb, aaa)
+    supersede(store, ggg, InstrumentId("crypto.native.ghost"))
+    return aaa, bbb, ggg
+
+
+def skip_warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [r.getMessage() for r in caplog.records if r.getMessage().startswith("skipping")]
+
+
+def test_bulk_reads_skip_a_broken_chain_with_one_warning(
+    data_dir: Path, ns: Namespace, caplog: pytest.LogCaptureFixture
+):
+    with Store(data_dir / "cointoss.db") as store:
+        aaa, bbb, ggg = broken_chains(store)
+    broken = {aaa, bbb, ggg}
+
+    caplog.clear()
+    rows = frame(ns, "bars", start=iso(1), end=iso(7))
+    assert not broken & {r["instrument_id"] for r in rows}
+    assert len(rows) == 20
+    (warning,) = skip_warnings(caplog)
+    assert all(i in warning for i in broken)
+
+    caplog.clear()
+    members = frame(ns, "membership", start=iso(6), end=iso(7), universe="top")
+    assert {r["instrument_id"] for r in members} == {BTC, ETH}
+    assert len(skip_warnings(caplog)) == 1
+
+
+def test_a_named_broken_chain_is_skipped_too_but_single_reads_still_raise(
+    data_dir: Path, ns: Namespace, caplog: pytest.LogCaptureFixture
+):
+    with Store(data_dir / "cointoss.db") as store:
+        aaa, _, ggg = broken_chains(store)
+
+    caplog.clear()
+    rows = frame(ns, "returns", start=iso(2), end=iso(3), instruments=[aaa, BTC])
+    assert {r["instrument_id"] for r in rows} == {BTC}
+    assert skip_warnings(caplog) == [
+        f"skipping {aaa}: Supersession chain cycles or ends at an Instrument not stored"
+    ]
+    assert frame(ns, "membership", start=iso(1), end=iso(7), instruments=[ggg]) == []
+
+    with pytest.raises(SupersessionCycle):
+        ns.get("data:bars")(instrument_id=aaa, start=iso(1), end=iso(7))
+    with pytest.raises(NotFound, match="ghost"):
+        ns.get("data:bars")(instrument_id=ggg, start=iso(1), end=iso(7))
+
+
 def test_a_bulk_read_over_its_limit_counts_rows_after_resolving(data_dir: Path):
     with Store(data_dir / "cointoss.db") as store:
         assert len(store.resolved_bars(day(1), day(7), instruments=[BTC], limit=6)) == 6
@@ -396,7 +506,7 @@ def test_a_bulk_read_over_its_limit_counts_rows_after_resolving(data_dir: Path):
         assert (raised.value.count, raised.value.limit) == (6, 5)
         with pytest.raises(TooManyRows) as raised:
             store.close_pairs(day(1), day(7), limit=1)
-        assert raised.value.count == 5 + 1 + 6 + 6
+        assert raised.value.count == 4 + 6 + 6
 
 
 # -- over HTTP --

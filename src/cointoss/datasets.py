@@ -403,10 +403,11 @@ DATASETS: dict[str, Dataset[Any]] = {
         Dataset(
             name="returns",
             description=(
-                "Simple close-to-close returns between consecutive stored Bars of one source, "
-                "derived on read; each source in an Instrument's Price Sources, or `source`, is "
-                "its own series and none is spliced into another. A gap gives one return over "
-                "the whole gap, and the first date of the range has one from the Bar before it."
+                "Simple close-to-close returns, derived on read, between the Bars `bars` gives "
+                "for a date and for the Instrument's previous date with one. A date whose Bar "
+                "comes from another source than the previous one has no return: sources are "
+                "never spliced. A gap gives one return over the whole gap, and the first date "
+                "of the range has one from the Bar before it."
             ),
             params=PriceParams,
             columns=(
@@ -496,7 +497,8 @@ async def load(
 ) -> pd.DataFrame:
     """Read a Dataset over JSON-RPC into a pandas DataFrame with its column types applied.
 
-    Async, because `WoodglueClient.call` is. Calls `datasets` for the column types, then
+    Async, because `WoodglueClient.call` is; a sync caller such as Streamlit wraps it in
+    `asyncio.run`. Calls `datasets` for the column types, then
     `frame`. A `date` column becomes naive `datetime64` at midnight and a `datetime` column
     UTC-aware `datetime64`, so both chart and resample directly; a nullable `int` or `bool`
     column uses pandas' nullable dtype. `namespace` is the method prefix the fragment is
