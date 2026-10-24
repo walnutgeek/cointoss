@@ -130,8 +130,10 @@ A day's bar is its price at 00:00 UTC, so bars are written only by a sweep withi
 re-sweep never replaces a bar already stored for the day. Days without bars are left for a
 future backfill.
 
-Only one sweep runs at a time per data directory: a second one, such as a manual sweep while
-the scheduled one runs, exits at once with `another sweep holds .../sweep.lock`.
+Only one sweep runs at a time per data directory, and `cointoss snapshot` holds the same lock
+while it copies. A manual sweep that finds the lock held exits at once with `another sweep
+holds .../sweep.lock`. The scheduled sweep waits up to 10 minutes for it instead, so a snapshot
+taken at sweep time delays the day's sweep rather than skipping it.
 
 ## Where the data lives
 
@@ -148,19 +150,37 @@ move the directory, delete the unit and re-run `init --data-dir NEW --systemd`. 
 | `auth.db` | API tokens. |
 | `mounts/` | woodglue engine state: triggers, DAG runs, cache. Rebuildable. |
 | `wgl.log`, `wgl.pid` | Server log (only when not under systemd, which logs to the journal) and pid. |
-| `sweep.lock` | Held while a sweep runs. Safe to delete when none is. |
+| `sweep.lock` | Held while a sweep or a snapshot runs. Safe to delete when neither is. |
 
 ## Backup
 
-`cointoss.db` is the only file that cannot be rebuilt. Back it up while the service runs with
-SQLite's online backup:
+`cointoss.db` is the only file that cannot be rebuilt. `cointoss snapshot` copies it, with
+`cointoss.yaml` and `woodglue.yaml`, into a new directory, while the service runs:
 
 ```bash
-sqlite3 ~/.local/share/cointoss/cointoss.db ".backup '/path/to/cointoss-$(date -u +%F).db'"
+uv run cointoss snapshot /path/to/snapshots/$(date -u +%Y%m%dT%H%M%SZ)
 ```
 
-Or stop the service (`systemctl --user stop cointoss`), copy `cointoss.db`, and start it again.
-A plain copy of a live database can miss writes still in its WAL file (`cointoss.db-wal`).
+It copies the database with SQLite's online backup, so the copy is consistent even with writes
+in flight, and waits up to 10 minutes for a sweep in progress to finish. It writes a
+`manifest.json` recording the cointoss version, the database's schema version and the UTC time.
+It never copies `auth.db`: a snapshot is data, not credentials. Naming and pruning snapshots is
+up to you.
+
+To restore, into a data directory whose server is stopped and which has no `cointoss.db` (move
+an existing one aside first):
+
+```bash
+systemctl --user stop cointoss
+uv run cointoss restore /path/to/snapshots/20261023T120000Z
+uv run cointoss init             # creates a token if the directory has no auth.db
+systemctl --user start cointoss
+```
+
+`restore` replaces the configs with the snapshot's and removes `init.data_dir` from a
+`woodglue.yaml` written before woodglue 0.0.7, so the restored instance serves its own
+directory. It refuses a snapshot whose schema is newer than the installed cointoss reads; to
+roll back an upgrade, restore a snapshot taken before it with the older version installed.
 
 ## Development
 

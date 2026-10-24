@@ -1,10 +1,12 @@
-"""The `cointoss` command: set up an instance, sweep by hand, and check on it.
+"""The `cointoss` command: set up an instance, sweep by hand, check on it, and back it up.
 
-    cointoss init   [--data-dir D] [--systemd [--unit NAME]] [--port N] [--schedule CRON]
-                                                 create the instance, idempotently
-    cointoss sweep  [--data-dir D] [--force]
-    cointoss status [--data-dir D]
-    cointoss token  [--data-dir D]               print the JSON-RPC bearer token
+    cointoss init     [--data-dir D] [--systemd [--unit NAME]] [--port N] [--schedule CRON]
+                                                   create the instance, idempotently
+    cointoss sweep    [--data-dir D] [--force]
+    cointoss status   [--data-dir D]
+    cointoss token    [--data-dir D]               print the JSON-RPC bearer token
+    cointoss snapshot [--data-dir D] DEST          copy the database and configs into DEST
+    cointoss restore  [--data-dir D] SRC           copy a snapshot into a stopped instance
 
 The data directory is `--data-dir`, else `$COINTOSS_HOME`, else `~/.local/share/cointoss`
 (`cointoss.config.resolve_data_dir`). It holds `cointoss.db`, `cointoss.yaml`, `woodglue.yaml`
@@ -25,8 +27,14 @@ schedule trigger that missed its last firing fires once on start, so the unit ne
 step of its own.
 
 `sweep` calls the fragment's own `sweep` node, so a manual run follows exactly the scheduled
-run's idempotency rule and takes the same lock. It records CoinGecko's current listing for
-today (UTC), so it has no date to choose; a missed past day is history backfill.
+run's idempotency rule and takes the same lock, but without waiting for it. It records
+CoinGecko's current listing for today (UTC), so it has no date to choose; a missed past day is
+history backfill.
+
+`snapshot` and `restore` are described in `cointoss.snapshot`. `snapshot` runs beside a serving
+instance and waits for a sweep in progress; `restore` refuses while the server for its data
+directory runs, and checks the snapshot's configs as `init` checks an instance's before writing
+anything. It leaves `auth.db` alone: `cointoss init` afterwards creates a token if there is none.
 
 Expected failures -- a config that does not load, a sweep already running, a missing store --
 are turned into `CliError` where they arise and reported as one line. Anything else is a bug
@@ -78,6 +86,7 @@ from cointoss.config import (
     resolve_data_dir,
 )
 from cointoss.prices import as_utc
+from cointoss.snapshot import CONFIGS, SnapshotError, read_manifest, restore, take
 from cointoss.store import Store, UnknownUniverse
 from cointoss.universe import UniverseError
 
@@ -386,7 +395,7 @@ def cmd_sweep(data_dir: Path, force: bool) -> int:
     with _loading_settings(data_dir):
         app = CointossApp(str(data_dir))
     try:
-        outcome = asyncio.run(app.sweep(force=force))
+        outcome = asyncio.run(app.sweep(force=force, wait=0))
     except SweepInProgress as exc:
         raise CliError(f"{exc}; not sweeping") from exc
     if outcome.report is None:
@@ -407,26 +416,26 @@ def cmd_sweep(data_dir: Path, force: bool) -> int:
     return 1 if report.failed else 0
 
 
-def _server_state(data_dir: Path) -> str:
-    """Whether the `wgl start` named in its pid file is alive.
+def _server(data_dir: Path) -> tuple[int | None, str]:
+    """The pid of the `wgl start` named in its pid file if it is alive, and a word on it.
 
     The file alone is not enough: a server killed outright, such as by `kill -9`, leaves it
     behind.
     """
     pid_file = data_dir / "wgl.pid"
     if not pid_file.exists():
-        return "not running"
+        return None, "not running"
     try:
         pid = int(pid_file.read_text().strip())
     except ValueError:
-        return "not running (unreadable wgl.pid)"
+        return None, "not running (unreadable wgl.pid)"
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
-        return "not running (stale wgl.pid)"
+        return None, "not running (stale wgl.pid)"
     except PermissionError:
         pass
-    return f"running (pid {pid})"
+    return pid, f"running (pid {pid})"
 
 
 def cmd_status(data_dir: Path) -> None:
@@ -435,7 +444,7 @@ def cmd_status(data_dir: Path) -> None:
         raise CliError(f"no database at {settings.db_path}; run `cointoss init` first")
     today = utc_today()
     print(f"data dir: {data_dir}")
-    print(f"server: {_server_state(data_dir)}")
+    print(f"server: {_server(data_dir)[1]}")
     with Store(settings.db_path) as store:
         for declared in settings.universes:
             print(_universe_status(store, declared.name, today))
@@ -470,6 +479,39 @@ def cmd_token(data_dir: Path) -> None:
     if len(tokens) > 1:
         raise CliError(f"{auth.db_path} holds several admin tokens; `wgl token` lists them")
     print(tokens[0])
+
+
+def cmd_snapshot(data_dir: Path, dest: Path) -> None:
+    try:
+        manifest = take(data_dir, dest)
+    except SnapshotError as exc:
+        raise CliError(str(exc)) from exc
+    copied = [name for name in CONFIGS if (dest / name).exists()]
+    print(f"snapshot: {dest}")
+    print(
+        f"cointoss {manifest.cointoss_version}, schema version {manifest.schema_version}, "
+        f"taken {manifest.taken_at.isoformat(timespec='seconds')}"
+    )
+    print(f"copied: cointoss.db{''.join(f', {name}' for name in copied)}")
+
+
+def cmd_restore(data_dir: Path, src: Path) -> None:
+    pid, _ = _server(data_dir)
+    if pid is not None:
+        raise CliError(f"the server for {data_dir} is running (pid {pid}); stop it first")
+    try:
+        read_manifest(src)
+        _settings(src)
+        if (src / WOODGLUE_CONFIG).exists():
+            _load_woodglue(src)
+        written = restore(src, data_dir)
+    except SnapshotError as exc:
+        raise CliError(str(exc)) from exc
+    print(f"data dir: {data_dir}")
+    for line in written:
+        print(line)
+    if not (data_dir / "auth.db").exists():
+        print("no auth.db: run `cointoss init` to create a token")
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -511,6 +553,14 @@ def _parser() -> argparse.ArgumentParser:
     )
     commands.add_parser("status", parents=[data], help="last Evaluation Run per universe")
     commands.add_parser("token", parents=[data], help="print the JSON-RPC bearer token")
+    snapshot = commands.add_parser(
+        "snapshot", parents=[data], help="copy the database and configs into a new directory"
+    )
+    snapshot.add_argument("dest", type=Path, help="directory to write; must not exist or be empty")
+    restore = commands.add_parser(
+        "restore", parents=[data], help="copy a snapshot into an instance with no database"
+    )
+    restore.add_argument("src", type=Path, help="a directory `cointoss snapshot` wrote")
     return parser
 
 
@@ -534,6 +584,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 cmd_status(data_dir)
             case "token":
                 cmd_token(data_dir)
+            case "snapshot":
+                cmd_snapshot(data_dir, args.dest.expanduser().absolute())
+            case "restore":
+                cmd_restore(data_dir, args.src.expanduser().absolute())
             case _:
                 raise AssertionError(args.command)
     except CliError as exc:

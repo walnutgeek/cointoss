@@ -134,6 +134,7 @@ __all__ = [
     "UnknownInstrument",
     "UnknownUniverse",
     "TickerRecordRow",
+    "backup_database",
     "UniverseDefinitionRow",
     "UniverseEntryRow",
     "UniverseMemberRow",
@@ -635,6 +636,31 @@ class Migration(NamedTuple):
 # Ordered, and empty: there is no prior schema to migrate from. Append steps with strictly
 # increasing `to_version` as the schema changes, and raise `SCHEMA_VERSION` to match.
 MIGRATIONS: list[Migration] = []
+
+
+def backup_database(source: Path, target: Path) -> int | None:
+    """Copy the database at `source` into `target` with SQLite's online backup API.
+
+    The copy is one consistent read of `source`, including what its WAL holds, while other
+    connections go on writing. `source` is opened read-only, so it is neither created, migrated
+    nor written. Returns the copy's schema version, None if it records none.
+    """
+    src = sqlite3.connect(f"{source.absolute().as_uri()}?mode=ro", uri=True)
+    try:
+        dst = sqlite3.connect(target)
+        try:
+            src.backup(dst)
+            cursor = dst.cursor()
+            try:
+                execute_sql(cursor, f"SELECT max(version) FROM {SchemaVersion.get_table_name()}")
+            except sqlite3.OperationalError:
+                return None
+            (version,) = cursor.fetchone()
+            return version
+        finally:
+            dst.close()
+    finally:
+        src.close()
 
 
 class Store:
