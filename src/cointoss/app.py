@@ -39,9 +39,13 @@ A read never creates anything: against a data directory with no `cointoss.db` it
 `NotInitialized`, naming `cointoss init`. Only `init` and the sweep create the store.
 
 One sweep runs at a time per data directory. The sweep node takes an exclusive `flock` on
-`sweep.lock` there, without waiting: a second sweep, such as a manual `cointoss sweep` while the
-scheduled one runs, raises `SweepInProgress` and does nothing. Waiting would block woodglue's
-IOLoop while the first finished, only to find the day already swept.
+`sweep.lock` there, which `cointoss backup` also holds while it copies. A scheduled firing
+waits for the lock, up to `SWEEP_LOCK_WAIT`: lythonic records a firing as the trigger's last run
+even when it fails, so a firing skipped because a backup held the lock would not be retried
+until the next day, losing that day's bars. It waits by retrying a non-blocking `flock` between
+`asyncio.sleep`s, never with a blocking `flock`, which would stall woodglue's IOLoop and the
+JSON-RPC API with it. A manual `cointoss sweep` passes `wait=0`, so one started while another
+runs raises `SweepInProgress` at once and does nothing.
 
 A request the store cannot answer -- an unknown universe or Instrument, a date before a
 universe's first entry, a malformed date -- raises an `ApiError` carrying a JSON-RPC error code
@@ -51,13 +55,15 @@ client receives that code and message, and woodglue logs it without a traceback.
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import fcntl
 import logging
-from collections.abc import Iterator
-from contextlib import contextmanager
+import time
+from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import IO, Any, ClassVar
 
 from lythonic.compose.namespace import NamespaceFragment, nsnode
 from pydantic import BaseModel, ConfigDict
@@ -74,6 +80,8 @@ from cointoss.universe import EvaluationRun
 
 __all__ = [
     "DEFAULT_SWEEP_SCHEDULE",
+    "FRAGMENT_GREF",
+    "SWEEP_LOCK_WAIT",
     "SWEEP_TRIGGER",
     "ApiError",
     "BadRequest",
@@ -89,6 +97,7 @@ __all__ = [
     "fragment_entry",
     "fragment_schedule",
     "sweep_lock",
+    "sweep_lock_async",
     "utc_today",
     "utcnow",
 ]
@@ -99,7 +108,12 @@ DEFAULT_SWEEP_SCHEDULE = "5 0 * * *"
 """Five past midnight UTC: after CoinGecko's 00:00 point exists, and early enough to be it."""
 
 SWEEP_TRIGGER = "daily_sweep"
+FRAGMENT_GREF = "cointoss.app:CointossApp"
 SWEEP_LOCK = "sweep.lock"
+SWEEP_LOCK_WAIT = 600.0
+"""Seconds a scheduled sweep or a backup waits for the sweep lock before giving up."""
+LOCK_POLL = 1.0
+"""Seconds between attempts to take a held sweep lock."""
 
 
 def utcnow() -> dt.datetime:
@@ -125,7 +139,7 @@ def fragment_entry(
     """
     entry: dict[str, Any] = {
         "type": "fragment",
-        "gref": "cointoss.app:CointossApp",
+        "gref": FRAGMENT_GREF,
         "nsref": "data:",
         "configs": {"sweep": {"triggers": [{"name": SWEEP_TRIGGER, "schedule": schedule}]}},
     }
@@ -176,19 +190,53 @@ class SweepInProgress(Exception):
     """Another sweep holds the data directory's sweep lock."""
 
 
-@contextmanager
-def sweep_lock(data_dir: Path) -> Iterator[None]:
-    """Hold the data directory's sweep lock, or raise `SweepInProgress` at once if it is held.
+def _try_lock(f: IO[str]) -> bool:
+    try:
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return False
+    return True
 
-    An `flock` is released by the kernel when its holder exits, so a killed sweep leaves no
-    stale lock behind.
+
+def _lock_held(path: Path, wait: float) -> SweepInProgress:
+    if wait <= 0:
+        return SweepInProgress(f"another sweep holds {path}")
+    return SweepInProgress(f"{path} still held after waiting {wait:g}s")
+
+
+@contextmanager
+def sweep_lock(data_dir: Path, wait: float = 0.0) -> Iterator[None]:
+    """Hold the data directory's sweep lock, waiting up to `wait` seconds for it.
+
+    Raises `SweepInProgress` if it is still held then; with no `wait`, at once. The wait sleeps
+    the calling thread, so the event loop uses `sweep_lock_async`. An `flock` is released by the
+    kernel when its holder exits, so a killed sweep leaves no stale lock behind.
     """
     path = data_dir / SWEEP_LOCK
+    deadline = time.monotonic() + wait
     with path.open("a") as f:
+        while not _try_lock(f):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise _lock_held(path, wait) from None
+            time.sleep(min(LOCK_POLL, remaining))
         try:
-            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            raise SweepInProgress(f"another sweep holds {path}") from None
+            yield
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
+
+
+@asynccontextmanager
+async def sweep_lock_async(data_dir: Path, wait: float = 0.0) -> AsyncIterator[None]:
+    """`sweep_lock`, waiting with `asyncio.sleep` so the event loop keeps running meanwhile."""
+    path = data_dir / SWEEP_LOCK
+    deadline = time.monotonic() + wait
+    with path.open("a") as f:
+        while not _try_lock(f):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise _lock_held(path, wait) from None
+            await asyncio.sleep(min(LOCK_POLL, remaining))
         try:
             yield
         finally:
@@ -288,7 +336,7 @@ class CointossApp(NamespaceFragment):
             raise NotFound(str(exc)) from exc
 
     @nsnode(tags=["scheduled"])
-    async def sweep(self, force: bool = False) -> SweepOutcome:
+    async def sweep(self, force: bool = False, wait: float = SWEEP_LOCK_WAIT) -> SweepOutcome:
         """Reconcile the declared universes, then sweep CoinGecko `markets` for today (UTC).
 
         Idempotent within a UTC day. Once every declared universe has a Run for today, a further
@@ -298,26 +346,31 @@ class CointossApp(NamespaceFragment):
         evaluating it again, and keeps any bar already stored for the day, so a re-sweep only
         fills in what is missing and never files a Restatement against the day's own bars.
 
-        Creates the data directory and store if absent. Raises `SweepInProgress` if another
-        sweep of this data directory is running.
+        Creates the data directory and store if absent. Waits up to `wait` seconds for the sweep
+        lock, since the trigger fires the node with no arguments, and raises `SweepInProgress` if
+        another sweep or a backup still holds it then.
         """
-        now = as_utc(utcnow())
-        day = now.date()
         names = [declared.name for declared in self.settings.universes]
         self.settings.data_dir.mkdir(parents=True, exist_ok=True)
-        with sweep_lock(self.settings.data_dir), Store(self.settings.db_path) as store:
-            reconciled = ensure_universes(store, self.settings.universes, day)
-            swept_today = {name for name in names if store.runs_on(name, day)}
-            if not force and names and swept_today >= set(names):
-                log.info("sweep %s: already swept", day)
-                return SweepOutcome(day=day, already_swept=True, reconciled=reconciled, report=None)
-            report = await ingest.sweep(
-                store,
-                now,
-                names,
-                top_n=self.settings.top_n,
-                bar_window=self.settings.bar_window,
-            )
+        async with sweep_lock_async(self.settings.data_dir, wait):
+            # Read the clock once the lock is held: the wait may have taken minutes.
+            now = as_utc(utcnow())
+            day = now.date()
+            with Store(self.settings.db_path) as store:
+                reconciled = ensure_universes(store, self.settings.universes, day)
+                swept_today = {name for name in names if store.runs_on(name, day)}
+                if not force and names and swept_today >= set(names):
+                    log.info("sweep %s: already swept", day)
+                    return SweepOutcome(
+                        day=day, already_swept=True, reconciled=reconciled, report=None
+                    )
+                report = await ingest.sweep(
+                    store,
+                    now,
+                    names,
+                    top_n=self.settings.top_n,
+                    bar_window=self.settings.bar_window,
+                )
         log.info(
             "sweep %s: listed %d, %d bars, %d kept, %d restatements%s, failed %s",
             day,

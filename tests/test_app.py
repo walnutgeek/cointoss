@@ -12,9 +12,10 @@ other way) and moves Bitcoin's price, so both universes have a join and a leave 
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator, Iterator
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -155,7 +156,9 @@ def test_the_schedule_is_configurable(data_dir: Path):
     assert trigger.schedule == "30 0 * * *"
 
 
-async def test_firing_the_trigger_runs_one_sweep_end_to_end(ns: Namespace, data_dir: Path):
+@contextmanager
+def trigger_manager(ns: Namespace) -> Iterator[TriggerManager]:
+    """A `TriggerManager` over `ns` with the daily sweep trigger active, as woodglue runs it."""
     with TemporaryDirectory() as state:
         storage = StorageConfig(log_file=None)
         storage.resolve_paths(Path(state))
@@ -164,8 +167,12 @@ async def test_firing_the_trigger_runs_one_sweep_end_to_end(ns: Namespace, data_
         assert storage.triggers_db is not None
         manager = TriggerManager(ns, TriggerStore(storage.triggers_db))
         manager.activate(SWEEP_TRIGGER)
-        with market(DAY1_AT, day1_pages()) as client:
-            result = await manager.fire(SWEEP_TRIGGER)
+        yield manager
+
+
+async def test_firing_the_trigger_runs_one_sweep_end_to_end(ns: Namespace, data_dir: Path):
+    with trigger_manager(ns) as manager, market(DAY1_AT, day1_pages()) as client:
+        result = await manager.fire(SWEEP_TRIGGER)
 
     assert result.status == "completed", result.error
     assert client.fetch.call_count == 1
@@ -236,9 +243,55 @@ async def test_a_sweep_while_another_holds_the_lock_exits_without_fetching(
 ):
     with sweep_lock(data_dir), market(DAY1_AT, day1_pages()) as client:
         with pytest.raises(SweepInProgress):
-            await ns.get("data:sweep")()
+            await ns.get("data:sweep")(wait=0)
     assert client.fetch.call_count == 0
     assert (await sweep(ns, DAY1_AT, day1_pages())).report is not None
+
+
+async def test_a_waiting_sweep_runs_once_the_lock_is_released_without_blocking_the_loop(
+    ns: Namespace, data_dir: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr("cointoss.app.LOCK_POLL", 0.01)
+    with ExitStack() as holder, market(DAY1_AT, day1_pages()) as client:
+        holder.enter_context(sweep_lock(data_dir))
+        waiting = asyncio.create_task(ns.get("data:sweep")(wait=5))
+        # This coroutine runs on while the sweep waits; a blocking flock would hang the loop.
+        await asyncio.sleep(0.1)
+        assert not waiting.done()
+        assert client.fetch.call_count == 0
+        holder.close()
+        swept = await waiting
+    assert swept.report is not None
+    assert client.fetch.call_count == 1
+
+
+async def test_a_waiting_sweep_gives_up_when_the_wait_runs_out(
+    ns: Namespace, data_dir: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr("cointoss.app.LOCK_POLL", 0.01)
+    with sweep_lock(data_dir), market(DAY1_AT, day1_pages()) as client:
+        with pytest.raises(SweepInProgress, match="still held after waiting 0.05s"):
+            await ns.get("data:sweep")(wait=0.05)
+    assert client.fetch.call_count == 0
+
+
+async def test_the_trigger_fires_a_sweep_that_waits_for_the_lock(
+    ns: Namespace, data_dir: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr("cointoss.app.LOCK_POLL", 0.01)
+
+    async def release(holder: ExitStack) -> None:
+        await asyncio.sleep(0.1)
+        holder.close()
+
+    with trigger_manager(ns) as manager, market(DAY1_AT, day1_pages()) as client:
+        holder = ExitStack()
+        holder.enter_context(sweep_lock(data_dir))
+        releasing = asyncio.create_task(release(holder))
+        result = await manager.fire(SWEEP_TRIGGER)
+        await releasing
+    assert result.status == "completed", result.error
+    assert client.fetch.call_count == 1
 
 
 async def test_the_sweep_reconciles_declared_universes_first(ns: Namespace):
