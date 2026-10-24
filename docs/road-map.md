@@ -116,10 +116,10 @@ early, because accumulated history is the one thing that cannot be produced late
    2. **History backfill (#26).** `market_chart` for members, filling every date with no stored bar:
       before the first sweep, days the machine was down, and days swept after the bar window. It
       never overwrites a stored bar, so it files no Restatement.
-   3. **A generic dataset API (#27, ADR-0010)** on the cointoss namespace: `datasets()` names each dataset and
-      its columns, `frame(dataset, filters, start, end)` returns it as a table. First datasets:
-      bars, membership, universe changes, and returns derived on read. A new collection (Yahoo,
-      portfolio) becomes a new dataset, not new UI code.
+   3. **A generic dataset API (#27, ADR-0010).** Done. On the cointoss namespace: `datasets()` names
+      each dataset, its columns and its params' JSON Schema, `frame(dataset, params)` returns it as
+      a table. First datasets: instruments, bars, returns derived on read, membership, universe
+      changes and runs. A new collection (Yahoo, portfolio) becomes a new dataset, not new UI code.
    4. **A Streamlit explorer (#28)** served by woodglue at `/ui/<name>/` (`kind: streamlit`). It reads
       only through the dataset API with the viewer's Delegated Token, never `cointoss.db`, and its
       `grants` limit it to the read methods. Pick a dataset, filter, chart, pivot, download.

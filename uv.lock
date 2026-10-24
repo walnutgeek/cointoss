@@ -397,6 +397,9 @@ dependencies = [
 scripts = [
     { name = "openpyxl" },
 ]
+ui = [
+    { name = "pandas" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -425,12 +428,13 @@ requires-dist = [
     { name = "croniter", specifier = ">=6.2.2" },
     { name = "lythonic", specifier = ">=0.0.28" },
     { name = "openpyxl", marker = "extra == 'scripts'" },
+    { name = "pandas", marker = "extra == 'ui'", specifier = ">=2.2" },
     { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "ruamel-yaml", specifier = ">=0.18.17" },
     { name = "woodglue", specifier = ">=0.0.9" },
     { name = "yfinance", specifier = ">=1.4.1" },
 ]
-provides-extras = ["scripts"]
+provides-extras = ["scripts", "ui"]
 
 [package.metadata.requires-dev]
 dev = [

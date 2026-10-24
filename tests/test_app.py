@@ -61,7 +61,16 @@ CONFIG = {
         {"name": "cg-top-10", "enter_rank": 10, "exit_rank": 12},
     ],
 }
-READ_NODES = {"members", "changes", "bars", "universes_of", "runs", "universes"}
+READ_NODES = {
+    "members",
+    "changes",
+    "bars",
+    "universes_of",
+    "runs",
+    "universes",
+    "datasets",
+    "frame",
+}
 
 Page = list[dict[str, Any]]
 
