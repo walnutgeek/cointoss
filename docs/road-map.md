@@ -19,8 +19,8 @@ Two instances run on one host as `systemd --user` units (#23), each sweeping Coi
 | dev | `cointoss` | this checkout's `.venv` | 2026-10-01 |
 | int | `cointoss-int` | the released package (`uv tool`) | 2026-10-06 |
 
-Both are snapshotted daily by a timer in the deployment repo (net00); #24 moves that into
-`cointoss snapshot` / `restore`. Auth is woodglue's `AuthStore` (0.0.9): a built-in admin User
+Both are backed up daily by a timer in the deployment repo (net00), which calls `cointoss backup`
+where the build has it (#24); `cointoss restore` puts a backup into a stopped instance. Auth is woodglue's `AuthStore` (0.0.9): a built-in admin User
 whose bearer token `cointoss token` prints; no Identity Provider is configured yet.
 
 ### Built
@@ -112,7 +112,7 @@ early, because accumulated history is the one thing that cannot be produced late
    Tickets #19-#23; a second, integration instance runs the released package since 2026-10-06.
 5. **Next milestone: explorable data on int.** Decided 2026-10-23. Three weeks of bars is too
    little to analyse, and the UI should not be tied to the datasets that exist today. In order:
-   1. **Snapshot and restore (#24).** Protects the history before anything else touches it.
+   1. **Backup and restore (#24).** Done. Protects the history before anything else touches it.
    2. **History backfill (#26).** `market_chart` for members, filling every date with no stored bar:
       before the first sweep, days the machine was down, and days swept after the bar window. It
       never overwrites a stored bar, so it files no Restatement.
