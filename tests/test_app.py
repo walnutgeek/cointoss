@@ -498,6 +498,15 @@ class TestThroughWoodglue(tornado.testing.AsyncHTTPTestCase):
         members = self.rpc("cointoss.data:members", universe="cg-top-10", date="2026-09-30")
         assert len(members["result"]["members"]) == 10
 
+    def test_the_sweep_is_not_callable_over_json_rpc(self) -> None:
+        """Only `api` nodes are exposed, so `call cointoss` (the explorer's Grant) reaches reads only.
+
+        No auth here, so this caller may call anything: the method is absent, not refused.
+        """
+        answer = self.rpc("cointoss.data:sweep")
+        assert "result" not in answer
+        assert answer["error"]["code"] == -32601
+
     def test_an_api_error_reaches_the_client_with_its_code_and_message(self) -> None:
         Store(Path(self.home.name) / "cointoss.db").close()
         answer = self.rpc("cointoss.data:runs", universe="nope")

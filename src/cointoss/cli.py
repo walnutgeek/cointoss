@@ -195,7 +195,8 @@ def explorer_ui() -> dict[str, Any]:
     """The `uis.explore` entry serving this install's Dataset explorer.
 
     Its only Grant is `call` on the cointoss namespace, so whoever views it, the app can do no
-    more than call cointoss's nodes. Grants are per namespace, so that includes `sweep`.
+    more than call cointoss's read nodes: woodglue exposes only `api` nodes over JSON-RPC, so
+    the sweep is not callable, and firing its trigger needs a `trigger` Grant.
     """
     return {
         "kind": "streamlit",
