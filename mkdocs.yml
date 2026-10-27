@@ -6,6 +6,8 @@ repo_name: walnutgeek/cointoss
 
 theme:
   name: material
+  # No Google Fonts request: the site uses the system font stack.
+  font: false
   palette:
     - media: "(prefers-color-scheme: light)"
       scheme: default

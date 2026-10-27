@@ -13,6 +13,13 @@ cointoss is served by [woodglue](https://github.com/walnutgeek/woodglue), which 
 sign-in, sessions and access control. What follows describes what woodglue and cointoss do,
 as checked against their code and the deployment.
 
+## Who can reach an instance
+
+An instance is reachable only inside the operator's tailnet, the private network
+[Tailscale](https://tailscale.com/) provides. It is not on the public internet. Guests are
+invited to the tailnet and granted access to the instance and nothing else on it, so Tailscale
+also holds their tailnet identity (see [Sharing](#sharing)).
+
 ## What is collected at sign-in, and why
 
 You sign in with an account you already have. The instance asks the provider only for what it
@@ -20,14 +27,21 @@ needs to know who you are and whether to let you in.
 
 - **Google** (scopes `openid email profile`): your Google account id, your name, and your email
   address with whether Google has verified it.
-- **GitHub** (scopes `read:user user:email read:org`): your GitHub account id, your name (or
-  your login if you have not set a name), and your primary email if it is verified. When the
-  instance's admission or role rules refer to GitHub organizations or teams, it also reads your
+- **GitHub** (scopes `read:user user:email`): your GitHub account id, your name (or your login
+  if you have not set a name), and your primary email if it is verified. If an instance's rules
+  ever refer to GitHub organizations or teams, it also asks for `read:org` and reads your
   organization and team memberships.
 
-Your email and memberships are checked against the instance's admission rules, and the matching
-roles are assigned. That is the only use of this information: deciding whether you may sign in
-and what you may do once you have.
+Your identity is checked against the instance's admission rules, and the matching roles are
+assigned. That is the only use of this information: deciding whether you may sign in and what
+you may do once you have.
+
+The instances admit anyone who reaches them and signs in, with no roles. Your first sign-in
+creates your account record (name, verified email, and the linked provider account) and a
+session, but gives no access to any data until the operator approves the account by giving it
+a role, or disables it. The record stays while it is pending, and after it is disabled. A
+sign-in that an instance's admission rules refuse is turned away before any record is created;
+only the log line described under [Logs](#logs) is kept.
 
 ## What is stored
 
@@ -67,8 +81,8 @@ and keep it secure. It records:
 - One line per request: method, path and query string, response status, response time, and the
   address the connection came from. The instance sits behind a Tailscale proxy on the same
   host, so that address is the proxy's (`127.0.0.1`), not yours.
-- Each sign-in, with your account id and email, and each refused sign-in, with the provider's
-  account id and the email it gave.
+- Each sign-in, with your account id and email, and each sign-in refused by the admission
+  rules, with the provider's account id and the email it gave.
 
 The journal is kept as long as journald keeps it. The host sets no retention of its own, so
 journald's defaults apply: the journal is bounded by size (at most 10% of its file system, and
@@ -76,11 +90,13 @@ at most 4 GiB), not by age, and the oldest entries are deleted as space is neede
 
 ## Backups
 
-`cointoss backup` never copies `auth.db`. The deployment's daily snapshot does copy it,
-separately and readable only by the service account, so that accounts and roles survive
-rebuilding or moving the instance. Snapshots stay on the instance's host. They are kept for
-the last 7 days plus one for each of the last 4 weeks; snapshots labelled for a specific
-event, such as an upgrade, are kept until deleted by hand.
+`cointoss backup` never copies `auth.db`. The deployment's daily snapshot does copy it, as a
+separate file readable only by the service account (mode 600), so that accounts and approval
+decisions survive rebuilding or moving the instance. The copy holds everything `auth.db` holds,
+including session and token secrets, which woodglue stores as they are rather than hashed.
+Snapshots stay on the instance's host. They are kept for the last 7 days plus one for each of
+the last 4 weeks; snapshots labelled for a specific event, such as an upgrade, are kept until
+deleted by hand.
 
 ## Sharing
 
@@ -89,9 +105,8 @@ Your data is not sold, and it is not shared with anyone.
 - Sign-in goes through the provider you choose, under its own privacy policy:
   [Google](https://policies.google.com/privacy) or
   [GitHub](https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement).
-- Traffic reaches the instance through Tailscale (Tailscale Serve inside the tailnet, or
-  Tailscale Funnel from the internet), under
-  [Tailscale's privacy policy](https://tailscale.com/privacy-policy).
+- Traffic reaches the instance through the operator's tailnet. As a guest you have a Tailscale
+  account in it, under [Tailscale's privacy policy](https://tailscale.com/privacy-policy).
 
 ## Market data
 
@@ -128,4 +143,6 @@ updated. Every change is in the git history linked at the top.
 
 This documentation site is hosted on GitHub Pages, under
 [GitHub's privacy statement](https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement).
-It sets no cookies of its own and loads its fonts from Google Fonts.
+It sets no cookies of its own and loads no fonts, analytics or trackers from other sites. The
+repository link in its header asks GitHub's API for the repository's latest release, stars and
+forks.

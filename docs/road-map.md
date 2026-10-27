@@ -123,9 +123,12 @@ early, because accumulated history is the one thing that cannot be produced late
    4. **A Streamlit explorer (#28).** Done. Served by woodglue at `/ui/explore/` (`kind: streamlit`). It reads
       only through the dataset API with the viewer's Delegated Token, never `cointoss.db`, and its
       `grants` limit it to the read methods. Pick a dataset, filter, chart, pivot, download.
-   5. **Google and GitHub sign-in on int (#29)**, reachable over Tailscale Funnel as its public HTTPS
-      URL. Registering the OAuth apps is manual; `woodglue.yaml` gets the providers, `public_url`,
-      admission and roles.
+   5. **Google and GitHub sign-in on int (#29)**, with int staying tailnet-only: no Tailscale
+      Funnel. int is the Tailscale Service `svc:cointoss-int`; guests are invited to the tailnet
+      and granted only that Service on port 443, and Google or GitHub says who they are. Anyone who
+      signs in becomes a User with no Roles (pending) until the admin approves or disables them.
+      Registering the OAuth apps is manual; `woodglue.yaml` gets the providers, `public_url`,
+      admission (`anyone`, with no default Roles) and roles.
 6. **Portfolio.** ADR-0001's `Trade` as system of record, `Position`, `PortfolioSnapshot`, valued
    from stored bars.
 7. **Yahoo and stocks.** The FIGI path in earnest, exchange calendars, corporate actions.
@@ -158,8 +161,11 @@ the ADRs; what follows is only the index, so nothing here is re-litigated from m
 
 - **Where Streamlit is installed.** int runs the released package as a `uv tool`; Streamlit and
   pandas probably belong in an optional extra (`cointoss[ui]`) so the API-only install stays small.
-- **Funnel exposes the whole server.** The login page, `/rpc` and docs become public; every method
-  still needs a Caller. Decide whether docs and the Console stay on, and who is admitted.
+- **Triage of pending Users (#29).** int is tailnet-only, so only invited guests can reach it, and
+  anyone who signs in starts with no Roles. Docs and the Console stay on behind sign-in. woodglue
+  has no User status yet, so "pending" is inferred (a person with no Roles who is not disabled)
+  and triage happens through `wgl user`; a status and a Console page are asked for in
+  walnutgeek/woodglue#23.
 - **Delisting versus absence.** Absence from a source is not the same fact as a delisting, and
   nothing yet distinguishes them. ADR-0007 drops an instrument from membership either way. This
   needs settling before stocks (step 8).
