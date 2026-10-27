@@ -1,5 +1,8 @@
 # cointoss
 
+[![CI](https://github.com/walnutgeek/cointoss/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/walnutgeek/cointoss/actions/workflows/ci.yml)
+[![Docs](https://github.com/walnutgeek/cointoss/actions/workflows/docs.yml/badge.svg?branch=main)](https://walnutgeek.github.io/cointoss/)
+
 Crypto and stock portfolio tracker and research platform.
 
 Built on [lythonic](https://github.com/walnutgeek/lythonic) (SQLite ORM, DAG
