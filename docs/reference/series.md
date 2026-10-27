@@ -1,0 +1,3 @@
+# cointoss.series
+
+::: cointoss.series

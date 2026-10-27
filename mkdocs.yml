@@ -6,6 +6,8 @@ repo_name: walnutgeek/cointoss
 
 theme:
   name: material
+  # No Google Fonts request: the site uses the system font stack.
+  font: false
   palette:
     - media: "(prefers-color-scheme: light)"
       scheme: default
@@ -46,6 +48,10 @@ plugins:
 
 markdown_extensions:
   - pycon
+  # The Glossary page includes CONTEXT.md from the repo root, so it is not duplicated in docs/.
+  - pymdownx.snippets:
+      base_path: ["."]
+      check_paths: true
   - pymdownx.highlight:
       anchor_linenums: true
   - pymdownx.superfences
@@ -56,18 +62,67 @@ markdown_extensions:
   - toc:
       permalink: true
 
+exclude_docs: |
+  /agents/
+
 not_in_nav: |
   /release_notes/v*.md
 
+validation:
+  omitted_files: warn
+  absolute_links: warn
+  unrecognized_links: warn
+  anchors: warn
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/walnutgeek/cointoss
+
+copyright: <a href="https://walnutgeek.github.io/cointoss/privacy/">Privacy</a>
+
 nav:
   - Home: index.md
+  - Design:
+      - Glossary: glossary.md
+      - Road map: road-map.md
+      - Decisions:
+          - "0001 Unified Instrument and Trade as SoR": adr/0001-unified-instrument-and-trade-sor.md
+          - "0002 Exposure Matrix and Universe as Series": adr/0002-exposure-matrix-and-universe-as-time-series.md
+          - "0003 Lythonic value types, Series wrappers": adr/0003-lythonic-value-types-with-series-wrappers.md
+          - "0004 Instrument identity: slug and FIGI": adr/0004-instrument-identity-slug-and-figi.md
+          - "0005 Covariance is declared": adr/0005-covariance-is-declared-not-recomputed.md
+          - "0006 Cache universes by name": adr/0006-cache-universes-by-name-not-by-contents.md
+          - "0007 Universe Definition vs membership": adr/0007-universe-definition-separate-from-evaluated-membership.md
+          - "0008 Rows, not blobs": adr/0008-rows-not-blobs-value-types-as-projections.md
+          - "0009 Price storage: source-keyed bars": adr/0009-price-storage-source-keyed-bars.md
+          - "0010 Datasets read API": adr/0010-datasets-generic-long-framedata-read-api.md
+  - API Reference:
+      - Domain:
+          - cointoss.instrument: reference/instrument.md
+          - cointoss.series: reference/series.md
+          - cointoss.universe: reference/universe.md
+          - cointoss.prices: reference/prices.md
+          - cointoss.risk: reference/risk.md
+      - Storage:
+          - cointoss.store: reference/store.md
+          - cointoss.backup: reference/backup.md
+      - Ingest:
+          - cointoss.ingest: reference/ingest.md
+          - cointoss.sources: reference/sources/index.md
+          - cointoss.sources.coingecko: reference/sources/coingecko.md
+          - cointoss.sources.openfigi: reference/sources/openfigi.md
+          - cointoss.sources.yahoofinance: reference/sources/yahoofinance.md
+          - cointoss.sources.yf_schema: reference/sources/yf_schema.md
+          - cointoss.sources.yf_models: reference/sources/yf_models.md
+      - Serving:
+          - cointoss.config: reference/config.md
+          - cointoss.app: reference/app.md
+          - cointoss.datasets: reference/datasets.md
+          - cointoss.explorer: reference/explorer.md
+          - cointoss.cli: reference/cli.md
   - Releases:
       - v0.0.2: release_notes/v0.0.2.md
       - v0.0.1: release_notes/v0.0.1.md
       - "...": release_notes/index.md
-  - API Reference:
-      - cointoss: reference/core.md
-      - cointoss.models: reference/models.md
-      - cointoss.sources: reference/sources.md
-      - cointoss.pipeline: reference/pipeline.md
-      - cointoss.server: reference/server.md
+  - Privacy: privacy.md

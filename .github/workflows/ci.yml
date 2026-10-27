@@ -42,3 +42,18 @@ jobs:
 
       - name: Run tests
         run: uv run pytest
+
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.8.13"
+          enable-cache: true
+
+      - run: uv sync --group docs
+
+      # Strict, so a nav entry or link to a missing page fails the build.
+      - run: uv run --group docs mkdocs build --strict

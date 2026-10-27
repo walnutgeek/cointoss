@@ -32,10 +32,10 @@ clean:
 	-find . -type d -name "__pycache__" -exec rm -rf {} +
 
 docs:
-	uv run --group docs mkdocs build
+	uv run --group docs mkdocs build --strict
 
 docs-serve:
 	uv run --group docs mkdocs serve
 
 docs-deploy:
-	uv run --group docs mkdocs gh-deploy
+	uv run --group docs mkdocs gh-deploy --strict

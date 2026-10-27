@@ -1,0 +1,3 @@
+# cointoss.app
+
+::: cointoss.app
