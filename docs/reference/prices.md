@@ -1,0 +1,3 @@
+# cointoss.prices
+
+::: cointoss.prices

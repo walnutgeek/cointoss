@@ -6,6 +6,9 @@ Built on [lythonic](https://github.com/walnutgeek/lythonic) (SQLite ORM, DAG
 composition, CLI) and [woodglue](https://github.com/walnutgeek/woodglue)
 (async server, Caddy integration).
 
+[Documentation](https://walnutgeek.github.io/cointoss/) (design records and API reference) |
+[Privacy](https://walnutgeek.github.io/cointoss/privacy/)
+
 A running instance sweeps CoinGecko `markets` once a day, shortly after 00:00 UTC, records
 the configured universes (by default `cg-top-100`: enter at rank 100, exit at 120) and the
 day's bar per coin (close, volume, market cap), and serves the result over JSON-RPC on

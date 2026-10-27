@@ -1,0 +1,3 @@
+# cointoss.store
+
+::: cointoss.store

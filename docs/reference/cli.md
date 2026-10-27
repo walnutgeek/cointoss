@@ -1,0 +1,3 @@
+# cointoss.cli
+
+::: cointoss.cli

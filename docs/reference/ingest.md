@@ -1,0 +1,3 @@
+# cointoss.ingest
+
+::: cointoss.ingest
