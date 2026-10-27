@@ -25,7 +25,7 @@ from woodglue.cli import load_namespaces
 from woodglue.config import load_config
 
 from cointoss.app import SWEEP_TRIGGER, sweep_lock
-from cointoss.cli import main, render_unit
+from cointoss.cli import EXPLORER_SCRIPT, explorer_ui, main, render_unit
 from cointoss.config import DEFAULT_UNIVERSES, HOME_ENV, Settings
 from cointoss.store import Store
 
@@ -404,6 +404,75 @@ def test_an_explicit_default_unit_matches_a_plain_init(
         ).read_text()
     assert outputs[0] == outputs[1]
     assert units[0] == units[1]
+
+
+def test_init_serves_the_explorer_from_a_new_woodglue_yaml_when_streamlit_is_installed(
+    home: Path, capsys: pytest.CaptureFixture[str]
+):
+    with patch("cointoss.cli.streamlit_installed", return_value=True):
+        code, out = run(capsys, "init", "--data-dir", str(home))
+    assert code == 0, out
+    assert "explorer: /ui/explore/" in out
+    explore = load_config(home).uis["explore"]
+    assert explore.kind == "streamlit"
+    assert explore.label == "Explore"
+    assert explore.grants == ["call cointoss"]
+    # woodglue joins `app` to the data directory, which keeps an absolute path as it is.
+    assert explore.app is not None and Path(explore.app).is_absolute()
+    assert Path(explore.app) == EXPLORER_SCRIPT and EXPLORER_SCRIPT.is_file()
+
+
+def test_init_leaves_the_explorer_out_without_streamlit(
+    home: Path, capsys: pytest.CaptureFixture[str]
+):
+    with patch("cointoss.cli.streamlit_installed", return_value=False):
+        code, out = run(capsys, "init", "--data-dir", str(home))
+    assert code == 0, out
+    assert load_config(home).uis == {}
+    assert "explorer: not served" in out
+
+
+def test_init_reports_the_explorer_missing_from_a_kept_woodglue_yaml(
+    home: Path, capsys: pytest.CaptureFixture[str]
+):
+    with patch("cointoss.cli.streamlit_installed", return_value=False):
+        assert run(capsys, "init", "--data-dir", str(home))[0] == 0
+    before = (home / "woodglue.yaml").read_text()
+
+    with patch("cointoss.cli.streamlit_installed", return_value=True):
+        code, out = run(capsys, "init", "--data-dir", str(home))
+
+    assert code == 0, out
+    assert (home / "woodglue.yaml").read_text() == before
+    lines = out.splitlines()
+    start = next(i for i, ln in enumerate(lines) if "no `explore` UI" in ln)
+    snippet = "\n".join(ln for ln in lines[start + 1 :] if ln.startswith("  "))
+    assert yaml.safe_load(snippet)["uis"]["explore"] == explorer_ui()
+
+    # Pasted in, the snippet is what a new woodglue.yaml would have had.
+    (home / "woodglue.yaml").write_text(before + snippet.replace("\n  ", "\n")[2:] + "\n")
+    with patch("cointoss.cli.streamlit_installed", return_value=True):
+        code, out = run(capsys, "init", "--data-dir", str(home))
+    assert code == 0, out
+    assert "explorer: /ui/explore/" in out
+
+
+def test_init_reports_an_explorer_app_that_does_not_exist(
+    home: Path, capsys: pytest.CaptureFixture[str]
+):
+    with patch("cointoss.cli.streamlit_installed", return_value=True):
+        assert run(capsys, "init", "--data-dir", str(home))[0] == 0
+    woodglue_yaml = home / "woodglue.yaml"
+    woodglue_yaml.write_text(woodglue_yaml.read_text().replace(str(EXPLORER_SCRIPT), "/gone.py"))
+
+    with patch("cointoss.cli.streamlit_installed", return_value=True):
+        code, out = run(capsys, "init", "--data-dir", str(home))
+    assert code == 0, out
+    assert f"app /gone.py does not exist; this install's is {EXPLORER_SCRIPT}" in out
+
+    with patch("cointoss.cli.streamlit_installed", return_value=False):
+        code, out = run(capsys, "init", "--data-dir", str(home))
+    assert "Streamlit is not installed" in out
 
 
 @pytest.mark.parametrize(

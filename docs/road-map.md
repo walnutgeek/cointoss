@@ -120,7 +120,7 @@ early, because accumulated history is the one thing that cannot be produced late
       each dataset, its columns and its params' JSON Schema, `frame(dataset, params)` returns it as
       a table. First datasets: instruments, bars, returns derived on read, membership, universe
       changes and runs. A new collection (Yahoo, portfolio) becomes a new dataset, not new UI code.
-   4. **A Streamlit explorer (#28)** served by woodglue at `/ui/<name>/` (`kind: streamlit`). It reads
+   4. **A Streamlit explorer (#28).** Done. Served by woodglue at `/ui/explore/` (`kind: streamlit`). It reads
       only through the dataset API with the viewer's Delegated Token, never `cointoss.db`, and its
       `grants` limit it to the read methods. Pick a dataset, filter, chart, pivot, download.
    5. **Google and GitHub sign-in on int (#29)**, reachable over Tailscale Funnel as its public HTTPS
