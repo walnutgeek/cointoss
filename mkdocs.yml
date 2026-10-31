@@ -110,6 +110,7 @@ nav:
           - cointoss.backup: reference/backup.md
       - Ingest:
           - cointoss.ingest: reference/ingest.md
+          - cointoss.backfill: reference/backfill.md
           - cointoss.sources: reference/sources/index.md
           - cointoss.sources.coingecko: reference/sources/coingecko.md
           - cointoss.sources.openfigi: reference/sources/openfigi.md

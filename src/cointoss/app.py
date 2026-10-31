@@ -1,4 +1,4 @@
-"""The cointoss namespace: the scheduled daily sweep and the read API.
+"""The cointoss namespace: the scheduled daily sweep and backfill, and the read API.
 
 `CointossApp` is a lythonic `NamespaceFragment`. woodglue mounts it from `woodglue.yaml` as one
 entry of a namespace's `entries`, and `fragment_entry` builds that entry:
@@ -14,11 +14,21 @@ namespaces:
         configs:
           sweep:
             triggers: [{name: daily_sweep, schedule: "5 0 * * *"}]
+          backfill:
+            triggers: [{name: daily_backfill, schedule: "0 1 * * *"}]
 ```
 
 The read nodes are tagged `api`, so woodglue serves them over JSON-RPC as `cointoss.data:members`
-and so on. `sweep` is not: it writes and calls CoinGecko, so it runs from its trigger, from
-woodglue's `system.fire_trigger`, or from the CLI, never from an ordinary API call.
+and so on. `sweep` and `backfill` are not: they write and call CoinGecko, so they run from
+their triggers, from woodglue's `system.fire_trigger`, or from the CLI, never from an ordinary
+API call.
+
+`backfill` (`cointoss.backfill`) has its own trigger rather than running inside the sweep, so a
+slow or failing backfill neither delays the day's sweep nor marks it failed, and each firing is
+logged on its own. It fires an hour after the default sweep; the order is not load-bearing,
+since neither overwrites a bar the other stored. It takes the sweep lock for each write rather
+than for its whole run, which is long, so a sweep or backup waiting for the lock gets it within
+one coin's write.
 
 Runtime settings come from the data directory (`cointoss.config.Settings`): `init.data_dir` if
 given, else woodglue's instance data directory (`current_mount`), else `$COINTOSS_HOME`, else
@@ -72,6 +82,9 @@ from woodglue.apps.rpc import RpcError
 from woodglue.mount import current_mount
 
 from cointoss import ingest
+from cointoss.backfill import DEFAULT_DAYS as BACKFILL_DAYS
+from cointoss.backfill import BackfillReport
+from cointoss.backfill import backfill as run_backfill
 from cointoss.config import Settings, UniverseReconciled, ensure_universes
 from cointoss.datasets import DatasetView, InvalidParams, UnknownDataset, describe, lookup
 from cointoss.instrument import InstrumentId, Source
@@ -81,6 +94,8 @@ from cointoss.store import Store, TooManyRows, UnknownInstrument, UnknownUnivers
 from cointoss.universe import EvaluationRun
 
 __all__ = [
+    "BACKFILL_TRIGGER",
+    "DEFAULT_BACKFILL_SCHEDULE",
     "DEFAULT_SWEEP_SCHEDULE",
     "FRAGMENT_GREF",
     "SWEEP_LOCK_WAIT",
@@ -110,6 +125,9 @@ DEFAULT_SWEEP_SCHEDULE = "5 0 * * *"
 """Five past midnight UTC: after CoinGecko's 00:00 point exists, and early enough to be it."""
 
 SWEEP_TRIGGER = "daily_sweep"
+DEFAULT_BACKFILL_SCHEDULE = "0 1 * * *"
+"""01:00 UTC: after the default sweep has written the day's bars and released the lock."""
+BACKFILL_TRIGGER = "daily_backfill"
 FRAGMENT_GREF = "cointoss.app:CointossApp"
 SWEEP_LOCK = "sweep.lock"
 SWEEP_LOCK_WAIT = 600.0
@@ -132,8 +150,9 @@ def fragment_entry(
     *,
     data_dir: Path | None = None,
     schedule: str = DEFAULT_SWEEP_SCHEDULE,
+    backfill_schedule: str = DEFAULT_BACKFILL_SCHEDULE,
 ) -> dict[str, Any]:
-    """The `woodglue.yaml` namespace entry mounting the fragment with its daily sweep trigger.
+    """The `woodglue.yaml` namespace entry mounting the fragment with its daily triggers.
 
     lythonic reads triggers only from configuration, so the default schedule lives here and in
     whatever `cointoss init` writes from it. Without `data_dir` the fragment resolves the data
@@ -143,24 +162,31 @@ def fragment_entry(
         "type": "fragment",
         "gref": FRAGMENT_GREF,
         "nsref": "data:",
-        "configs": {"sweep": {"triggers": [{"name": SWEEP_TRIGGER, "schedule": schedule}]}},
+        "configs": {
+            "sweep": {"triggers": [{"name": SWEEP_TRIGGER, "schedule": schedule}]},
+            "backfill": {"triggers": [{"name": BACKFILL_TRIGGER, "schedule": backfill_schedule}]},
+        },
     }
     if data_dir is not None:
         entry["init"] = {"data_dir": str(data_dir)}
     return entry
 
 
-def fragment_schedule(entry: dict[str, Any]) -> str | None:
-    """The daily sweep schedule in a namespace entry shaped like `fragment_entry`'s, if any.
+def fragment_schedule(
+    entry: dict[str, Any], node: str = "sweep", trigger: str = SWEEP_TRIGGER
+) -> str | None:
+    """A node's daily schedule in a namespace entry shaped like `fragment_entry`'s, if any.
 
     >>> fragment_schedule(fragment_entry(schedule="35 0 * * *"))
     '35 0 * * *'
+    >>> fragment_schedule(fragment_entry(), "backfill", BACKFILL_TRIGGER)
+    '0 1 * * *'
     >>> fragment_schedule({"type": "fragment"}) is None
     True
     """
-    for trigger in entry.get("configs", {}).get("sweep", {}).get("triggers", []):
-        if trigger.get("name") == SWEEP_TRIGGER:
-            return trigger.get("schedule")
+    for configured in entry.get("configs", {}).get(node, {}).get("triggers", []):
+        if configured.get("name") == trigger:
+            return configured.get("schedule")
     return None
 
 
@@ -312,7 +338,7 @@ class SweepOutcome(BaseModel):
 
 
 class CointossApp(NamespaceFragment):
-    """The daily sweep and the read API over one instance's store."""
+    """The daily sweep and backfill, and the read API over one instance's store."""
 
     settings: Settings
 
@@ -384,6 +410,26 @@ class CointossApp(NamespaceFragment):
             sorted(report.failed) or "none",
         )
         return SweepOutcome(day=day, already_swept=False, reconciled=reconciled, report=report)
+
+    @nsnode(tags=["scheduled"])
+    async def backfill(
+        self, days: int = BACKFILL_DAYS, wait: float = SWEEP_LOCK_WAIT
+    ) -> BackfillReport:
+        """Fill every date with no stored bar, from CoinGecko's last `days` days and from Yahoo.
+
+        See `cointoss.backfill`. Each write waits up to `wait` seconds for the sweep lock and
+        raises `SweepInProgress` if it is still held then. Refuses a data directory with no
+        store, since only a sweep has universes whose members it could fill.
+        """
+        if not self.settings.db_path.exists():
+            raise NotInitialized(
+                f"no database at {self.settings.db_path}; run `cointoss init` first"
+            )
+        data_dir = self.settings.data_dir
+        with Store(self.settings.db_path) as store:
+            return await run_backfill(
+                store, utcnow(), days=days, lock=lambda: sweep_lock_async(data_dir, wait)
+            )
 
     @nsnode(tags=["api"])
     def members(self, universe: str, date: str) -> MembersView:

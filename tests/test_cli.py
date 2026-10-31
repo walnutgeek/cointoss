@@ -24,7 +24,7 @@ import yaml
 from woodglue.cli import load_namespaces
 from woodglue.config import load_config
 
-from cointoss.app import SWEEP_TRIGGER, sweep_lock
+from cointoss.app import BACKFILL_TRIGGER, SWEEP_TRIGGER, sweep_lock
 from cointoss.cli import EXPLORER_SCRIPT, explorer_ui, main, render_unit
 from cointoss.config import DEFAULT_UNIVERSES, HOME_ENV, Settings
 from cointoss.store import Store
@@ -258,6 +258,47 @@ def test_an_unexpected_error_keeps_its_traceback(home: Path):
 def test_sweep_no_longer_takes_a_date(home: Path):
     with pytest.raises(SystemExit):
         main(["sweep", "--data-dir", str(home), "--date", "2026-09-30"])
+
+
+def test_backfill_reports_what_it_filled(home: Path, capsys: pytest.CaptureFixture[str]):
+    assert run(capsys, "init", "--data-dir", str(home))[0] == 0
+    with patch("cointoss.app.utcnow", return_value=AT):
+        code, out = run(capsys, "backfill", "--data-dir", str(home), "--days", "90")
+    assert code == 0, out
+    # No sweep has run, so no Instrument has been a member yet.
+    assert out.strip().endswith(
+        "backfill 2026-09-30 over 90 days: 0 Instruments, 0 CoinGecko bars, 0 Yahoo bars"
+    )
+
+
+@pytest.mark.parametrize(("days", "init", "message"), [("30", True, "90"), ("90", False, "init")])
+def test_backfill_refuses_with_one_line(
+    home: Path, capsys: pytest.CaptureFixture[str], days: str, init: bool, message: str
+):
+    if init:
+        assert run(capsys, "init", "--data-dir", str(home))[0] == 0
+    code, out = run(capsys, "backfill", "--data-dir", str(home), "--days", days)
+    assert code == 1
+    (line,) = out.strip().splitlines()
+    assert line.startswith("cointoss backfill: ") and message in line
+
+
+def test_init_says_how_to_add_the_backfill_trigger_to_a_kept_woodglue_yaml(
+    home: Path, capsys: pytest.CaptureFixture[str]
+):
+    code, out = run(capsys, "init", "--data-dir", str(home))
+    assert code == 0, out
+    assert BACKFILL_TRIGGER not in out
+    woodglue_yaml = home / "woodglue.yaml"
+    config = yaml.safe_load(woodglue_yaml.read_text())
+    del config["namespaces"]["cointoss"]["entries"][0]["configs"]["backfill"]
+    woodglue_yaml.write_text(yaml.safe_dump(config))
+
+    code, out = run(capsys, "init", "--data-dir", str(home))
+
+    assert code == 0, out
+    assert f"no {BACKFILL_TRIGGER} trigger" in out
+    assert f"name: {BACKFILL_TRIGGER}" in out
 
 
 def test_status_without_a_database_says_to_run_init(home: Path, capsys: pytest.CaptureFixture[str]):

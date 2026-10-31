@@ -3,6 +3,7 @@
     cointoss init     [--data-dir D] [--systemd [--unit NAME]] [--port N] [--schedule CRON]
                                                    create the instance, idempotently
     cointoss sweep    [--data-dir D] [--force]
+    cointoss backfill [--data-dir D] [--days N]    fill dates with no stored bar
     cointoss status   [--data-dir D]
     cointoss token    [--data-dir D]               print the JSON-RPC bearer token
     cointoss backup   [--data-dir D] DEST          copy the database and configs into DEST
@@ -35,7 +36,8 @@ step of its own.
 `sweep` calls the fragment's own `sweep` node, so a manual run follows exactly the scheduled
 run's idempotency rule and takes the same lock, but without waiting for it. It records
 CoinGecko's current listing for today (UTC), so it has no date to choose; a missed past day is
-history backfill.
+history backfill: `backfill` calls the fragment's `backfill` node, waiting for the sweep lock
+before each write as the scheduled one does.
 
 `backup` and `restore` are described in `cointoss.backup`. `backup` runs beside a serving
 instance and waits for a sweep in progress; `restore` refuses while the server for its data
@@ -77,14 +79,18 @@ from woodglue.config import CONFIG_FILENAME as WOODGLUE_CONFIG
 from woodglue.config import WoodglueConfig, load_config
 
 from cointoss.app import (
+    BACKFILL_TRIGGER,
+    DEFAULT_BACKFILL_SCHEDULE,
     DEFAULT_SWEEP_SCHEDULE,
     SWEEP_TRIGGER,
     CointossApp,
+    NotInitialized,
     SweepInProgress,
     fragment_entry,
     fragment_schedule,
     utc_today,
 )
+from cointoss.backfill import DEFAULT_DAYS as BACKFILL_DAYS
 from cointoss.backup import CONFIGS, BackupError, read_manifest, restore, take
 from cointoss.config import (
     CONFIG_FILENAME,
@@ -238,6 +244,15 @@ def _sweep_schedule(config: WoodglueConfig) -> str | None:
         if (schedule := fragment_schedule(entry)) is not None:
             return schedule
     return None
+
+
+def _backfill_scheduled(config: WoodglueConfig) -> bool:
+    """Whether a loaded `woodglue.yaml` gives the cointoss fragment its `daily_backfill` trigger."""
+    namespace = config.namespaces.get(NAMESPACE)
+    return any(
+        fragment_schedule(entry, "backfill", BACKFILL_TRIGGER) is not None
+        for entry in ((namespace.entries or []) if namespace else [])
+    )
 
 
 def cointoss_config() -> dict[str, Any]:
@@ -396,6 +411,14 @@ def _report_differences(config: WoodglueConfig, *, port: int | None, schedule: s
             f"{WOODGLUE_CONFIG}: {SWEEP_TRIGGER} schedule {configured!r} differs from "
             f"--schedule {schedule!r}; {fix}"
         )
+    if not _backfill_scheduled(config):
+        trigger = {"name": BACKFILL_TRIGGER, "schedule": DEFAULT_BACKFILL_SCHEDULE}
+        snippet = yaml.safe_dump({"backfill": {"triggers": [trigger]}}, sort_keys=False)
+        print(
+            f"{WOODGLUE_CONFIG}: no {BACKFILL_TRIGGER} trigger; to backfill daily, add to the "
+            "cointoss fragment entry's `configs`:"
+        )
+        print("".join(f"  {line}" for line in snippet.splitlines(keepends=True)), end="")
 
 
 def _report_explorer(data_dir: Path, config: WoodglueConfig, *, installed: bool) -> None:
@@ -477,6 +500,31 @@ def cmd_sweep(data_dir: Path, force: bool) -> int:
     for name, why in sorted(report.failed.items()):
         print(f"  {name}: FAILED {why}")
     return 1 if report.failed else 0
+
+
+def cmd_backfill(data_dir: Path, days: int) -> int:
+    with _loading_settings(data_dir):
+        app = CointossApp(str(data_dir))
+    try:
+        report = asyncio.run(app.backfill(days=days))
+    except (NotInitialized, ValueError) as exc:
+        raise CliError(str(exc)) from exc
+    except SweepInProgress as exc:
+        raise CliError(f"{exc}; backfill stopped") from exc
+    print(
+        f"backfill {report.at.date()} over {report.days} days: {report.targets} Instruments, "
+        f"{report.coingecko_bars} CoinGecko bars, {report.yahoo_bars} Yahoo bars"
+    )
+    for instrument_id in report.linked:
+        print(f"  {instrument_id}: linked to Yahoo")
+    for label, why_by_id in (
+        ("rejected", report.rejected),
+        ("FAILED", report.failed),
+        ("skipped", report.skipped),
+    ):
+        for instrument_id, why in sorted(why_by_id.items()):
+            print(f"  {instrument_id}: {label} {why}")
+    return 0
 
 
 def _server(data_dir: Path) -> tuple[int | None, str]:
@@ -616,6 +664,15 @@ def _parser() -> argparse.ArgumentParser:
     sweep.add_argument(
         "--force", action="store_true", help="re-fetch even if today is already swept"
     )
+    backfill = commands.add_parser(
+        "backfill", parents=[data], help="fill dates with no stored bar from CoinGecko and Yahoo"
+    )
+    backfill.add_argument(
+        "--days",
+        type=int,
+        default=BACKFILL_DAYS,
+        help=f"how many days of CoinGecko history to fill, 90 to 365 (default: {BACKFILL_DAYS})",
+    )
     commands.add_parser("status", parents=[data], help="last Evaluation Run per universe")
     commands.add_parser("token", parents=[data], help="print the JSON-RPC bearer token")
     backup = commands.add_parser(
@@ -645,6 +702,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             case "sweep":
                 return cmd_sweep(data_dir, args.force)
+            case "backfill":
+                return cmd_backfill(data_dir, args.days)
             case "status":
                 cmd_status(data_dir)
             case "token":

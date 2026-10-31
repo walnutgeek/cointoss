@@ -38,18 +38,18 @@ whose bearer token `cointoss token` prints; no Identity Provider is configured y
 | `cointoss.store` | The only module that touches SQL. Eighteen tables, enforced pragmas, `SchemaVersion` with migrations. Membership by date or Instrument, bars resolved through Price Sources and dated by the session closed (Session Offset). ADR-0008. |
 | `cointoss.portfolio` | `Portfolio` owned by a User, single-leg `Trade` voided rather than deleted, `PortfolioPosition` derived on read with average cost (#32). Stored as `Portfolio` and `Trade`, schema version 2. ADR-0001. |
 | `cointoss.ingest` | Pinning a typed ticker: the mandatory FIGI attempt, resolve or mint, retrying an unresolved Instrument. ADR-0004. The daily market sweep (#19): CoinGecko `markets` to Instruments, membership and the day's bars with market cap, written only within the bar window after 00:00 UTC and never over a bar already stored. |
+| `cointoss.backfill` | History backfill (#26): every Instrument ever a member gets a bar for each date with no stored one, from CoinGecko `market_chart` (90 to 365 days) and, for a coin whose `{SYMBOL}-USD` pair agrees with CoinGecko within 2% in median over 30 sessions, from Yahoo `period="max"` before today UTC. An accepted pair is a Yahoo External Reference and Ticker History; nothing stored is overwritten. ADR-0009. |
 | `cointoss.config` | Universe Declarations in config, reconciled into stored Universe Definitions (#20). `Settings`: the data directory (`--data-dir`, `COINTOSS_HOME`, `~/.local/share/cointoss`), its `cointoss.db` and optional `cointoss.yaml` with `top_n` and `bar_window_hours` (#21). |
-| `cointoss.app` | The `CointossApp` namespace fragment (#21): a `sweep` node on a daily cron trigger, idempotent within a UTC day and serialised by a lock file, and read nodes `members`, `changes`, `bars`, `universes_of`, `runs`, `universes` served over woodglue JSON-RPC. |
-| `cointoss.cli` | The `cointoss` command (#22): `init` writes `cointoss.yaml`, `woodglue.yaml` and the store, idempotently, and with `--systemd` the `systemd --user` unit; `sweep` runs today's sweep through the fragment's node, with no date to choose; `status` and `token`. `init --unit`, `--port` and `--schedule` let instances run side by side (#23). |
+| `cointoss.app` | The `CointossApp` namespace fragment (#21): a `sweep` node on a daily cron trigger, idempotent within a UTC day and serialised by a lock file, a `backfill` node on its own daily trigger an hour later, taking the lock for each write, and read nodes `members`, `changes`, `bars`, `universes_of`, `runs`, `universes` served over woodglue JSON-RPC. |
+| `cointoss.cli` | The `cointoss` command (#22): `init` writes `cointoss.yaml`, `woodglue.yaml` and the store, idempotently, and with `--systemd` the `systemd --user` unit; `sweep` runs today's sweep through the fragment's node, with no date to choose; `backfill [--days N]` runs the backfill node; `status` and `token`. `init --unit`, `--port` and `--schedule` let instances run side by side (#23). |
 
 ### Not built
 
 Everything that makes it a system rather than a library:
 
-- **Missed days have no bars.** The unit catches up today's sweep when the service starts, but a
-  day the machine was down for is never swept, and a sweep later than the bar window (default
-  three hours after 00:00 UTC) records membership and writes no bars (ADR-0009 amendment).
-  Both leave a date with no bar, which backfill (step 6, #26) is to fill.
+- **Missed days have no membership.** A day the machine was down for is never swept, so it has
+  no Evaluation Run or membership; the daily backfill (#26) fills its bars, and those of a sweep
+  later than the bar window, but membership is not backfilled (ADR-0008 amendment).
 - **No retry runner.** The daily sweep is a scheduled node (#21), but nothing runs the
   unresolved retry queue.
 - **No returns.** Nothing turns prices into returns, so no covariance can be computed; the only
@@ -134,10 +134,11 @@ early, because accumulated history is the one thing that cannot be produced late
       reads (`bars_for`, `member_bars`, the `bars` and `returns` datasets) date each bar by the
       session it closes, so a per-date fallback splices like with like (ADR-0009 amendment).
       Reads of one source keep the stamped date.
-   2. **History backfill (#26).** One `backfill` for both sources, filling only dates with no
+   2. **History backfill (#26).** Done. One `backfill` for both sources, filling only dates with no
       stored bar: CoinGecko `market_chart` for its window, and Yahoo `period="max"` for coins whose
       `{SYMBOL}-USD` pair passes a price-agreement check against CoinGecko. Price Sources stay
-      Yahoo first. On demand and daily after the sweep.
+      Yahoo first. On demand (`cointoss backfill`) and daily, on its own trigger an hour
+      after the sweep; an existing `woodglue.yaml` needs the trigger added, which `init` reports.
 7. **Crypto portfolio.** Decided 2026-10-30 (ADR-0001 amendment). Independent of step 6 until
    valuation. Single-leg trades with no cash leg, UTC timestamps, voided rather than deleted,
    average cost, each Portfolio owned by a User, USD only, no Snapshot yet. Real holdings live on
@@ -198,7 +199,8 @@ Yahoo crypto bars and the crypto portfolio were grilled on 2026-10-30 and closed
   sidesteps it.
 - **A fixed `days` for `market_chart`.** Mostly settled by #19: a CoinGecko bar is the date's
   first (00:00) point, so hourly and daily windows agree, except on the first day of an hourly
-  window, which has no 00:00 point. A backfill should ask for 90 days or more.
+  window, which has no 00:00 point. `cointoss.backfill` refuses fewer than 90 days and writes
+  only days with a point at exactly 00:00 (#26).
 - **Backfills.** `record_membership` refuses a `when` earlier than the latest Evaluation Run, so
   evaluating a past date after a later one is not supported (ADR-0008 amendment).
 - **Unfolded reads.** `corporate_actions_for`, `restatements_for` and the action lookup in
