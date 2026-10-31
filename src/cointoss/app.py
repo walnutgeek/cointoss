@@ -91,6 +91,7 @@ import time
 from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from enum import StrEnum
+from functools import partial
 from pathlib import Path
 from typing import IO, Any, ClassVar, TypeVar
 
@@ -106,7 +107,14 @@ from cointoss.backfill import DEFAULT_DAYS as BACKFILL_DAYS
 from cointoss.backfill import BackfillReport
 from cointoss.backfill import backfill as run_backfill
 from cointoss.config import Settings, UniverseReconciled, ensure_universes
-from cointoss.datasets import DatasetView, InvalidParams, UnknownDataset, describe, lookup
+from cointoss.datasets import (
+    DatasetView,
+    InvalidParams,
+    OwnedDataset,
+    UnknownDataset,
+    describe,
+    lookup,
+)
 from cointoss.instrument import InstrumentError, InstrumentId, Source
 from cointoss.portfolio import (
     PORTFOLIO_HELD,
@@ -639,10 +647,14 @@ class CointossApp(NamespaceFragment):
             raise NotFound(str(exc)) from None
         except InvalidParams as exc:
             raise BadRequest(str(exc)) from None
-        owner = _reader(dataset) if found.owned else None
+        if isinstance(found, OwnedDataset):
+            owner = _caller_user(f"{dataset} reads a User's portfolios")
+            read = partial(found.read, params=parsed, owner=owner)
+        else:
+            read = partial(found.read, params=parsed)
         with self._store() as store:
             try:
-                return found.read(store, parsed, owner)
+                return read(store)
             except TooManyRows as exc:
                 raise BadRequest(
                     f"{dataset}: {exc.count} rows match, over the cap of {exc.limit}; "
@@ -736,20 +748,18 @@ class CointossApp(NamespaceFragment):
 def _writer() -> UserId:
     """The User a portfolio write runs as, once the Caller is shown to hold the write Grant."""
     check(Action.call, WRITE_TARGET)
-    caller = current_caller.get()
-    if caller is None:
-        raise Unauthorized("a portfolio write runs as a User; call it over JSON-RPC")
-    return caller.user_id or ANONYMOUS.name
+    return _caller_user("a portfolio write runs as a User")
 
 
-def _reader(dataset: str) -> UserId:
-    """The User whose Portfolios an owned Dataset reads: the Caller, as for a write.
+def _caller_user(why: str) -> UserId:
+    """The Caller's User id, `anonymous` with auth disabled; `Unauthorized` with no Caller.
 
-    Reading needs no Grant beyond the namespace's, so the explorer reads as its viewer.
+    An owned Dataset reads as this User with no Grant beyond the namespace's, so the explorer
+    reads as its viewer; a write checks its Grant first.
     """
     caller = current_caller.get()
     if caller is None:
-        raise Unauthorized(f"{dataset} reads a User's portfolios; call it over JSON-RPC")
+        raise Unauthorized(f"{why}; call it over JSON-RPC")
     return caller.user_id or ANONYMOUS.name
 
 

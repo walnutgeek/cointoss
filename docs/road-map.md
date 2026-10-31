@@ -155,8 +155,9 @@ early, because accumulated history is the one thing that cannot be produced late
       only: an owned Dataset is read for the Caller's User id, as a write is, and another User's
       Portfolio named in its params is `NotFound`. A position on D is valued at the close `bars`
       shows for D; without one its close and value are null, and a Portfolio's value on that date
-      is null with the unpriced positions counted, never a partial sum. The explorer charts
-      `portfolio_value` with no new UI code (ADR-0010 amendment).
+      is null with the unpriced positions counted, never a partial sum, and it has no row
+      before its first Trade. The explorer charts `portfolio_value` with no new UI code (ADR-0010
+      amendment).
 8. **Yahoo and stocks.** Deferred 2026-10-30 behind the crypto portfolio. The FIGI path in
    earnest, exchange calendars, corporate actions. Grilling started on a curated, Inclusion-only
    stock universe with a golden-file FIGI test, and an OpenFIGI key from the environment; resume

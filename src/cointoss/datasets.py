@@ -15,7 +15,7 @@ woodglue serializes a node's pydantic result with `model_dump(mode="json")`, so 
 a JSON-RPC client as an ISO string. `load` reads the column types `datasets` publishes and puts
 them back on a pandas DataFrame. pandas is imported only there, from the `ui` extra.
 
-An owned Dataset (`owned_rows`) holds a User's own records, the Portfolios: it is read for one
+An `OwnedDataset` holds a User's own records, the Portfolios: it is read for one
 owner, the caller's User id, which the app passes and no param can set, and a Portfolio named
 in its params that the owner does not hold is `UnknownPortfolio`, as one that does not exist.
 
@@ -35,7 +35,7 @@ from lythonic.frame import FrameData
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, ValidationError, model_validator
 
 from cointoss.instrument import InstrumentId, Source
-from cointoss.portfolio import Portfolio, UserId, derive_positions
+from cointoss.portfolio import Portfolio, PortfolioPosition, Trade, UserId, derive_positions
 from cointoss.store import Store, TooManyRows, UnknownInstrument, UnknownPortfolio
 
 if TYPE_CHECKING:
@@ -51,6 +51,7 @@ __all__ = [
     "Dataset",
     "DatasetView",
     "InvalidParams",
+    "OwnedDataset",
     "UnknownDataset",
     "describe",
     "load",
@@ -115,26 +116,13 @@ Rows = Sequence[Sequence[Any]]
 
 
 @dataclass(frozen=True)
-class Dataset(Generic[P]):
-    """One Dataset's definition: exactly one of `rows` or, for an owned one, `owned_rows`.
-
-    Either returns each row's values in `columns` order; `owned_rows` also takes the owner.
-    """
+class _Definition(Generic[P]):
+    """What every Dataset declares; a subclass adds `rows` and `read`."""
 
     name: str
     description: str
     params: type[P]
     columns: tuple[Column, ...]
-    rows: Callable[[Store, P], Rows] | None = None
-    owned_rows: Callable[[Store, P, UserId], Rows] | None = None
-
-    def __post_init__(self) -> None:
-        if (self.rows is None) == (self.owned_rows is None):
-            raise ValueError(f"Dataset {self.name} needs exactly one of rows and owned_rows")
-
-    @property
-    def owned(self) -> bool:
-        return self.owned_rows is not None
 
     def parse(self, params: dict[str, Any] | None) -> P:
         """Validate raw params, raising `InvalidParams` with the first error on one line."""
@@ -146,18 +134,8 @@ class Dataset(Generic[P]):
             message = first["msg"] if not where else f"{where}: {first['msg']}"
             raise InvalidParams(f"{self.name} params: {message}") from None
 
-    def read(self, store: Store, params: P, owner: UserId | None = None) -> FrameData:
-        """The Dataset as a frame, raising `TooManyRows` past `ROW_CAP`.
-
-        An owned Dataset is read for `owner` and needs one; any other ignores it.
-        """
-        if self.owned_rows is not None:
-            if owner is None:
-                raise ValueError(f"Dataset {self.name} is read for an owner")
-            found = self.owned_rows(store, params, owner)
-        else:
-            assert self.rows is not None
-            found = self.rows(store, params)
+    def _frame(self, found: Rows) -> FrameData:
+        """`found` as a frame, raising `TooManyRows` past `ROW_CAP`."""
         data = [list(row) for row in found]
         if len(data) > ROW_CAP:
             raise TooManyRows(len(data), ROW_CAP)
@@ -170,6 +148,37 @@ class Dataset(Generic[P]):
             columns=list(self.columns),
             params=self.params.model_json_schema(),
         )
+
+
+@dataclass(frozen=True)
+class Dataset(_Definition[P]):
+    """A Dataset anyone with the namespace's Grant reads in full.
+
+    `rows` returns each row's values in `columns` order.
+    """
+
+    rows: Callable[[Store, P], Rows]
+
+    def read(self, store: Store, params: P) -> FrameData:
+        """The Dataset as a frame, raising `TooManyRows` past `ROW_CAP`."""
+        return self._frame(self.rows(store, params))
+
+
+@dataclass(frozen=True)
+class OwnedDataset(_Definition[P]):
+    """A Dataset of one User's records, which `read` cannot be called without.
+
+    `rows` returns the owner's rows, each row's values in `columns` order.
+    """
+
+    rows: Callable[[Store, P, UserId], Rows]
+
+    def read(self, store: Store, params: P, owner: UserId) -> FrameData:
+        """The Dataset as `owner` holds it, raising `TooManyRows` past `ROW_CAP`."""
+        return self._frame(self.rows(store, params, owner))
+
+
+AnyDataset = Dataset[Any] | OwnedDataset[Any]
 
 
 def _iso_date(value: Any) -> Any:
@@ -244,20 +253,29 @@ class RunParams(_RangeParams):
     universe: str | None = Field(default=None, description="One universe; all if omitted")
 
 
-_PORTFOLIO = "Name of one of your Portfolios; all of them if omitted"
+_PORTFOLIO_DOC = "Name of one of your Portfolios; all of them if omitted"
 
 
-class TradeParams(_Params):
-    portfolio: str | None = Field(default=None, description=_PORTFOLIO)
+class _PortfolioParams(_Params):
+    """Mixed in first, so its field follows the dates in the schema and the explorer's form."""
+
+    portfolio: str | None = Field(default=None, description=_PORTFOLIO_DOC)
 
 
-class PositionParams(_Params):
+class _DateParams(_Params):
     date: IsoDate = Field(description="Date to hold the positions at, to its end in UTC")
-    portfolio: str | None = Field(default=None, description=_PORTFOLIO)
 
 
-class ValueParams(_RangeParams):
-    portfolio: str | None = Field(default=None, description=_PORTFOLIO)
+class TradeParams(_PortfolioParams):
+    pass
+
+
+class PositionParams(_PortfolioParams, _DateParams):
+    pass
+
+
+class ValueParams(_PortfolioParams, _RangeParams):
+    pass
 
 
 def _ids(instruments: list[str] | None) -> list[InstrumentId] | None:
@@ -401,15 +419,22 @@ def _run_rows(store: Store, params: RunParams) -> list[tuple[Any, ...]]:
     )
 
 
-def _owned(store: Store, owner: UserId, name: str | None) -> list[Portfolio]:
-    """`owner`'s Portfolios, or the one named; another User's reads as one not stored."""
+def _held(store: Store, owner: UserId, name: str | None) -> list[tuple[Portfolio, list[Trade]]]:
+    """`owner`'s Portfolios, or the one named, each with its Trades in trade order.
+
+    Another User's Portfolio named reads as one not stored.
+    """
     portfolios = store.portfolios_of(owner)
-    if name is None:
-        return portfolios
-    named = [p for p in portfolios if p.name == name]
-    if not named:
-        raise UnknownPortfolio(f"no portfolio {name!r} of yours")
-    return named
+    if name is not None:
+        portfolios = [p for p in portfolios if p.name == name]
+        if not portfolios:
+            raise UnknownPortfolio(f"no portfolio {name!r} of yours")
+    return [(p, store.trades_of(p.id)) for p in portfolios]
+
+
+def _open(positions: list[PortfolioPosition]) -> list[PortfolioPosition]:
+    """The positions held at a nonzero quantity: a closed one is neither listed nor valued."""
+    return [pos for pos in positions if pos.quantity != 0]
 
 
 def _symbols(store: Store, instruments: Iterable[InstrumentId]) -> dict[InstrumentId, str]:
@@ -422,7 +447,7 @@ def _symbols(store: Store, instruments: Iterable[InstrumentId]) -> dict[Instrume
 
 
 def _trade_rows(store: Store, params: TradeParams, owner: UserId) -> list[tuple[Any, ...]]:
-    held = [(p, store.trades_of(p.id)) for p in _owned(store, owner, params.portfolio)]
+    held = _held(store, owner, params.portfolio)
     symbols = _symbols(store, (t.instrument_id for _, trades in held for t in trades))
     return [
         (
@@ -451,13 +476,17 @@ def _closes(
         return {}
     return {
         (b.bar_date, b.instrument_id): (b.close, b.source)
-        for b in store.resolved_bars(start, end, instruments=wanted, limit=ROW_CAP)
+        # Unlimited: the caller's rows are bounded by its dates and Portfolios, not by Bars.
+        for b in store.resolved_bars(start, end, instruments=wanted)
     }
 
 
 def _position_rows(store: Store, params: PositionParams, owner: UserId) -> list[tuple[Any, ...]]:
     when = params.date
-    held = [(p, store.positions_at(p.id, when)) for p in _owned(store, owner, params.portfolio)]
+    held = [
+        (p, _open(derive_positions(trades, when)))
+        for p, trades in _held(store, owner, params.portfolio)
+    ]
     instruments = [pos.instrument_id for _, positions in held for pos in positions]
     closes = _closes(store, instruments, when, when)
     symbols = _symbols(store, instruments)
@@ -482,27 +511,35 @@ def _position_rows(store: Store, params: PositionParams, owner: UserId) -> list[
 
 
 def _value_rows(store: Store, params: ValueParams, owner: UserId) -> list[tuple[Any, ...]]:
-    held = [(p, store.trades_of(p.id)) for p in _owned(store, owner, params.portfolio)]
-    instruments = {t.instrument_id for _, trades in held for t in trades if not t.voided}
+    held = _held(store, owner, params.portfolio)
+    dates = [
+        params.start + dt.timedelta(days=offset)
+        for offset in range((params.end - params.start).days + 1)
+    ]
+    open_at: dict[tuple[dt.date, str], list[PortfolioPosition]] = {}
+    for when in dates:
+        for p, trades in held:
+            positions = derive_positions(trades, when)
+            # Empty only before the first Trade not voided, as closed positions are still listed.
+            # No row then: a value of zero would chart as a jump from nothing.
+            if positions:
+                open_at[when, p.name] = _open(positions)
+    instruments = {pos.instrument_id for found in open_at.values() for pos in found}
     closes = _closes(store, instruments, params.start, params.end)
     rows: list[tuple[Any, ...]] = []
-    for offset in range((params.end - params.start).days + 1):
-        when = params.start + dt.timedelta(days=offset)
-        for p, trades in held:
-            # A position netted to zero is worth zero whether or not it has a close.
-            held_open = [pos for pos in derive_positions(trades, when) if pos.quantity != 0]
-            priced = [
-                pos.quantity * closes[when, pos.instrument_id][0]
-                for pos in held_open
-                if (when, pos.instrument_id) in closes
-            ]
-            unpriced = len(held_open) - len(priced)
-            value = None if unpriced else sum(priced, 0.0)
-            rows.append((when, p.name, value, len(held_open), unpriced))
+    for (when, name), held_open in open_at.items():
+        priced = [
+            pos.quantity * closes[when, pos.instrument_id][0]
+            for pos in held_open
+            if (when, pos.instrument_id) in closes
+        ]
+        unpriced = len(held_open) - len(priced)
+        value = None if unpriced else sum(priced, 0.0)
+        rows.append((when, name, value, len(held_open), unpriced))
     return rows
 
 
-DATASETS: dict[str, Dataset[Any]] = {
+DATASETS: dict[str, AnyDataset] = {
     d.name: d
     for d in (
         Dataset(
@@ -613,7 +650,7 @@ DATASETS: dict[str, Dataset[Any]] = {
             ),
             rows=_run_rows,
         ),
-        Dataset(
+        OwnedDataset(
             name="trades",
             description=(
                 "Every Trade in your Portfolios, by Portfolio name then trade order, voided ones "
@@ -632,13 +669,14 @@ DATASETS: dict[str, Dataset[Any]] = {
                 _col("note", STR, A, "Free text entered with the Trade"),
                 _col("voided_at", DATETIME, A, "When the Trade was voided; null if it stands"),
             ),
-            owned_rows=_trade_rows,
+            rows=_trade_rows,
         ),
-        Dataset(
+        OwnedDataset(
             name="positions",
             description=(
-                "Your positions at the end of `date` (UTC), one per Portfolio and Instrument, "
-                "from the Trades not voided. The close is the Bar `bars` gives for `date`, "
+                "Your open positions at the end of `date` (UTC), one per Portfolio and "
+                "Instrument, from the Trades not voided; a position netted to zero is closed and "
+                "omitted. The close is the Bar `bars` gives for `date`, "
                 "through the Price Sources with the Session Offset applied; without one, close "
                 "and value are null rather than zero or an earlier close."
             ),
@@ -660,15 +698,16 @@ DATASETS: dict[str, Dataset[Any]] = {
                 _col("value", FLOAT, M, "quantity * close in USD, null without a Bar"),
                 _col("source", STR, A, "Source the close came from"),
             ),
-            owned_rows=_position_rows,
+            rows=_position_rows,
         ),
-        Dataset(
+        OwnedDataset(
             name="portfolio_value",
             description=(
                 "Each of your Portfolios' value in USD at the end of each date in the range, "
                 "its positions valued as `positions` values them. A date on which any open "
                 "position has no close has a null value, never a partial sum, and `unpriced` "
-                "counts those positions."
+                "counts those positions. A Portfolio has no row before its first Trade not "
+                "voided, rather than a value of zero."
             ),
             params=ValueParams,
             columns=(
@@ -678,13 +717,13 @@ DATASETS: dict[str, Dataset[Any]] = {
                 _col("positions", INT, M, "Open positions: Instruments held at a nonzero quantity"),
                 _col("unpriced", INT, M, "Open positions with no close on the date"),
             ),
-            owned_rows=_value_rows,
+            rows=_value_rows,
         ),
     )
 }
 
 
-def lookup(name: str) -> Dataset[Any]:
+def lookup(name: str) -> AnyDataset:
     try:
         return DATASETS[name]
     except KeyError:

@@ -9,6 +9,8 @@ March 2024, days 1 to 5. The store is seeded directly, as in `tests/test_dataset
 - Alice holds `main` (2 BTC for 200 on day 1; 10 ETH for 110 on day 2; a voided buy of 100
   ETH) and `paper` (1 ETH on day 1). Bob holds his own `main` (1 BTC on day 1).
 
+Days, bars and the row helpers are `tests/test_datasets.py`'s.
+
 Each read runs as a woodglue `Caller` set on `current_caller`, as woodglue's JSON-RPC handler
 sets it; `TestExplorerReads` reads over HTTP with each User's Delegated Token, as the explorer
 does.
@@ -19,10 +21,11 @@ from __future__ import annotations
 import json
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any, cast
+from unittest.mock import patch
 
 import pandas as pd
 import pytest
@@ -41,18 +44,10 @@ from woodglue.config import AuthConfig, NamespaceEntry, WoodglueConfig
 from cointoss.app import NotFound, Unauthorized, fragment_entry
 from cointoss.datasets import load
 from cointoss.explorer import chart_frame, chart_spec, param_widgets
-from cointoss.instrument import (
-    ExternalReference,
-    FigiResolution,
-    InstrumentId,
-    InstrumentRegistry,
-    InstrumentType,
-    Observation,
-    Source,
-)
+from cointoss.instrument import InstrumentId, Source
 from cointoss.portfolio import PortfolioKind
-from cointoss.prices import Bar
 from cointoss.store import Store
+from tests.test_datasets import bar, coins, day, iso, pick
 
 CG, YH = Source.COINGECKO, Source.YAHOO
 BTC, ETH = InstrumentId("crypto.native.btc"), InstrumentId("crypto.native.eth")
@@ -61,49 +56,15 @@ ALICE = Caller(user_id="usr_alice", grant_sets=READ)
 BOB = Caller(user_id="usr_bob", grant_sets=READ)
 
 
-def day(n: int) -> date:
-    return date(2024, 3, n)
-
-
-def iso(n: int) -> str:
-    return day(n).isoformat()
-
-
 def noon(n: int) -> datetime:
     return datetime(2024, 3, n, 12, tzinfo=UTC)
-
-
-def coin(store: Store, symbol: str) -> InstrumentId:
-    outcome = InstrumentRegistry().observe(
-        Observation(
-            type=InstrumentType.CRYPTO,
-            symbol=symbol,
-            scope="native",
-            observed_at=day(1),
-            source=CG,
-            references=(ExternalReference.provider_id("coingecko", symbol.lower()),),
-            figi_resolution=FigiResolution.NOT_FOUND,
-        )
-    )
-    assert outcome.instrument is not None
-    store.save_instrument(outcome.instrument)
-    return outcome.instrument.id
-
-
-def bar(instrument: InstrumentId, source: Source, n: int, close: float) -> Bar:
-    """The Bar closing day `n`, under the date `source` stamps it with."""
-    stamped = day(n) + timedelta(days=source.session_offset)
-    fetched = datetime.combine(stamped + timedelta(days=1), datetime.min.time(), UTC)
-    return Bar(
-        instrument_id=instrument, source=source, bar_date=stamped, close=close, fetched_at=fetched
-    )
 
 
 def seed(
     db: Path, alice: str = "usr_alice", bob: str = "usr_bob", anonymous: str | None = None
 ) -> None:
     with Store(db) as store:
-        btc, eth = coin(store, "BTC"), coin(store, "ETH")
+        btc, eth = coins(store, "BTC", "ETH")
         store.upsert_bars(
             [
                 *(bar(btc, CG, n, 100.0 + n) for n in (1, 2, 3, 5)),
@@ -126,12 +87,17 @@ def seed(
 
 
 @pytest.fixture
-def ns() -> Iterator[Namespace]:
+def home() -> Iterator[Path]:
     with TemporaryDirectory() as tmp:
         home = Path(tmp)
         (home / "cointoss.yaml").write_text(yaml.safe_dump({"universes": []}))
         seed(home / "cointoss.db", anonymous=ANONYMOUS.name)
-        yield Namespace.from_dict([fragment_entry(data_dir=home)])
+        yield home
+
+
+@pytest.fixture
+def ns(home: Path) -> Namespace:
+    return Namespace.from_dict([fragment_entry(data_dir=home)])
 
 
 @contextmanager
@@ -151,10 +117,6 @@ def frame(
         result = ns.get("data:frame")(dataset=dataset, params=params)
     answer = json.loads(json.dumps(_serialize_result(result)))
     return [dict(zip(answer["columns"], row, strict=True)) for row in answer["data"]]
-
-
-def pick(rows: list[dict[str, Any]], *names: str) -> list[tuple[Any, ...]]:
-    return [tuple(r[n] for n in names) for r in rows]
 
 
 def test_trades_lists_only_the_callers_trades_with_voided_ones_flagged(ns: Namespace):
@@ -240,12 +202,44 @@ def test_portfolio_value_is_null_on_a_date_any_position_is_unpriced(ns: Namespac
         (iso(5), "main", 400.0 + 150.0, 2, 0),
         (iso(5), "paper", 15.0, 1, 0),
     ]
+    # Bob's first Trade is on day 1: a zero before it would chart as a jump from nothing.
     before = frame(ns, BOB, "portfolio_value", start="2024-02-28", end=iso(1))
-    assert pick(before, "date", "value", "positions", "unpriced") == [
-        ("2024-02-28", 0.0, 0, 0),
-        ("2024-02-29", 0.0, 0, 0),
-        (iso(1), 101.0, 1, 0),
+    assert pick(before, "date", "value", "positions", "unpriced") == [(iso(1), 101.0, 1, 0)]
+
+
+def test_a_closed_position_is_omitted_and_a_portfolio_without_trades_has_no_value(
+    home: Path, ns: Namespace
+):
+    with Store(home / "cointoss.db") as store:
+        paper = next(p for p in store.portfolios_of("usr_alice") if p.name == "paper")
+        store.record_trade(paper.id, ETH, noon(4), -1.0)
+        store.create_portfolio("usr_alice", "empty", PortfolioKind.PAPER)
+        voided = store.create_portfolio("usr_alice", "voided", PortfolioKind.PAPER).id
+        store.void_trade(store.record_trade(voided, BTC, noon(1), 1.0).id, at=noon(2))
+
+    assert pick(frame(ns, ALICE, "positions", date=iso(3)), "portfolio") == [
+        ("main",),
+        ("main",),
+        ("paper",),
     ]
+    assert pick(frame(ns, ALICE, "positions", date=iso(4)), "portfolio") == [("main",), ("main",)]
+    rows = frame(ns, ALICE, "portfolio_value", start=iso(3), end=iso(5))
+    assert pick([r for r in rows if r["portfolio"] != "main"], "date", "portfolio", "value") == [
+        (iso(3), "paper", 13.0),
+        (iso(4), "paper", 0.0),
+        (iso(5), "paper", 0.0),
+    ]
+    with pytest.raises(NotFound):
+        frame(ns, ALICE, "positions", date=iso(3), portfolio="elsewhere")
+    assert frame(ns, ALICE, "positions", date=iso(3), portfolio="voided") == []
+    assert frame(ns, ALICE, "portfolio_value", start=iso(1), end=iso(5), portfolio="empty") == []
+
+
+def test_portfolio_value_is_capped_by_its_rows_not_the_bars_it_reads(ns: Namespace):
+    # Main reads nine Bars for days 1 to 5, BTC's four and ETH's five, for five rows.
+    with patch("cointoss.datasets.ROW_CAP", 5):
+        rows = frame(ns, ALICE, "portfolio_value", start=iso(1), end=iso(5), portfolio="main")
+    assert len(rows) == 5
 
 
 def test_a_read_needs_a_user_and_auth_disabled_reads_as_anonymous(ns: Namespace):
