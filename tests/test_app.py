@@ -16,7 +16,7 @@ import asyncio
 import json
 from collections.abc import AsyncIterator, Iterator
 from contextlib import ExitStack, contextmanager
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
@@ -37,6 +37,8 @@ from woodglue.cli import load_namespaces
 from woodglue.config import NamespaceEntry
 
 from cointoss.app import (
+    BACKFILL_TRIGGER,
+    DEFAULT_BACKFILL_SCHEDULE,
     DEFAULT_SWEEP_SCHEDULE,
     SWEEP_TRIGGER,
     BadRequest,
@@ -46,8 +48,15 @@ from cointoss.app import (
     fragment_entry,
     sweep_lock,
 )
-from cointoss.instrument import Source
+from cointoss.instrument import (
+    ExternalReference,
+    InstrumentId,
+    InstrumentType,
+    Observation,
+    Source,
+)
 from cointoss.store import Store
+from cointoss.universe import UniverseDefinition, UniverseParameters
 
 FIXTURE = Path(__file__).parent / "data" / "coingecko_markets_top250.json"
 DAY1_AT = datetime(2026, 9, 30, 0, 5, tzinfo=UTC)
@@ -311,6 +320,80 @@ async def test_the_sweep_reconciles_declared_universes_first(ns: Namespace):
         ("cg-top-10", "created"),
     ]
     assert as_json(swept)["day"] == "2026-09-30"
+
+
+def test_the_backfill_runs_on_its_own_daily_trigger(ns: Namespace):
+    backfill_node = ns.get("data:backfill")
+    assert "api" not in backfill_node.tags
+    node, trigger = ns.get_trigger(BACKFILL_TRIGGER)
+    assert node is backfill_node
+    assert trigger.schedule == DEFAULT_BACKFILL_SCHEDULE == "0 1 * * *"
+
+
+def bitcoin_member(data_dir: Path) -> None:
+    """A store holding Bitcoin as a member since day 1, with no bars."""
+    with Store(data_dir / "cointoss.db") as store:
+        registry = store.load_registry()
+        registry.observe(
+            Observation(
+                type=InstrumentType.CRYPTO,
+                symbol="btc",
+                scope="native",
+                observed_at=DAY1_AT.date(),
+                source=Source.COINGECKO,
+                references=(ExternalReference.provider_id("coingecko", "bitcoin"),),
+            )
+        )
+        store.save_instruments(registry.instruments())
+        store.save_universe(
+            UniverseDefinition.create(
+                "cg-top-10", UniverseParameters(enter_rank=10, exit_rank=12), DAY1_AT.date()
+            )
+        )
+        store.record_membership("cg-top-10", DAY1_AT.date(), [InstrumentId(BTC)], run_at=DAY1_AT)
+
+
+@contextmanager
+def history(at: datetime) -> Iterator[None]:
+    """CoinGecko answering a 90-day `market_chart` up to `at`'s 00:00, and Yahoo with nothing."""
+    end = datetime.combine(at.date(), time(), UTC)
+    chart = {
+        series: [[int((end - timedelta(days=n)).timestamp() * 1000), 80000.0] for n in range(91)]
+        for series in ("prices", "market_caps", "total_volumes")
+    }
+    response = MagicMock()
+    response.body = json.dumps(chart).encode()
+    client = MagicMock()
+    client.fetch = AsyncMock(return_value=response)
+    with (
+        patch("cointoss.sources.coingecko.AsyncHTTPClient", return_value=client),
+        patch("cointoss.backfill.get_prices", side_effect=ValueError("no data")),
+        patch("cointoss.app.utcnow", return_value=at),
+    ):
+        yield
+
+
+async def test_the_backfill_refuses_an_instance_with_no_store(ns: Namespace, data_dir: Path):
+    with pytest.raises(NotInitialized, match="cointoss init"):
+        await ns.get("data:backfill")()
+    assert not (data_dir / "cointoss.db").exists()
+
+
+async def test_the_backfill_writes_under_the_sweep_lock(
+    ns: Namespace, data_dir: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr("cointoss.app.LOCK_POLL", 0.01)
+    bitcoin_member(data_dir)
+    with sweep_lock(data_dir), history(DAY2_AT):
+        with pytest.raises(SweepInProgress, match="still held"):
+            await ns.get("data:backfill")(days=90, wait=0.05)
+    with Store(data_dir / "cointoss.db") as store:
+        assert store.bars_for(BTC, DAY1_AT.date() - timedelta(days=90), DAY2_AT.date()) == []
+
+    with history(DAY2_AT):
+        report = await ns.get("data:backfill")(days=90)
+    assert report.coingecko_bars == 91
+    assert report.rejected == {InstrumentId(BTC): "BTC-USD: no Yahoo history: no data"}
 
 
 async def test_members_returns_each_member_with_its_bar(seeded: Namespace):
