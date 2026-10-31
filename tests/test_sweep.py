@@ -345,7 +345,7 @@ async def test_a_sweep_after_the_bar_window_records_membership_but_no_bars(store
 
     assert report.bars_skipped_late
     assert report.bars == 0
-    assert store.bars_for(BTC, DAY, DAY) == []
+    assert store.bars_for(BTC, DAY, DAY, source=Source.COINGECKO) == []
     assert [r.definition for r in report.runs] == ["cg-top-100", "cg-top-10"]
     assert len(store.members_at("cg-top-10", DAY)) == 10
 
@@ -358,5 +358,6 @@ async def test_the_bar_window_is_the_callers_to_set(store: Store):
     report = await run(store, at=later, bar_window=timedelta(hours=6))
 
     assert not report.bars_skipped_late
-    (bar,) = store.bars_for(BTC, DAY + timedelta(days=1), DAY + timedelta(days=1))
+    next_day = DAY + timedelta(days=1)
+    (bar,) = store.bars_for(BTC, next_day, next_day, source=Source.COINGECKO)
     assert bar.fetched_at == later

@@ -188,7 +188,9 @@ _INSTRUMENTS = "Instrument Ids to narrow to, each read as its survivor; all if o
 class PriceParams(_RangeParams):
     instruments: list[str] | None = Field(default=None, description=_INSTRUMENTS)
     source: Source | None = Field(
-        default=None, description="Read only this source's bars instead of the Price Sources"
+        default=None,
+        description="Read only this source's bars, under their stamped dates, instead of the "
+        "Price Sources",
     )
     universe: str | None = Field(
         default=None, description="Keep a row only if its Instrument was a member on its date"
@@ -381,11 +383,13 @@ DATASETS: dict[str, Dataset[Any]] = {
             name="bars",
             description=(
                 "One Bar per Instrument and date, resolved through its Price Sources unless "
-                "`source` names one."
+                "`source` names one. Resolved Bars are dated by the session they close, so "
+                "CoinGecko's Bar stamped D+1 is D's (Session Offset); with `source`, Bars carry "
+                "the date that source stamped."
             ),
             params=PriceParams,
             columns=(
-                _col("date", DATE, T, "Session date"),
+                _col("date", DATE, T, "Session closed; the stamped date with `source`"),
                 INSTRUMENT_ID,
                 SYMBOL,
                 _col("source", STR, A, "Source the Bar came from"),
@@ -411,11 +415,11 @@ DATASETS: dict[str, Dataset[Any]] = {
             ),
             params=PriceParams,
             columns=(
-                _col("date", DATE, T, "Date of the later close"),
+                _col("date", DATE, T, "Date of the later close, dated as in `bars`"),
                 INSTRUMENT_ID,
                 SYMBOL,
                 _col("source", STR, A, "Source both closes came from"),
-                _col("prev_date", DATE, A, "Date of the earlier close"),
+                _col("prev_date", DATE, A, "Date of the earlier close, dated as in `bars`"),
                 _col("gap_days", INT, A, "Days between the two closes; 1 when consecutive"),
                 _col("close", FLOAT, M, "The later close"),
                 _col("simple_return", FLOAT, M, "close / previous close - 1"),

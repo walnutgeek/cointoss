@@ -46,6 +46,7 @@ from cointoss.app import (
     fragment_entry,
     sweep_lock,
 )
+from cointoss.instrument import Source
 from cointoss.store import Store
 
 FIXTURE = Path(__file__).parent / "data" / "coingecko_markets_top250.json"
@@ -205,7 +206,7 @@ async def test_a_second_fire_on_the_same_day_is_a_no_op(ns: Namespace, data_dir:
     assert again.report is None
     with Store(data_dir / "cointoss.db") as store:
         assert len(store.load_evaluation_runs("cg-top-100")) == 1
-        (bar,) = store.bars_for(BTC, DAY1_AT.date(), DAY1_AT.date())
+        (bar,) = store.bars_for(BTC, DAY1_AT.date(), DAY1_AT.date(), source=Source.COINGECKO)
         assert bar.close == 83227
 
 
@@ -228,7 +229,7 @@ async def test_a_forced_resweep_keeps_the_days_bars_and_runs(ns: Namespace, data
     with Store(data_dir / "cointoss.db") as store:
         assert len(store.load_evaluation_runs("cg-top-100")) == 1
         assert store.restatements_for(BTC) == []
-        (bar,) = store.bars_for(BTC, DAY1_AT.date(), DAY1_AT.date())
+        (bar,) = store.bars_for(BTC, DAY1_AT.date(), DAY1_AT.date(), source=Source.COINGECKO)
         assert (bar.close, bar.fetched_at) == (83227, DAY1_AT)
 
 
@@ -313,12 +314,13 @@ async def test_the_sweep_reconciles_declared_universes_first(ns: Namespace):
 
 
 async def test_members_returns_each_member_with_its_bar(seeded: Namespace):
-    view = call(seeded, "members", universe="cg-top-10", date="2026-10-01")
+    """Day 2's CoinGecko bar is the price that closes day 1 (Session Offset)."""
+    view = call(seeded, "members", universe="cg-top-10", date="2026-09-30")
     assert view["universe"] == "cg-top-10"
-    assert view["date"] == "2026-10-01"
+    assert view["date"] == "2026-09-30"
     members = {m["instrument_id"]: m for m in view["members"]}
     assert len(members) == 10
-    assert GNO in members and BNB not in members
+    assert BNB in members and GNO not in members
     btc = members[BTC]
     assert btc["symbol"] == "BTC"
     assert btc["name"] == "Bitcoin"
@@ -326,6 +328,8 @@ async def test_members_returns_each_member_with_its_bar(seeded: Namespace):
     assert btc["volume"] == 28071563826
     assert btc["market_cap"] == 1672100896326
     assert btc["source"] == "coingecko"
+    later = call(seeded, "members", universe="cg-top-10", date="2026-10-01")
+    assert {m["close"] for m in later["members"]} == {None}
 
 
 async def test_changes_reports_joins_and_leaves_by_date(seeded: Namespace):
@@ -339,10 +343,11 @@ async def test_changes_reports_joins_and_leaves_by_date(seeded: Namespace):
 
 
 async def test_bars_returns_the_stored_history(seeded: Namespace):
-    bars = call(seeded, "bars", instrument_id=BTC, start="2026-09-30", end="2026-10-01")
+    """Through Price Sources, so dated by the session each CoinGecko bar closes."""
+    bars = call(seeded, "bars", instrument_id=BTC, start="2026-09-29", end="2026-10-01")
     assert [(b["bar_date"], b["close"]) for b in bars] == [
-        ("2026-09-30", 83227),
-        ("2026-10-01", 84000.0),
+        ("2026-09-29", 83227),
+        ("2026-09-30", 84000.0),
     ]
     assert bars[0]["fetched_at"] == "2026-09-30T00:05:00Z"
 

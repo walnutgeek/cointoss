@@ -239,7 +239,10 @@ def test_two_sources_disagreeing_each_keep_their_bar(db_path: Path):
 
 
 def test_read_falls_back_per_date_through_price_sources(db_path: Path):
-    """Yahoo lists the coin only from D3; CoinGecko supplies the earlier stretch."""
+    """Yahoo lists the coin only from D3; CoinGecko supplies the earlier stretch.
+
+    CoinGecko's bar stamped D+1 closes D (Session Offset), so D1 and D2 are its D2 and D3.
+    """
     d1, d2, d3, d4 = (date(2024, 3, n) for n in (1, 2, 3, 4))
     with Store(db_path) as store:
         (coin,) = coins(store, "NEW")
@@ -252,8 +255,8 @@ def test_read_falls_back_per_date_through_price_sources(db_path: Path):
         read = store.bars_for(coin, d1, d4)
 
     assert [(b.bar_date, b.source, b.close) for b in read] == [
-        (d1, Source.COINGECKO, 1.0),
-        (d2, Source.COINGECKO, 2.0),
+        (d1, Source.COINGECKO, 2.0),
+        (d2, Source.COINGECKO, 3.0),
         (d3, Source.YAHOO, 10.0),
         (d4, Source.YAHOO, 11.0),
     ]
@@ -342,7 +345,7 @@ def test_a_daily_market_chart_refetch_is_not_a_restatement(db_path: Path):
         assert btc == btc_id
         store.upsert_bars(bars_from_market_chart(btc, first, CG_FETCHED))
         written = store.upsert_bars(bars_from_market_chart(btc, second, CG_NEXT_DAY))
-        read = store.bars_for(btc, date(2026, 9, 23), date(2026, 9, 30))
+        read = store.bars_for(btc, date(2026, 9, 23), date(2026, 9, 30), source=Source.COINGECKO)
 
     assert written == []
     finished = next(b for b in read if b.bar_date == date(2026, 9, 29))
@@ -439,7 +442,8 @@ def test_market_cap_round_trips_and_bar_holders_are_listed_by_source_and_date(db
         chart_bars = bars_from_market_chart(btc, market_chart(), CG_FETCHED)
         store.upsert_bars([*chart_bars, bar(eth, Source.YAHOO, date(2026, 9, 23), 4000.0)])
 
-        (read,) = store.bars_for(btc, date(2026, 9, 23), date(2026, 9, 23))
+        day = date(2026, 9, 23)
+        (read,) = store.bars_for(btc, day, day, source=Source.COINGECKO)
         assert read.market_cap == pytest.approx(1731252948699.2454)
         assert store.instruments_with_bars(Source.COINGECKO, date(2026, 9, 23)) == {btc}
         assert store.instruments_with_bars(Source.YAHOO, date(2026, 9, 23)) == {eth}

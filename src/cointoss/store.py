@@ -33,7 +33,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 from collections.abc import Callable
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
 from types import TracebackType
@@ -678,6 +678,18 @@ def _marks(n: int) -> str:
 # A Bar's position in its survivor's Price Sources, 0 when the source is not among them. The
 # commas around both sides keep one source name from matching inside another.
 _SOURCE_RANK = "instr(',' || s.price_sources || ',', ',' || b.source || ',')"
+
+# The session a Bar `b` closes, its stamped date less its source's Session Offset (ADR-0009).
+_SESSION_DATE = (
+    "CASE b.source "
+    + "".join(
+        f"WHEN '{s.value}' THEN date(b.bar_date, '-{s.session_offset} days') "
+        for s in Source
+        if s.session_offset
+    )
+    + "ELSE b.bar_date END"
+)
+_MAX_SESSION_OFFSET = max(s.session_offset for s in Source)
 
 
 class BarRecord(NamedTuple):
@@ -1725,8 +1737,13 @@ class Store:
         listing date still has its earlier history from CoinGecko. Each bar says which source
         it came from. A bar from a source outside the Price Sources is kept but never chosen.
 
-        `source` bypasses the preference and reads that one source's bars, which is how a
-        disagreement between vendors is inspected.
+        Resolved bars are keyed by the session they close, not the date stamped on them (Session
+        Offset, ADR-0009): CoinGecko's bar stamped D+1 is returned as D's, so a fallback between
+        Yahoo and CoinGecko splices bars that close the same session. `start` and `end` bound
+        the session.
+
+        `source` bypasses the preference and reads that one source's bars as stored, under their
+        stamped dates, which is how a disagreement between vendors is inspected.
 
         Supersession is folded (ADR-0004). The Instrument is chased to its survivor, whose Price
         Sources decide, and bars stored under anything superseded into it are candidates too;
@@ -1744,6 +1761,10 @@ class Store:
             else tuple(Source(s) for s in survivor.price_sources.split(","))
         )
         rank = {s: i for i, s in enumerate(preference)}
+        lead = 0 if source is not None else max(s.session_offset for s in preference)
+
+        def session(held: BarRow) -> date:
+            return held.bar_date if source is not None else held.source.session_of(held.bar_date)
 
         def precedence(held: BarRow) -> tuple[int, bool, int]:
             return (
@@ -1758,13 +1779,19 @@ class Store:
             instrument=list(family),
             source=list(preference),
             gte__bar_date=start,
-            lte__bar_date=end,
+            lte__bar_date=end + timedelta(days=lead),
         ):
-            current = chosen.get(held.bar_date)
+            day = session(held)
+            if not start <= day <= end:
+                continue
+            current = chosen.get(day)
             if current is None or precedence(held) < precedence(current):
-                chosen[held.bar_date] = held
+                chosen[day] = held
         instrument = InstrumentId(survivor.instrument_id)
-        return [self._bar_from(chosen[day], instrument) for day in sorted(chosen)]
+        return [
+            self._bar_from(chosen[day], instrument).model_copy(update={"bar_date": day})
+            for day in sorted(chosen)
+        ]
 
     def instruments_with_bars(self, source: Source, day: date) -> set[InstrumentId]:
         """The Instruments, as stored, holding a bar from `source` for `day`."""
@@ -1784,7 +1811,9 @@ class Store:
         (latest,) = cursor.fetchone()
         return None if latest is None else date.fromisoformat(latest)
 
-    def member_bars(self, definition: str, when: date) -> dict[InstrumentId, Bar | None]:
+    def member_bars(
+        self, definition: str, when: date, *, source: Source | None = None
+    ) -> dict[InstrumentId, Bar | None]:
         """The resolved bar on `when` for every member of a universe on that date.
 
         Keys are survivors, as `members_at` returns them, and each bar is read through
@@ -1792,11 +1821,14 @@ class Store:
         with no bar from any of its Price Sources maps to None,
         so a gap in the aligned input is visible rather than silently narrowing the universe.
         A date before the universe's first entry raises `NotYetStarted`, as `members_at` does.
+
+        The bar is the one closing the session `when`; with `source`, that source's bar stamped
+        `when`, as `bars_for` reads them.
         """
         held: dict[InstrumentId, Bar | None] = {}
         for member in self.members_at(definition, when):
             instrument_id = InstrumentId(member)
-            bars = self.bars_for(instrument_id, when, when)
+            bars = self.bars_for(instrument_id, when, when, source=source)
             held[instrument_id] = bars[0] if bars else None
         return held
 
@@ -1825,7 +1857,9 @@ class Store:
         """Every Instrument's bars from `start` to `end` inclusive, as `bars_for` resolves them.
 
         One row per survivor and date, chosen as `bars_for` chooses (`_picked_cte`); `source`
-        reads that one source instead. Rows are ordered by Instrument Id, then date.
+        reads that one source instead. Resolved rows are dated by the session closed, `source`
+        rows by the stamped date, as in `bars_for`; `start` and `end` bound that date. Rows are
+        ordered by Instrument Id, then date.
 
         `instruments` narrows to those Instruments' survivors, refusing any not stored with
         `UnknownInstrument`. `universe` keeps a row only if its survivor was a member on the
@@ -1835,11 +1869,20 @@ class Store:
         """
         scope, args = self._bar_scope(start, end, instruments, universe)
         source_filter, source_args = self._source_filter(source)
-        member = self._member_filter(universe, ever, "b.bar_date", "f.survivor_row")
+        on, lead = self._session_date(source)
+        member = self._member_filter(universe, ever, on, "f.survivor_row")
         ctes = f"{scope}, " + self._picked_cte(
-            f"b.bar_date >= ? AND b.bar_date <= ? AND {source_filter} AND {member}"
+            on,
+            f"b.bar_date >= ? AND b.bar_date <= ? AND {on} >= ? AND {on} <= ? "
+            f"AND {source_filter} AND {member}",
         )
-        args += [start.isoformat(), end.isoformat(), *source_args]
+        args += [
+            start.isoformat(),
+            (end + timedelta(days=lead)).isoformat(),
+            start.isoformat(),
+            end.isoformat(),
+            *source_args,
+        ]
         columns = (
             "p.bar_date, s.instrument_id, s.symbol, p.source, p.open, p.high, p.low, p.close, "
             "p.adj_close, p.volume, p.market_cap, p.fetched_at"
@@ -1898,7 +1941,8 @@ class Store:
         resolved Bar however many days apart, and only when both came from one source: where
         the resolved source switches between them, that date has no pair, since a return across
         two vendors' prices would be partly a difference between vendors. The first pair in the
-        range reaches back to the last Bar before `start`, so `start` has one.
+        range reaches back to the last Bar before `start`, so `start` has one. Both dates are
+        dated as `resolved_bars` dates them: by the session closed, or with `source` as stamped.
 
         `instruments`, `universe` and `ever` narrow as in `resolved_bars`; the universe test is on
         the later date of the pair. Rows are ordered by Instrument Id, then date. More than
@@ -1909,16 +1953,24 @@ class Store:
         # The earlier Bar of a pair may precede the range and the universe, so `picked` keeps
         # every Bar up to `end` of a survivor that was ever a member; the point-in-time test
         # waits for the pairs.
-        ever_member = self._member_filter(universe, True, "b.bar_date", "f.survivor_row")
+        on, lead = self._session_date(source)
+        ever_member = self._member_filter(universe, True, on, "f.survivor_row")
         ctes = (
             f"{scope}, "
-            + self._picked_cte(f"b.bar_date <= ? AND {source_filter} AND {ever_member}")
+            + self._picked_cte(
+                on, f"b.bar_date <= ? AND {on} <= ? AND {source_filter} AND {ever_member}"
+            )
             + ", paired AS (SELECT survivor_row, source, bar_date, close, "
             "LAG(bar_date) OVER w AS prev_date, LAG(close) OVER w AS prev_close, "
             "LAG(source) OVER w AS prev_source FROM picked WHERE pick = 1 "
             "WINDOW w AS (PARTITION BY survivor_row ORDER BY bar_date))"
         )
-        args += [end.isoformat(), *source_args, start.isoformat()]
+        args += [
+            (end + timedelta(days=lead)).isoformat(),
+            end.isoformat(),
+            *source_args,
+            start.isoformat(),
+        ]
         member = self._member_filter(universe, ever, "p.bar_date", "p.survivor_row")
         columns = (
             "p.bar_date, s.instrument_id, s.symbol, p.source, p.prev_date, p.prev_close, p.close"
@@ -2064,17 +2116,18 @@ class Store:
         return sql, args
 
     @staticmethod
-    def _picked_cte(where: str) -> str:
+    def _picked_cte(on: str, where: str) -> str:
         """The CTE ranking each survivor's candidate Bars per date; `pick = 1` is the chosen one.
 
         The precedence of `bars_for`: the survivor's Price Sources in order, then the survivor's
-        own Bar before a predecessor's, then the earliest-minted predecessor's. `where` filters
-        the candidates, over `fold f`, `Bar b` and the survivor's row `s`.
+        own Bar before a predecessor's, then the earliest-minted predecessor's. `on` is the
+        date a Bar is ranked and returned under, from `_session_date`. `where` filters the
+        candidates, over `fold f`, `Bar b` and the survivor's row `s`.
         """
         return (
-            "picked AS (SELECT f.survivor_row, b.bar_date, b.source, b.open, b.high, b.low, "
-            "b.close, b.adj_close, b.volume, b.market_cap, b.fetched_at, "
-            "ROW_NUMBER() OVER (PARTITION BY f.survivor_row, b.bar_date "
+            f"picked AS (SELECT f.survivor_row, {on} AS bar_date, b.source, b.open, b.high, "
+            "b.low, b.close, b.adj_close, b.volume, b.market_cap, b.fetched_at, "
+            f"ROW_NUMBER() OVER (PARTITION BY f.survivor_row, {on} "
             f"ORDER BY {_SOURCE_RANK}, b.instrument != f.survivor_row, f.mint_seq) AS pick "
             "FROM fold f CROSS JOIN Bar b ON b.instrument = f.member_row "
             f"JOIN Instrument s ON s.instrument_row_id = f.survivor_row WHERE {where})"
@@ -2091,6 +2144,17 @@ class Store:
             f"EXISTS (SELECT 1 FROM spans x WHERE x.survivor_row = {survivor} "
             f"AND x.valid_from <= {on} AND (x.valid_to IS NULL OR x.valid_to > {on}))"
         )
+
+    @staticmethod
+    def _session_date(source: Source | None) -> tuple[str, int]:
+        """The date a bulk read dates a Bar `b` by, with the most it can trail the stamped date.
+
+        The session closed when resolving through Price Sources, the stamped date when reading
+        one `source`. The lead lets a read bound the stamped `bar_date` too, which is indexed.
+        """
+        if source is None:
+            return _SESSION_DATE, _MAX_SESSION_OFFSET
+        return "b.bar_date", 0
 
     @staticmethod
     def _source_filter(source: Source | None) -> tuple[str, list[Any]]:

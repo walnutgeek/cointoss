@@ -35,7 +35,7 @@ whose bearer token `cointoss token` prints; no Identity Provider is configured y
 | `cointoss.sources.coingecko` | Coin list, markets, detail, OHLC, market chart. Cached. |
 | `cointoss.universe` | `UniverseDefinition` with a revision log, Inclusions and Exclusions, pure rank-band evaluation. ADR-0007. |
 | `cointoss.prices` | `Bar`, `CorporateAction`, `Restatement`, source mapping, split-aware restatement detection. ADR-0009. |
-| `cointoss.store` | The only module that touches SQL. Sixteen tables, enforced pragmas, `SchemaVersion`. Membership by date or Instrument, bars resolved through Price Sources. ADR-0008. |
+| `cointoss.store` | The only module that touches SQL. Sixteen tables, enforced pragmas, `SchemaVersion`. Membership by date or Instrument, bars resolved through Price Sources and dated by the session closed (Session Offset). ADR-0008. |
 | `cointoss.ingest` | Pinning a typed ticker: the mandatory FIGI attempt, resolve or mint, retrying an unresolved Instrument. ADR-0004. The daily market sweep (#19): CoinGecko `markets` to Instruments, membership and the day's bars with market cap, written only within the bar window after 00:00 UTC and never over a bar already stored. |
 | `cointoss.config` | Universe Declarations in config, reconciled into stored Universe Definitions (#20). `Settings`: the data directory (`--data-dir`, `COINTOSS_HOME`, `~/.local/share/cointoss`), its `cointoss.db` and optional `cointoss.yaml` with `top_n` and `bar_window_hours` (#21). |
 | `cointoss.app` | The `CointossApp` namespace fragment (#21): a `sweep` node on a daily cron trigger, idempotent within a UTC day and serialised by a lock file, and read nodes `members`, `changes`, `bars`, `universes_of`, `runs`, `universes` served over woodglue JSON-RPC. |
@@ -129,8 +129,10 @@ early, because accumulated history is the one thing that cannot be produced late
       admission (`anyone`, with no default Roles) and roles.
 6. **Yahoo crypto bars.** Decided 2026-10-30. Years of history for valuing a portfolio and
    for returns, beyond CoinGecko's 365-day window. In order:
-   1. **Session Offset on read (#31).** CoinGecko's bar stamped D+1 closes D; resolved reads align
-      the two sources so a per-date fallback splices like with like (ADR-0009 amendment).
+   1. **Session Offset on read (#31).** Done. CoinGecko's bar stamped D+1 closes D; resolved
+      reads (`bars_for`, `member_bars`, the `bars` and `returns` datasets) date each bar by the
+      session it closes, so a per-date fallback splices like with like (ADR-0009 amendment).
+      Reads of one source keep the stamped date.
    2. **History backfill (#26).** One `backfill` for both sources, filling only dates with no
       stored bar: CoinGecko `market_chart` for its window, and Yahoo `period="max"` for coins whose
       `{SYMBOL}-USD` pair passes a price-agreement check against CoinGecko. Price Sources stay

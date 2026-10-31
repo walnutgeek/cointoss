@@ -93,6 +93,7 @@ from cointoss.config import (
     ensure_universes,
     resolve_data_dir,
 )
+from cointoss.instrument import Source
 from cointoss.prices import as_utc
 from cointoss.store import Store, UnknownUniverse
 from cointoss.universe import UniverseError
@@ -522,7 +523,9 @@ def _universe_status(store: Store, name: str, today: dt.date) -> str:
     if not runs:
         return f"{name}: no runs yet"
     run = max(runs, key=lambda r: (r.source_asof, r.run_at))
-    bar_by_member = store.member_bars(name, run.source_asof)
+    # What the run's own sweep wrote: CoinGecko bars stamped with its date, which close the
+    # session before (Session Offset), so a resolved read of that date finds none yet.
+    bar_by_member = store.member_bars(name, run.source_asof, source=Source.COINGECKO)
     priced = sum(bar is not None for bar in bar_by_member.values())
     behind = "" if run.source_asof >= today else f"; BEHIND, today is {today}"
     return (

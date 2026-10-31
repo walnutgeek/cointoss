@@ -243,9 +243,7 @@ def test_the_folded_cross_cutting_read_is_still_served_by_the_index(db_path: Pat
 def test_bars_stored_under_a_predecessor_are_read_as_the_survivors(db_path: Path):
     with Store(db_path) as store:
         btc, wbtc = coins(store, "BTC", "WBTC")
-        store.upsert_bars(
-            [bar(wbtc, Source.COINGECKO, D1, 1.0), bar(btc, Source.COINGECKO, D2, 2.0)]
-        )
+        store.upsert_bars([bar(wbtc, Source.YAHOO, D1, 1.0), bar(btc, Source.YAHOO, D2, 2.0)])
         supersede(store, wbtc, btc)
         bars = store.bars_for(btc, D1, D4)
         assert [(b.instrument_id, b.bar_date, b.close) for b in bars] == [
@@ -258,9 +256,7 @@ def test_bars_stored_under_a_predecessor_are_read_as_the_survivors(db_path: Path
 def test_on_one_date_and_source_the_survivors_own_bar_wins(db_path: Path):
     with Store(db_path) as store:
         btc, wbtc = coins(store, "BTC", "WBTC")
-        store.upsert_bars(
-            [bar(wbtc, Source.COINGECKO, D1, 1.5), bar(btc, Source.COINGECKO, D1, 1.0)]
-        )
+        store.upsert_bars([bar(wbtc, Source.YAHOO, D1, 1.5), bar(btc, Source.YAHOO, D1, 1.0)])
         supersede(store, wbtc, btc)
         assert [b.close for b in store.bars_for(btc, D1, D1)] == [1.0]
 
@@ -280,7 +276,7 @@ def test_member_bars_are_keyed_by_survivor(db_path: Path):
         btc, wbtc, eth = coins(store, "BTC", "WBTC", "ETH")
         define(store)
         store.record_membership("top", D1, [wbtc, eth])
-        store.upsert_bars([bar(wbtc, Source.COINGECKO, D2, 1.0)])
+        store.upsert_bars([bar(wbtc, Source.YAHOO, D2, 1.0)])
         supersede(store, wbtc, btc)
         held = store.member_bars("top", D2)
         assert set(held) == {btc, eth}
