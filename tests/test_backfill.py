@@ -323,6 +323,19 @@ async def test_a_yahoo_pair_another_instrument_holds_is_not_paired_twice(store: 
     assert stamped(store, twin, YH) == []
 
 
+async def test_a_coin_with_a_malformed_bar_fails_alone(store: Store):
+    """A negative close from CoinGecko fails that coin's run; the coins after it still fill."""
+    btc, *_ = seed(store)
+    with sources(), patch.dict(COINS, {"bitcoin": ("btc", -60000.0)}):
+        report = await run(store)
+
+    assert "is negative" in report.failed[btc]
+    assert stamped(store, btc, CG) == []
+    window = [WINDOW_START + timedelta(days=n) for n in range(366)]
+    for instrument_id in (ETH, SOL, BEAM):
+        assert stamped(store, instrument_id, CG) == window
+
+
 async def test_a_window_shorter_than_90_days_is_refused(store: Store):
     seed(store)
     with sources(), pytest.raises(ValueError, match="90"):

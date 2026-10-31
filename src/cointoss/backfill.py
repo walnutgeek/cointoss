@@ -275,11 +275,13 @@ class _Run:
             self.failed[instrument_id] = f"CoinGecko market_chart {coin_id}: {exc}"
             return
         midnights = _midnight_days(chart)
-        bars = [
-            b
-            for b in bars_from_market_chart(instrument_id, chart, self.moment)
-            if b.bar_date in midnights
-        ]
+        try:
+            charted = bars_from_market_chart(instrument_id, chart, self.moment)
+        except PriceError as exc:
+            log.warning("backfill: %s market_chart unreadable: %s", coin_id, exc)
+            self.failed[instrument_id] = f"CoinGecko market_chart {coin_id}: {exc}"
+            return
+        bars = [b for b in charted if b.bar_date in midnights]
         if not bars:
             return
         async with self.lock():

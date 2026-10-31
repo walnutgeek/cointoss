@@ -493,8 +493,8 @@ def bars_from_market_chart(
     (`cointoss.sources.coingecko.MARKET_CHART_MAX_DAYS`), and asking for more raises there
     rather than arriving here as a short result.
     """
-    volume_by_day = _first_by_day(payload.total_volumes)
-    market_cap_by_day = _first_by_day(payload.market_caps)
+    volume_by_day = _nonnegative(_first_by_day(payload.total_volumes))
+    market_cap_by_day = _nonnegative(_first_by_day(payload.market_caps))
     close_by_day = _first_by_day(payload.prices)
     return [
         Bar(
@@ -508,6 +508,14 @@ def bars_from_market_chart(
         )
         for bar_date, close in sorted(close_by_day.items())
     ]
+
+
+def _nonnegative(by_day: dict[date, float]) -> dict[date, float]:
+    """`by_day` without its negative values, which CoinGecko has served for a market cap.
+
+    A volume or market cap is not a price, so a garbled one is dropped rather than the bar.
+    """
+    return {day: value for day, value in by_day.items() if value >= 0}
 
 
 def _first_by_day(points: Sequence[MarketChartPoint]) -> dict[date, float]:

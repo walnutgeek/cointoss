@@ -397,6 +397,26 @@ def test_market_cap_is_matched_by_day_and_not_compared_as_a_restatement():
     assert detect_restatements(stored, revised, []) == []
 
 
+def test_a_negative_market_cap_or_volume_is_read_as_absent():
+    """CoinGecko has served a negative market cap (USDB, 2026-09-18); the close still stands."""
+    payload = market_chart()
+    first_cap, first_volume = payload.market_caps[0], payload.total_volumes[0]
+    garbled = payload.model_copy(
+        update={
+            "market_caps": [first_cap.model_copy(update={"value": -1.0}), *payload.market_caps[1:]],
+            "total_volumes": [
+                first_volume.model_copy(update={"value": -1.0}),
+                *payload.total_volumes[1:],
+            ],
+        }
+    )
+
+    first = bars_from_market_chart(BTC, garbled, FETCHED)[0]
+
+    assert first.close == bars_from_market_chart(BTC, payload, FETCHED)[0].close
+    assert first.market_cap is None and first.volume is None
+
+
 def test_a_volume_without_a_price_yields_no_bar():
     """A Bar needs a close, so a stray volume point does not conjure one."""
     payload = market_chart()
