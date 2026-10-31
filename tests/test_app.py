@@ -81,6 +81,8 @@ READ_NODES = {
     "datasets",
     "frame",
 }
+WRITE_NODES = {"create_portfolio", "add_trade", "void_trade"}
+"""Served over JSON-RPC too, behind a Grant of their own; see `tests/test_app_portfolio.py`."""
 
 Page = list[dict[str, Any]]
 
@@ -161,7 +163,7 @@ def call(ns: Namespace, name: str, **kwargs: Any) -> Any:
 
 def test_the_fragment_registers_read_nodes_for_the_api_and_a_scheduled_sweep(ns: Namespace):
     api = {node.nsref.name for node in ns.query("api")}
-    assert api == READ_NODES
+    assert api == READ_NODES | WRITE_NODES
     sweep_node = ns.get("data:sweep")
     assert "api" not in sweep_node.tags
     node, trigger = ns.get_trigger(SWEEP_TRIGGER)

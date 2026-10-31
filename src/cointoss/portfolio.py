@@ -26,6 +26,7 @@ from cointoss.instrument import InstrumentId
 from cointoss.prices import as_utc
 
 __all__ = [
+    "PORTFOLIO_HELD",
     "Portfolio",
     "PortfolioKind",
     "PortfolioPosition",
@@ -35,6 +36,10 @@ __all__ = [
     "derive_positions",
     "end_of_day",
 ]
+
+PORTFOLIO_HELD = "portfolio-held"
+"""The Universe Definition every traded Instrument is included in, so the sweep prices it. It
+has no rank rule and is never declared in configuration: trades alone add to it."""
 
 UserId = str
 """A woodglue User's `id` (`Caller.user_id`), such as `usr_1a2b3c4d5e6f`. Users live in

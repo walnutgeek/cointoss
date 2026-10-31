@@ -180,6 +180,10 @@ _Avoid_: Transaction (too generic), Lot
 The mark that retires a mistaken Trade. The Trade stays recorded and visible as voided; positions and values skip it.
 _Avoid_: delete, cancel, reversal
 
+**Portfolio-held**:
+The Universe Definition, `portfolio-held`, that every traded Instrument is an Inclusion of, so the sweep prices it whatever its rank. No rank rule, never declared in configuration; trades alone add to it.
+_Avoid_: holdings universe, watchlist
+
 **Trade Kind**:
 Discriminator for Trade provenance: `real` (broker import), `synthetic` (adjustment), `opening_balance` (bootstrap when prior history unknown).
 

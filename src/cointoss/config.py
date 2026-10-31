@@ -9,6 +9,10 @@ What reconciliation owns is deliberately narrow: whether a Definition exists, an
 Inclusions and Exclusions are hand-pinned through `cointoss.ingest.pin_member`, carry
 provenance that a config file has no way to express, and are never touched here.
 
+`portfolio-held` (`cointoss.portfolio.PORTFOLIO_HELD`) is never declared: trades add its
+Inclusions and it has no band, so a declaration is refused rather than left to give it one. The
+sweep evaluates it beside the declared Definitions once a trade has created it.
+
 A Definition removed from the config is simply not reconciled. There is no "retired" flag: the
 stored Definition, its revisions and its members stay exactly as they were, and anything that
 decides which Definitions to evaluate reads the declarations rather than the store.
@@ -41,6 +45,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from cointoss.ingest import DEFAULT_BAR_WINDOW, DEFAULT_TOP_N, check_listing_width
+from cointoss.portfolio import PORTFOLIO_HELD
 from cointoss.store import Store
 from cointoss.universe import UniverseDefinition, UniverseParameters
 
@@ -52,6 +57,7 @@ __all__ = [
     "ConfigError",
     "DuplicateUniverse",
     "Reconciliation",
+    "ReservedUniverse",
     "Settings",
     "UniverseReconciled",
     "UniverseDeclaration",
@@ -72,6 +78,10 @@ class DuplicateUniverse(ConfigError, ValueError):
 
     A `ValueError` too, so pydantic reports it as a `ValidationError` when `Settings` loads.
     """
+
+
+class ReservedUniverse(ConfigError):
+    """A declaration names a Universe Definition that configuration does not own."""
 
 
 def check_unique_names(declarations: Iterable[UniverseDeclaration]) -> None:
@@ -98,6 +108,8 @@ class UniverseDeclaration(BaseModel):
 
     @model_validator(mode="after")
     def _validate(self) -> UniverseDeclaration:
+        if self.name == PORTFOLIO_HELD:
+            raise ReservedUniverse(f"{PORTFOLIO_HELD} is filled by trades and cannot be declared")
         _ = self.parameters
         return self
 

@@ -5,7 +5,8 @@
 It holds two paths in. Pinning a typed ticker (issue #14): a researcher types a symbol against
 a source, and it is resolved to an Instrument once, at edit time, per ADR-0007. And the daily
 market sweep, `sweep`, which turns one CoinGecko `markets` listing into Instruments,
-membership and bars. The unresolved retry runner is a later step.
+membership and bars. The unresolved retry runner is a later step. `hold` puts a traded
+Instrument into `portfolio-held`, whose Inclusions the sweep prices even outside its listing.
 
 It sits apart from its neighbours because it is the one layer that combines them: it makes a
 network call, which `cointoss.instrument` and `cointoss.universe` must not; it applies identity
@@ -63,9 +64,11 @@ from cointoss.instrument import (
     InstrumentType,
     Observation,
     Outcome,
+    ReferenceKind,
     Source,
     normalize_symbol,
 )
+from cointoss.portfolio import PORTFOLIO_HELD
 from cointoss.prices import Bar, PriceError, as_utc
 from cointoss.series import EntryOrder, NotYetStarted
 from cointoss.sources.coingecko import MARKETS_MAX_PER_PAGE, CoinGeckoClient, CoinsMarketItem
@@ -77,6 +80,7 @@ from cointoss.universe import (
     UniverseDefinition,
     UniverseDefinitionRevision,
     UniverseMemberRecord,
+    UniverseParameters,
     evaluate,
 )
 
@@ -87,6 +91,7 @@ __all__ = [
     "SweepTooNarrow",
     "check_listing_width",
     "figi_job",
+    "hold",
     "pin_member",
     "resolve_typed_symbol",
     "retry_resolution",
@@ -409,6 +414,32 @@ async def pin_member(
     return record
 
 
+def hold(store: Store, instrument_id: InstrumentId, source: Source, symbol: str, at: date) -> None:
+    """Include a traded Instrument in `portfolio-held`, so the sweep prices it.
+
+    The Definition is created on first use with the Instrument as its one Inclusion and no rank
+    rule. An Instrument already included changes nothing, so trading it again adds no revision.
+    `source` and `symbol` are what the trade named it by, recorded as the member's provenance.
+    """
+    record = UniverseMemberRecord(
+        role=MemberRole.INCLUSION,
+        source=source,
+        symbol_as_typed=symbol,
+        instrument_id=instrument_id,
+    )
+    definition = store.load_universe(PORTFOLIO_HELD)
+    if definition is None:
+        parameters = UniverseParameters(inclusions=frozenset({instrument_id}))
+        store.save_universe(UniverseDefinition.create(PORTFOLIO_HELD, parameters, at), [record])
+        return
+    if instrument_id in definition.parameters.inclusions:
+        return
+    revised = _with_member(definition, at, MemberRole.INCLUSION, instrument_id)
+    store.save_universe(
+        revised, [record.model_copy(update={"added_in_revision": revised.revision})]
+    )
+
+
 def _stands_as(
     member: UniverseMemberRecord, revision: int, role: MemberRole, source: Source, symbol: str
 ) -> bool:
@@ -477,15 +508,17 @@ class SweepReport(BaseModel):
     are the Evaluation Runs in the order the Definitions were named, including one already
     recorded by an earlier sweep the same day.
 
-    `bars` counts the bars written. `bars_kept` counts coins whose bar for the day was already
-    stored and was left as it was. `bars_skipped_late` means the sweep ran after the bar window,
-    so it wrote no bars at all.
+    `listed` counts the coins of the `markets` listing, and `unlisted` the coins fetched by id
+    beside it because a Definition includes them. `bars` counts the bars written. `bars_kept`
+    counts coins whose bar for the day was already stored and was left as it was.
+    `bars_skipped_late` means the sweep ran after the bar window, so it wrote no bars at all.
     """
 
     model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True)
 
     at: datetime
     listed: int
+    unlisted: int
     minted: int
     matched: int
     superseded: int
@@ -532,6 +565,10 @@ async def sweep(
     through a ticker change rather than reminted. Every coin gets `native` scope, as a
     CoinGecko symbol typed for pinning does.
 
+    An Inclusion stands whatever its rank, so a coin a named Definition includes but the listing
+    left out is fetched by its CoinGecko id and gets its bar and its Ticker History as a listed
+    coin does. It is not ranked: it cannot enter a band from outside the listing.
+
     Each named Definition is evaluated against CoinGecko's own `market_cap_rank`, not the
     listing position, which the API does not keep equal to it; a coin with no rank, or not
     listed, is absent. A Definition is evaluated once per day: when a Run for the day is already
@@ -550,8 +587,10 @@ async def sweep(
     loaded = [store.require_universe(name) for name in definitions]
     check_listing_width(top_n, (d.parameters.exit_rank for d in loaded))
 
-    listing = await _list_markets(coingecko or CoinGeckoClient(), top_n)
-    identified, outcomes, skipped = _identify_listing(store, listing, day)
+    client = coingecko or CoinGeckoClient()
+    listing = await _list_markets(client, top_n)
+    unlisted = await _unlisted_inclusions(client, store, loaded, listing)
+    identified, outcomes, skipped = _identify_listing(store, [*listing, *unlisted], day)
 
     ranks: dict[InstrumentId, int] = {}
     for coin in listing:
@@ -576,7 +615,7 @@ async def sweep(
     if late:
         log.warning("sweep %s: at %s, after the %s bar window; no bars", day, moment, bar_window)
     else:
-        bars = _bars(listing, identified, moment)
+        bars = _bars([*listing, *unlisted], identified, moment)
         already_priced = store.instruments_with_bars(Source.COINGECKO, day)
         kept = sum(bar.instrument_id in already_priced for bar in bars)
         bars = [bar for bar in bars if bar.instrument_id not in already_priced]
@@ -584,6 +623,7 @@ async def sweep(
     return SweepReport(
         at=moment,
         listed=len(listing),
+        unlisted=len(unlisted),
         minted=outcomes.count(Outcome.MINTED),
         matched=outcomes.count(Outcome.MATCHED),
         superseded=outcomes.count(Outcome.SUPERSEDED),
@@ -616,6 +656,39 @@ async def _list_markets(client: CoinGeckoClient, top_n: int) -> list[CoinsMarket
             break
         page += 1
     return list(listing.values())[:top_n]
+
+
+async def _unlisted_inclusions(
+    client: CoinGeckoClient,
+    store: Store,
+    definitions: Iterable[UniverseDefinition],
+    listing: Sequence[CoinsMarketItem],
+) -> list[CoinsMarketItem]:
+    """The coins the Definitions include that the listing left out, fetched by CoinGecko id.
+
+    A coin is named by the CoinGecko provider reference its Instrument's survivor carries. An
+    included Instrument without one, such as a stock, is not CoinGecko's to price and is left
+    alone.
+    """
+    included = frozenset[InstrumentId]().union(*(d.parameters.inclusions for d in definitions))
+    if not included:
+        return []
+    registry = store.load_registry()
+    listed = {coin.id for coin in listing}
+    wanted = sorted(
+        {
+            ref.value
+            for instrument_id in included
+            for ref in registry.survivor(instrument_id).references
+            if ref.kind is ReferenceKind.PROVIDER_ID and ref.qualifier == Source.COINGECKO
+        }
+        - listed
+    )
+    coins: list[CoinsMarketItem] = []
+    for start in range(0, len(wanted), MARKETS_MAX_PER_PAGE):
+        batch = wanted[start : start + MARKETS_MAX_PER_PAGE]
+        coins.extend(await client.fetch_coins_markets(ids=",".join(batch), per_page=len(batch)))
+    return coins
 
 
 def _identify_listing(
