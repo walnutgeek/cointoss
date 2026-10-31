@@ -34,7 +34,7 @@ import pickle
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
-from datetime import date
+from datetime import date, timedelta
 from enum import StrEnum
 from typing import Any
 
@@ -110,6 +110,28 @@ class Source(StrEnum):
 
     YAHOO = "yahoo"
     COINGECKO = "coingecko"
+
+    @property
+    def session_offset(self) -> int:
+        """Days by which the date this source stamps on a Bar leads the session it closes.
+
+        >>> Source.YAHOO.session_offset, Source.COINGECKO.session_offset
+        (0, 1)
+        """
+        return _SESSION_OFFSET[self]
+
+    def session_of(self, stamped: date) -> date:
+        """The session closed by this source's Bar stamped `stamped`.
+
+        >>> Source.COINGECKO.session_of(date(2024, 3, 1))
+        datetime.date(2024, 2, 29)
+        """
+        return stamped - timedelta(days=self.session_offset)
+
+
+# ADR-0009 amendment of 2026-10-30. Yahoo stamps a Bar with the session it closes; CoinGecko's
+# bar stamped D+1 is the 00:00 UTC price, which closes D.
+_SESSION_OFFSET: dict[Source, int] = {Source.YAHOO: 0, Source.COINGECKO: 1}
 
 
 # ADR-0004's amendment, as defaults rather than rules in the fetch code. Yahoo names and

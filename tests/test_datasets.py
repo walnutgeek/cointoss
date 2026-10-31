@@ -3,7 +3,8 @@
 The store is seeded directly rather than through a sweep, so each case is a small fact table:
 March 2024, days 1 to 7.
 
-- BTC, ETH and SOL have a CoinGecko bar every day, except BTC on day 4.
+- BTC, ETH and SOL have a CoinGecko bar every day, except BTC on day 4. CoinGecko stamps the
+  bar closing day n with n + 1 (Session Offset), so `bars` shows it on n and `source` on n + 1.
 - BTC also has Yahoo bars on days 6 and 7, and Yahoo is first in a coin's Price Sources.
 - Universe `top` holds BTC and ETH from day 1; SOL joins on day 3 and leaves on day 5.
 
@@ -90,9 +91,11 @@ def coins(store: Store, *symbols: str) -> list[InstrumentId]:
 
 
 def bar(instrument: InstrumentId, source: Source, n: int, close: float) -> Bar:
-    fetched = datetime.combine(day(n) + timedelta(days=1), datetime.min.time(), UTC)
+    """The Bar closing day `n`, under the date `source` stamps it with."""
+    stamped = day(n) + timedelta(days=source.session_offset)
+    fetched = datetime.combine(stamped + timedelta(days=1), datetime.min.time(), UTC)
     return Bar(
-        instrument_id=instrument, source=source, bar_date=day(n), close=close, fetched_at=fetched
+        instrument_id=instrument, source=source, bar_date=stamped, close=close, fetched_at=fetched
     )
 
 
@@ -197,12 +200,12 @@ def test_bars_resolve_through_price_sources_unless_a_source_is_named(ns: Namespa
         (iso(6), "BTC", "yahoo", 200.0),
         (iso(7), "BTC", "yahoo", 220.0),
     ]
-    assert rows[0]["fetched_at"] == "2024-03-06T00:00:00Z"
-    named = frame(ns, "bars", start=iso(5), end=iso(7), instruments=[BTC], source="coingecko")
+    assert rows[0]["fetched_at"] == "2024-03-07T00:00:00Z"
+    named = frame(ns, "bars", start=iso(6), end=iso(8), instruments=[BTC], source="coingecko")
     assert pick(named, "date", "source", "close") == [
-        (iso(5), "coingecko", 105.0),
-        (iso(6), "coingecko", 106.0),
-        (iso(7), "coingecko", 107.0),
+        (iso(6), "coingecko", 105.0),
+        (iso(7), "coingecko", 106.0),
+        (iso(8), "coingecko", 107.0),
     ]
 
 
@@ -234,17 +237,17 @@ def test_no_return_across_a_switch_of_the_resolved_source(ns: Namespace):
         ("yahoo", iso(6), iso(7), 220.0),
     ]
     assert rows[-1]["simple_return"] == pytest.approx(0.1)
-    named = frame(ns, "returns", start=iso(5), end=iso(7), instruments=[BTC], source="coingecko")
+    named = frame(ns, "returns", start=iso(6), end=iso(8), instruments=[BTC], source="coingecko")
     assert pick(named, "prev_date", "date") == [
-        (iso(3), iso(5)),
-        (iso(5), iso(6)),
+        (iso(4), iso(6)),
         (iso(6), iso(7)),
+        (iso(7), iso(8)),
     ]
 
 
 def test_returns_reach_back_one_bar_before_start(ns: Namespace):
-    rows = frame(ns, "returns", start=iso(5), end=iso(5), instruments=[BTC], source="coingecko")
-    assert pick(rows, "prev_date", "date", "gap_days") == [(iso(3), iso(5), 2)]
+    rows = frame(ns, "returns", start=iso(6), end=iso(6), instruments=[BTC], source="coingecko")
+    assert pick(rows, "prev_date", "date", "gap_days") == [(iso(4), iso(6), 2)]
     assert frame(ns, "returns", start=iso(1), end=iso(1), instruments=[ETH]) == []
 
 
@@ -565,12 +568,12 @@ class TestOverJsonRpc(tornado.testing.AsyncHTTPTestCase):
         assert pd.api.types.is_datetime64_dtype(df["date"])
         assert df["date"].tolist() == [pd.Timestamp(day(n)) for n in (5, 6, 7)]
         assert isinstance(df["fetched_at"].dtype, pd.DatetimeTZDtype)
-        assert df["fetched_at"].iloc[0] == pd.Timestamp("2024-03-06", tz="UTC")
+        assert df["fetched_at"].iloc[0] == pd.Timestamp("2024-03-07", tz="UTC")
         assert df["close"].tolist() == [105.0, 200.0, 220.0]
         assert df["open"].isna().all()
 
         returns = self.io_loop.run_sync(
-            lambda: load(client, "returns", start=iso(5), end=iso(5), source="coingecko")
+            lambda: load(client, "returns", start=iso(6), end=iso(6), source="coingecko")
         )
         assert str(returns["gap_days"].dtype) == "Int64"
         assert returns["gap_days"].tolist() == [2, 1, 1]

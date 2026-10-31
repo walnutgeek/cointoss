@@ -513,7 +513,8 @@ async def test_a_coin_pinned_before_the_first_sweep_is_matched_by_it(
     assert report.matched == 1
     assert store.load_instrument("crypto.native.btc_2") is None
     assert coin_ids(store, "crypto.native.btc") == ["bitcoin"]
-    (bar,) = store.bars_for(InstrumentId("crypto.native.btc"), SWEEP_AT.date(), SWEEP_AT.date())
+    day = SWEEP_AT.date()
+    (bar,) = store.bars_for(InstrumentId("crypto.native.btc"), day, day, source=Source.COINGECKO)
     assert bar.close == 83227
 
 

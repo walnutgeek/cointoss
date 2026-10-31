@@ -435,7 +435,10 @@ class CointossApp(NamespaceFragment):
 
     @nsnode(tags=["api"])
     def bars(self, instrument_id: str, start: str, end: str) -> list[Bar]:
-        """One Instrument's bars from `start` to `end` inclusive, through its Price Sources."""
+        """One Instrument's bars from `start` to `end` inclusive, through its Price Sources.
+
+        Each is dated by the session it closes, as `Store.bars_for` resolves them.
+        """
         first, last = _range(start, end)
         with self._store() as store:
             return store.bars_for(InstrumentId(instrument_id), first, last)
