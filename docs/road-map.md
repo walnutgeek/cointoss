@@ -37,6 +37,7 @@ whose bearer token `cointoss token` prints; no Identity Provider is configured y
 | `cointoss.prices` | `Bar`, `CorporateAction`, `Restatement`, source mapping, split-aware restatement detection. ADR-0009. |
 | `cointoss.store` | The only module that touches SQL. Eighteen tables, enforced pragmas, `SchemaVersion` with migrations. Membership by date or Instrument, bars resolved through Price Sources and dated by the session closed (Session Offset). ADR-0008. |
 | `cointoss.portfolio` | `Portfolio` owned by a User, single-leg `Trade` voided rather than deleted, `PortfolioPosition` derived on read with average cost (#32). Stored as `Portfolio` and `Trade`, schema version 2. ADR-0001. |
+| `cointoss.datasets` | Datasets read through `frame` (#27, ADR-0010): `instruments`, `bars`, `returns`, `membership`, `changes`, `runs`, and the owned `trades`, `positions` and `portfolio_value`, each holding only the caller's Portfolios and valued at resolved closes (#34). `load` into pandas for the explorer. |
 | `cointoss.ingest` | Pinning a typed ticker: the mandatory FIGI attempt, resolve or mint, retrying an unresolved Instrument. ADR-0004. The daily market sweep (#19): CoinGecko `markets` to Instruments, membership and the day's bars with market cap, written only within the bar window after 00:00 UTC and never over a bar already stored. An Inclusion the listing leaves out is fetched by its CoinGecko id (#33). |
 | `cointoss.backfill` | History backfill (#26): every Instrument ever a member gets a bar for each date with no stored one, from CoinGecko `market_chart` (90 to 365 days) and, for a coin whose `{SYMBOL}-USD` pair agrees with CoinGecko within 2% in median over 30 sessions, from Yahoo `period="max"` before today UTC. An accepted pair is a Yahoo External Reference and Ticker History; nothing stored is overwritten. ADR-0009. |
 | `cointoss.config` | Universe Declarations in config, reconciled into stored Universe Definitions (#20). `Settings`: the data directory (`--data-dir`, `COINTOSS_HOME`, `~/.local/share/cointoss`), its `cointoss.db` and optional `cointoss.yaml` with `top_n` and `bar_window_hours` (#21). |
@@ -54,8 +55,8 @@ Everything that makes it a system rather than a library:
   unresolved retry queue.
 - **No returns.** Nothing turns prices into returns, so no covariance can be computed; the only
   way one enters the system today is a vendor import.
-- **No portfolio reads.** Portfolios and Trades are stored and written (#32, #33), but nothing
-  reads positions or value over the API yet (#34), and `PortfolioSnapshot` is deferred.
+- **No Portfolio Snapshot.** Positions and value are derived on read from the Trades (#34);
+  `PortfolioSnapshot` is deferred until replaying them is slow.
 
 ## Direction
 
@@ -150,7 +151,12 @@ early, because accumulated history is the one thing that cannot be produced late
       own. `cointoss portfolio create`, `trade add` and `trade void` are clients of them. A traded
       Instrument is an Inclusion of `portfolio-held`, which the sweep evaluates and prices,
       fetching by CoinGecko id an Inclusion the `markets` listing leaves out.
-   3. **Datasets (#34).** `trades`, `positions`, `portfolio_value`, each the caller's own only.
+   3. **Datasets (#34).** Done. `trades`, `positions` and `portfolio_value`, each the caller's own
+      only: an owned Dataset is read for the Caller's User id, as a write is, and another User's
+      Portfolio named in its params is `NotFound`. A position on D is valued at the close `bars`
+      shows for D; without one its close and value are null, and a Portfolio's value on that date
+      is null with the unpriced positions counted, never a partial sum. The explorer charts
+      `portfolio_value` with no new UI code (ADR-0010 amendment).
 8. **Yahoo and stocks.** Deferred 2026-10-30 behind the crypto portfolio. The FIGI path in
    earnest, exchange calendars, corporate actions. Grilling started on a curated, Inclusion-only
    stock universe with a golden-file FIGI test, and an OpenFIGI key from the environment; resume

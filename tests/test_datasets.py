@@ -149,7 +149,7 @@ def pick(rows: list[dict[str, Any]], *names: str) -> list[tuple[Any, ...]]:
 # -- datasets and frame --
 
 
-def test_datasets_lists_six_with_typed_columns_and_a_params_schema(ns: Namespace):
+def test_datasets_lists_each_with_typed_columns_and_a_params_schema(ns: Namespace):
     listed = _serialize_result(ns.get("data:datasets")())
     assert [d["name"] for d in listed] == [
         "instruments",
@@ -158,6 +158,9 @@ def test_datasets_lists_six_with_typed_columns_and_a_params_schema(ns: Namespace
         "membership",
         "changes",
         "runs",
+        "trades",
+        "positions",
+        "portfolio_value",
     ]
     for d in listed:
         assert d["description"]

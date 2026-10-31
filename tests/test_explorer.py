@@ -70,6 +70,9 @@ def test_bars_load_chart_and_pivot_through_the_api(data_dir: Path):
         "membership",
         "changes",
         "runs",
+        "trades",
+        "positions",
+        "portfolio_value",
     ]
     at.selectbox(key="dataset").set_value("bars").run()
     assert at.multiselect(key="bars.instruments").options == [
