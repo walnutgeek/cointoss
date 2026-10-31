@@ -61,6 +61,15 @@ from cointoss.instrument import (
     TickerRecord,
     normalize_symbol,
 )
+from cointoss.portfolio import (
+    Portfolio,
+    PortfolioKind,
+    PortfolioPosition,
+    Trade,
+    TradeKind,
+    UserId,
+    derive_positions,
+)
 from cointoss.prices import (
     Bar,
     CorporateAction,
@@ -116,6 +125,7 @@ __all__ = [
     "BarRow",
     "CorporateActionRow",
     "CovarianceEntryRow",
+    "DuplicatePortfolio",
     "EvaluationRunRow",
     "ExposureEntryRow",
     "Index",
@@ -124,6 +134,7 @@ __all__ = [
     "Migration",
     "MigrationGap",
     "Persistence",
+    "PortfolioRow",
     "RestatementRow",
     "RiskModelRevisionRow",
     "RiskModelRow",
@@ -135,6 +146,10 @@ __all__ = [
     "UnknownUniverse",
     "TickerRecordRow",
     "TooManyRows",
+    "TradeAlreadyVoided",
+    "TradeRow",
+    "UnknownPortfolio",
+    "UnknownTrade",
     "backup_database",
     "UniverseDefinitionRow",
     "UniverseEntryRow",
@@ -559,6 +574,64 @@ class RestatementRow(DbModel["RestatementRow"]):
         return "Restatement"
 
 
+class UnknownPortfolio(StoreError):
+    """A Portfolio id the store does not hold."""
+
+
+class DuplicatePortfolio(StoreError):
+    """The owner already holds a Portfolio of that name."""
+
+
+class UnknownTrade(StoreError):
+    """A Trade id the store does not hold."""
+
+
+class TradeAlreadyVoided(StoreError):
+    """A Void is final: voiding a voided Trade again would overwrite when it was retired."""
+
+
+class PortfolioRow(DbModel["PortfolioRow"]):
+    """A Portfolio and its owner.
+
+    The owner is a woodglue User id held by value: Users live in woodglue's own database, which
+    no foreign key here can reach.
+    """
+
+    portfolio_id: int = Field(default=-1, description="(PK)")
+    owner: str = Field(description="(AK) woodglue User id of the owner")
+    name: str = Field(description="(AK) Portfolio name, unique per owner")
+    kind: PortfolioKind = Field(description="Real, paper or what-if")
+    custodian: str | None = Field(default=None, description="Broker or wallet holding it")
+
+    @classmethod
+    @override
+    def get_table_name(cls) -> str:
+        return "Portfolio"
+
+
+class TradeRow(DbModel["TradeRow"]):
+    """One single-leg Trade, under the Instrument it was recorded against.
+
+    No natural key: two identical fills at one moment are two Trades. A Void sets `voided_at`
+    and nothing else, so the row stays as entered.
+    """
+
+    trade_id: int = Field(default=-1, description="(PK)")
+    portfolio: int = Field(description="(FK:Portfolio.portfolio_id) Portfolio it belongs to")
+    instrument: int = Field(description="(FK:Instrument.instrument_row_id) Instrument traded")
+    traded_at: datetime = Field(description="When it was traded, in UTC")
+    quantity: float = Field(description="Signed quantity: positive in, negative out")
+    kind: TradeKind = Field(description="Provenance of the Trade")
+    cost: float | None = Field(default=None, description="Total USD paid or received")
+    note: str | None = Field(default=None, description="Free-text note")
+    voided_at: datetime | None = Field(default=None, description="When it was voided")
+
+    @classmethod
+    @override
+    def get_table_name(cls) -> str:
+        return "Trade"
+
+
 # Every table in the database, with the classification that decides whether a schema change
 # must migrate it or may drop and backfill it. Later tickets add their tables here; this
 # mapping is both the schema and the ADR-0008 classification, so the two cannot drift.
@@ -580,6 +653,8 @@ TABLES: dict[type[DbModel[Any]], Persistence] = {
     BarRow: Persistence.REBUILDABLE,
     CorporateActionRow: Persistence.REBUILDABLE,
     RestatementRow: Persistence.REBUILDABLE,
+    PortfolioRow: Persistence.DURABLE,
+    TradeRow: Persistence.DURABLE,
 }
 
 SCHEMA = Schema(list(TABLES))
@@ -628,9 +703,11 @@ INDEXES: tuple[Index, ...] = (
         "CREATE INDEX IF NOT EXISTS UniverseMembership_by_instrument "
         "ON UniverseMembership (instrument, valid_from, valid_to)",
     ),
+    # Trade has no alternative key, so nothing else leads with its Portfolio.
+    Index("Trade", "CREATE INDEX IF NOT EXISTS Trade_by_portfolio ON Trade (portfolio, traded_at)"),
 )
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # The ids of every Instrument superseded, directly or through a chain, into the survivor bound
 # as the parameter, and the survivor's own. Seeded with the bare id rather than its row, since
@@ -738,9 +815,24 @@ class Migration(NamedTuple):
     apply: Callable[[sqlite3.Connection], None]
 
 
-# Ordered, and empty: there is no prior schema to migrate from. Append steps with strictly
-# increasing `to_version` as the schema changes, and raise `SCHEMA_VERSION` to match.
-MIGRATIONS: list[Migration] = []
+def _add_portfolio_tables(conn: sqlite3.Connection) -> None:
+    """Version 2 adds `Portfolio` and `Trade`, and changes no existing table.
+
+    Opening creates absent tables before it migrates, so on a store opened with the shipped
+    schema both already exist; the step creates them itself so it does not rely on that order.
+    """
+    existing = {
+        row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+    }
+    for table in (PortfolioRow, TradeRow):
+        if table.get_table_name() not in existing:
+            conn.execute(table.create_ddl())
+    conn.commit()
+
+
+# Ordered. Append steps with strictly increasing `to_version` as the schema changes, and raise
+# `SCHEMA_VERSION` to match.
+MIGRATIONS: list[Migration] = [Migration(2, _add_portfolio_tables)]
 
 
 def backup_database(source: Path, target: Path) -> int | None:
@@ -2274,6 +2366,127 @@ class Store:
             kind=row.kind,
             value=row.value,
         )
+
+    # -- Portfolios --
+
+    def create_portfolio(
+        self, owner: UserId, name: str, kind: PortfolioKind, custodian: str | None = None
+    ) -> Portfolio:
+        """Create a Portfolio owned by `owner`. A name is unique per owner, not globally."""
+        if PortfolioRow.load_by_ak(self.conn, owner=owner, name=name) is not None:
+            raise DuplicatePortfolio(f"{owner} already holds a portfolio named {name!r}")
+        row = PortfolioRow(owner=owner, name=name, kind=kind, custodian=custodian).save(self.conn)
+        self.conn.commit()
+        return self._portfolio_from(row)
+
+    def load_portfolio(self, portfolio_id: int) -> Portfolio | None:
+        row = PortfolioRow.load_by_id(self.conn, portfolio_id)
+        return None if row is None else self._portfolio_from(row)
+
+    def portfolios_of(self, owner: UserId) -> list[Portfolio]:
+        """The Portfolios `owner` holds, by name, and nobody else's."""
+        rows = sorted(PortfolioRow.select(self.conn, owner=owner), key=lambda r: r.name)
+        return [self._portfolio_from(row) for row in rows]
+
+    def record_trade(
+        self,
+        portfolio_id: int,
+        instrument_id: InstrumentId | str,
+        traded_at: datetime,
+        quantity: float,
+        *,
+        kind: TradeKind = TradeKind.REAL,
+        cost: float | None = None,
+        note: str | None = None,
+    ) -> Trade:
+        """Record a Trade as entered, under the Instrument named rather than its survivor.
+
+        The Trade is validated before anything is written, and returned as `trades_of` would
+        read it back.
+        """
+        if PortfolioRow.load_by_id(self.conn, portfolio_id) is None:
+            raise UnknownPortfolio(f"portfolio {portfolio_id} is not stored")
+        instrument = self._require_instrument(instrument_id)
+        trade = Trade(
+            id=-1,
+            portfolio_id=portfolio_id,
+            instrument_id=InstrumentId(instrument.instrument_id),
+            traded_at=traded_at,
+            quantity=quantity,
+            kind=kind,
+            cost=cost,
+            note=note,
+        )
+        row = TradeRow(
+            portfolio=portfolio_id,
+            instrument=instrument.instrument_row_id,
+            traded_at=trade.traded_at,
+            quantity=trade.quantity,
+            kind=trade.kind,
+            cost=trade.cost,
+            note=trade.note,
+        ).save(self.conn)
+        self.conn.commit()
+        return self._trades_from([row])[0]
+
+    def void_trade(self, trade_id: int, *, at: datetime | None = None) -> Trade:
+        """Void a Trade at `at`, now by default. A Trade is voided once; again is refused."""
+        row = TradeRow.load_by_id(self.conn, trade_id)
+        if row is None:
+            raise UnknownTrade(f"trade {trade_id} is not stored")
+        if row.voided_at is not None:
+            raise TradeAlreadyVoided(f"trade {trade_id} was voided at {row.voided_at}")
+        row.voided_at = as_utc(datetime.now(UTC) if at is None else at)
+        row.save(self.conn)
+        self.conn.commit()
+        return self._trades_from([row])[0]
+
+    def trades_of(self, portfolio_id: int) -> list[Trade]:
+        """Every Trade of a Portfolio in trade order, voided ones included and flagged.
+
+        Instruments are reported as their survivors, as every read that returns Instruments is.
+        """
+        rows = sorted(
+            TradeRow.select(self.conn, portfolio=portfolio_id),
+            key=lambda r: (as_utc(r.traded_at), r.trade_id),
+        )
+        return self._trades_from(rows)
+
+    def positions_at(self, portfolio_id: int, when: date) -> list[PortfolioPosition]:
+        """A Portfolio's positions as of the end of `when` in UTC; see `derive_positions`."""
+        return derive_positions(self.trades_of(portfolio_id), when)
+
+    @staticmethod
+    def _portfolio_from(row: PortfolioRow) -> Portfolio:
+        return Portfolio(
+            id=row.portfolio_id,
+            owner=row.owner,
+            name=row.name,
+            kind=row.kind,
+            custodian=row.custodian,
+        )
+
+    def _trades_from(self, rows: list[TradeRow]) -> list[Trade]:
+        recorded: dict[int, InstrumentId] = {}
+        for pk in {r.instrument for r in rows}:
+            instrument = InstrumentRow.load_by_id(self.conn, pk)
+            assert instrument is not None, "a Trade's Instrument is held by foreign key"
+            recorded[pk] = InstrumentId(instrument.instrument_id)
+        survivor = self._fold_ids(recorded.values())
+        return [
+            Trade(
+                id=r.trade_id,
+                portfolio_id=r.portfolio,
+                instrument_id=survivor[recorded[r.instrument]],
+                traded_at=r.traded_at,
+                quantity=r.quantity,
+                kind=r.kind,
+                cost=r.cost,
+                note=r.note,
+                voided_at=r.voided_at,
+            )
+            for r in rows
+        ]
 
     def close(self) -> None:
         self.conn.close()

@@ -180,8 +180,10 @@ def test_a_refused_open_leaves_no_connection_behind(db_path: Path):
         )
 
 
-def test_the_shipped_migration_list_is_empty():
-    assert MIGRATIONS == []
+def test_the_shipped_migrations_reach_the_shipped_version_in_order():
+    versions = [m.to_version for m in MIGRATIONS]
+    assert versions == sorted(set(versions))
+    assert versions[-1] == SCHEMA_VERSION
 
 
 def test_an_older_version_runs_the_steps_in_order(db_path: Path):

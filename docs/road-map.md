@@ -35,7 +35,8 @@ whose bearer token `cointoss token` prints; no Identity Provider is configured y
 | `cointoss.sources.coingecko` | Coin list, markets, detail, OHLC, market chart. Cached. |
 | `cointoss.universe` | `UniverseDefinition` with a revision log, Inclusions and Exclusions, pure rank-band evaluation. ADR-0007. |
 | `cointoss.prices` | `Bar`, `CorporateAction`, `Restatement`, source mapping, split-aware restatement detection. ADR-0009. |
-| `cointoss.store` | The only module that touches SQL. Sixteen tables, enforced pragmas, `SchemaVersion`. Membership by date or Instrument, bars resolved through Price Sources and dated by the session closed (Session Offset). ADR-0008. |
+| `cointoss.store` | The only module that touches SQL. Eighteen tables, enforced pragmas, `SchemaVersion` with migrations. Membership by date or Instrument, bars resolved through Price Sources and dated by the session closed (Session Offset). ADR-0008. |
+| `cointoss.portfolio` | `Portfolio` owned by a User, single-leg `Trade` voided rather than deleted, `PortfolioPosition` derived on read with average cost (#32). Stored as `Portfolio` and `Trade`, schema version 2. ADR-0001. |
 | `cointoss.ingest` | Pinning a typed ticker: the mandatory FIGI attempt, resolve or mint, retrying an unresolved Instrument. ADR-0004. The daily market sweep (#19): CoinGecko `markets` to Instruments, membership and the day's bars with market cap, written only within the bar window after 00:00 UTC and never over a bar already stored. |
 | `cointoss.config` | Universe Declarations in config, reconciled into stored Universe Definitions (#20). `Settings`: the data directory (`--data-dir`, `COINTOSS_HOME`, `~/.local/share/cointoss`), its `cointoss.db` and optional `cointoss.yaml` with `top_n` and `bar_window_hours` (#21). |
 | `cointoss.app` | The `CointossApp` namespace fragment (#21): a `sweep` node on a daily cron trigger, idempotent within a UTC day and serialised by a lock file, and read nodes `members`, `changes`, `bars`, `universes_of`, `runs`, `universes` served over woodglue JSON-RPC. |
@@ -141,7 +142,7 @@ early, because accumulated history is the one thing that cannot be produced late
    valuation. Single-leg trades with no cash leg, UTC timestamps, voided rather than deleted,
    average cost, each Portfolio owned by a User, USD only, no Snapshot yet. Real holdings live on
    int, so it ships in a release.
-   1. **Storage (#32).** `Portfolio` and `Trade` tables, positions on read.
+   1. **Storage (#32).** Done. `Portfolio` and `Trade` tables, positions on read.
    2. **Writes (#33).** JSON-RPC methods behind a Role, CLI as a client; a traded Instrument is
       pinned into a `portfolio-held` universe.
    3. **Datasets (#34).** `trades`, `positions`, `portfolio_value`, each the caller's own only.
