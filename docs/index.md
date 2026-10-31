@@ -50,7 +50,8 @@ the point reads (`universes`, `members`, `changes`, `bars`, `universes_of`, `run
 two generic ones (see [ADR-0010](adr/0010-datasets-generic-long-framedata-read-api.md)):
 
 - `cointoss.data:datasets` lists the Datasets (`instruments`, `bars`, `returns`, `membership`,
-  `changes`, `runs`), each with its typed columns and the JSON Schema of its params.
+  `changes`, `runs`, and `trades`, `positions` and `portfolio_value`, which hold only the
+  caller's own Portfolios), each with its typed columns and the JSON Schema of its params.
 - `cointoss.data:frame` (`dataset`, `params`) returns one as a long table.
 
 From Python, with the `ui` extra, `await cointoss.datasets.load(client, "bars", start=...,

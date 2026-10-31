@@ -15,6 +15,10 @@ woodglue serializes a node's pydantic result with `model_dump(mode="json")`, so 
 a JSON-RPC client as an ISO string. `load` reads the column types `datasets` publishes and puts
 them back on a pandas DataFrame. pandas is imported only there, from the `ui` extra.
 
+An owned Dataset (`owned_rows`) holds a User's own records, the Portfolios: it is read for one
+owner, the caller's User id, which the app passes and no param can set, and a Portfolio named
+in its params that the owner does not hold is `UnknownPortfolio`, as one that does not exist.
+
 A response holds at most `ROW_CAP` rows. The cap is read when a frame is read, so a test can
 patch it. Over it is `TooManyRows` naming the matching count; there is no paging.
 """
@@ -22,7 +26,7 @@ patch it. Over it is `TooManyRows` naming the matching count; there is no paging
 from __future__ import annotations
 
 import datetime as dt
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING, Annotated, Any, ClassVar, Generic, Self, TypeVar, cast
@@ -31,7 +35,8 @@ from lythonic.frame import FrameData
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, ValidationError, model_validator
 
 from cointoss.instrument import InstrumentId, Source
-from cointoss.store import Store, TooManyRows, UnknownInstrument
+from cointoss.portfolio import Portfolio, UserId, derive_positions
+from cointoss.store import Store, TooManyRows, UnknownInstrument, UnknownPortfolio
 
 if TYPE_CHECKING:
     import pandas as pd
@@ -106,17 +111,30 @@ class DatasetView(BaseModel):
 
 
 P = TypeVar("P", bound=BaseModel)
+Rows = Sequence[Sequence[Any]]
 
 
 @dataclass(frozen=True)
 class Dataset(Generic[P]):
-    """One Dataset's definition. `rows` returns each row's values in `columns` order."""
+    """One Dataset's definition: exactly one of `rows` or, for an owned one, `owned_rows`.
+
+    Either returns each row's values in `columns` order; `owned_rows` also takes the owner.
+    """
 
     name: str
     description: str
     params: type[P]
     columns: tuple[Column, ...]
-    rows: Callable[[Store, P], Sequence[Sequence[Any]]]
+    rows: Callable[[Store, P], Rows] | None = None
+    owned_rows: Callable[[Store, P, UserId], Rows] | None = None
+
+    def __post_init__(self) -> None:
+        if (self.rows is None) == (self.owned_rows is None):
+            raise ValueError(f"Dataset {self.name} needs exactly one of rows and owned_rows")
+
+    @property
+    def owned(self) -> bool:
+        return self.owned_rows is not None
 
     def parse(self, params: dict[str, Any] | None) -> P:
         """Validate raw params, raising `InvalidParams` with the first error on one line."""
@@ -128,9 +146,19 @@ class Dataset(Generic[P]):
             message = first["msg"] if not where else f"{where}: {first['msg']}"
             raise InvalidParams(f"{self.name} params: {message}") from None
 
-    def read(self, store: Store, params: P) -> FrameData:
-        """The Dataset as a frame, raising `TooManyRows` past `ROW_CAP`."""
-        data = [list(row) for row in self.rows(store, params)]
+    def read(self, store: Store, params: P, owner: UserId | None = None) -> FrameData:
+        """The Dataset as a frame, raising `TooManyRows` past `ROW_CAP`.
+
+        An owned Dataset is read for `owner` and needs one; any other ignores it.
+        """
+        if self.owned_rows is not None:
+            if owner is None:
+                raise ValueError(f"Dataset {self.name} is read for an owner")
+            found = self.owned_rows(store, params, owner)
+        else:
+            assert self.rows is not None
+            found = self.rows(store, params)
+        data = [list(row) for row in found]
         if len(data) > ROW_CAP:
             raise TooManyRows(len(data), ROW_CAP)
         return FrameData(columns=[c.name for c in self.columns], data=data)
@@ -214,6 +242,22 @@ class MembershipParams(_RangeParams):
 
 class RunParams(_RangeParams):
     universe: str | None = Field(default=None, description="One universe; all if omitted")
+
+
+_PORTFOLIO = "Name of one of your Portfolios; all of them if omitted"
+
+
+class TradeParams(_Params):
+    portfolio: str | None = Field(default=None, description=_PORTFOLIO)
+
+
+class PositionParams(_Params):
+    date: IsoDate = Field(description="Date to hold the positions at, to its end in UTC")
+    portfolio: str | None = Field(default=None, description=_PORTFOLIO)
+
+
+class ValueParams(_RangeParams):
+    portfolio: str | None = Field(default=None, description=_PORTFOLIO)
 
 
 def _ids(instruments: list[str] | None) -> list[InstrumentId] | None:
@@ -357,6 +401,107 @@ def _run_rows(store: Store, params: RunParams) -> list[tuple[Any, ...]]:
     )
 
 
+def _owned(store: Store, owner: UserId, name: str | None) -> list[Portfolio]:
+    """`owner`'s Portfolios, or the one named; another User's reads as one not stored."""
+    portfolios = store.portfolios_of(owner)
+    if name is None:
+        return portfolios
+    named = [p for p in portfolios if p.name == name]
+    if not named:
+        raise UnknownPortfolio(f"no portfolio {name!r} of yours")
+    return named
+
+
+def _symbols(store: Store, instruments: Iterable[InstrumentId]) -> dict[InstrumentId, str]:
+    symbols: dict[InstrumentId, str] = {}
+    for i in set(instruments):
+        instrument = store.load_instrument(i)
+        assert instrument is not None, "a Trade's Instrument is held by foreign key"
+        symbols[i] = instrument.symbol
+    return symbols
+
+
+def _trade_rows(store: Store, params: TradeParams, owner: UserId) -> list[tuple[Any, ...]]:
+    held = [(p, store.trades_of(p.id)) for p in _owned(store, owner, params.portfolio)]
+    symbols = _symbols(store, (t.instrument_id for _, trades in held for t in trades))
+    return [
+        (
+            t.traded_at,
+            p.name,
+            t.id,
+            str(t.instrument_id),
+            symbols[t.instrument_id],
+            t.kind.value,
+            t.quantity,
+            t.cost,
+            t.note,
+            t.voided_at,
+        )
+        for p, trades in held
+        for t in trades
+    ]
+
+
+def _closes(
+    store: Store, instruments: Iterable[InstrumentId], start: dt.date, end: dt.date
+) -> dict[tuple[dt.date, InstrumentId], tuple[float, Source]]:
+    """The resolved close, and its source, for each Instrument and session it has a Bar for."""
+    wanted = sorted(set(instruments))
+    if not wanted:
+        return {}
+    return {
+        (b.bar_date, b.instrument_id): (b.close, b.source)
+        for b in store.resolved_bars(start, end, instruments=wanted, limit=ROW_CAP)
+    }
+
+
+def _position_rows(store: Store, params: PositionParams, owner: UserId) -> list[tuple[Any, ...]]:
+    when = params.date
+    held = [(p, store.positions_at(p.id, when)) for p in _owned(store, owner, params.portfolio)]
+    instruments = [pos.instrument_id for _, positions in held for pos in positions]
+    closes = _closes(store, instruments, when, when)
+    symbols = _symbols(store, instruments)
+    rows: list[tuple[Any, ...]] = []
+    for p, positions in held:
+        for pos in positions:
+            close, source = closes.get((when, pos.instrument_id), (None, None))
+            rows.append(
+                (
+                    when,
+                    p.name,
+                    str(pos.instrument_id),
+                    symbols[pos.instrument_id],
+                    pos.quantity,
+                    pos.average_cost,
+                    close,
+                    None if close is None else pos.quantity * close,
+                    None if source is None else source.value,
+                )
+            )
+    return rows
+
+
+def _value_rows(store: Store, params: ValueParams, owner: UserId) -> list[tuple[Any, ...]]:
+    held = [(p, store.trades_of(p.id)) for p in _owned(store, owner, params.portfolio)]
+    instruments = {t.instrument_id for _, trades in held for t in trades if not t.voided}
+    closes = _closes(store, instruments, params.start, params.end)
+    rows: list[tuple[Any, ...]] = []
+    for offset in range((params.end - params.start).days + 1):
+        when = params.start + dt.timedelta(days=offset)
+        for p, trades in held:
+            # A position netted to zero is worth zero whether or not it has a close.
+            held_open = [pos for pos in derive_positions(trades, when) if pos.quantity != 0]
+            priced = [
+                pos.quantity * closes[when, pos.instrument_id][0]
+                for pos in held_open
+                if (when, pos.instrument_id) in closes
+            ]
+            unpriced = len(held_open) - len(priced)
+            value = None if unpriced else sum(priced, 0.0)
+            rows.append((when, p.name, value, len(held_open), unpriced))
+    return rows
+
+
 DATASETS: dict[str, Dataset[Any]] = {
     d.name: d
     for d in (
@@ -467,6 +612,73 @@ DATASETS: dict[str, Dataset[Any]] = {
                 _col("n_unresolved", INT, M, "Standing members with no Instrument"),
             ),
             rows=_run_rows,
+        ),
+        Dataset(
+            name="trades",
+            description=(
+                "Every Trade in your Portfolios, by Portfolio name then trade order, voided ones "
+                "included and flagged by `voided_at`. Instruments are reported as their survivors."
+            ),
+            params=TradeParams,
+            columns=(
+                _col("traded_at", DATETIME, T, "When the Trade happened, in UTC"),
+                _col("portfolio", STR, A, "Portfolio name"),
+                _col("trade_id", INT, A, "Trade id, which `void_trade` takes"),
+                INSTRUMENT_ID,
+                SYMBOL,
+                _col("kind", STR, A, "real, synthetic or opening_balance"),
+                _col("quantity", FLOAT, M, "Signed quantity: positive bought, negative sold"),
+                _col("cost", FLOAT, M, "Total USD paid or received, where known"),
+                _col("note", STR, A, "Free text entered with the Trade"),
+                _col("voided_at", DATETIME, A, "When the Trade was voided; null if it stands"),
+            ),
+            owned_rows=_trade_rows,
+        ),
+        Dataset(
+            name="positions",
+            description=(
+                "Your positions at the end of `date` (UTC), one per Portfolio and Instrument, "
+                "from the Trades not voided. The close is the Bar `bars` gives for `date`, "
+                "through the Price Sources with the Session Offset applied; without one, close "
+                "and value are null rather than zero or an earlier close."
+            ),
+            params=PositionParams,
+            columns=(
+                _col("date", DATE, T, "Date the positions are held at"),
+                _col("portfolio", STR, A, "Portfolio name"),
+                INSTRUMENT_ID,
+                SYMBOL,
+                _col("quantity", FLOAT, M, "Quantity held; negative when short"),
+                _col(
+                    "average_cost",
+                    FLOAT,
+                    M,
+                    "Average cost per unit in USD of the costed acquisitions held; null when "
+                    "none carried a cost or the position is not long",
+                ),
+                _col("close", FLOAT, M, "Close of the session `date`, null without a Bar"),
+                _col("value", FLOAT, M, "quantity * close in USD, null without a Bar"),
+                _col("source", STR, A, "Source the close came from"),
+            ),
+            owned_rows=_position_rows,
+        ),
+        Dataset(
+            name="portfolio_value",
+            description=(
+                "Each of your Portfolios' value in USD at the end of each date in the range, "
+                "its positions valued as `positions` values them. A date on which any open "
+                "position has no close has a null value, never a partial sum, and `unpriced` "
+                "counts those positions."
+            ),
+            params=ValueParams,
+            columns=(
+                _col("date", DATE, T, "Date valued"),
+                _col("portfolio", STR, E, "Portfolio name"),
+                _col("value", FLOAT, M, "Sum of quantity * close in USD; null if any unpriced"),
+                _col("positions", INT, M, "Open positions: Instruments held at a nonzero quantity"),
+                _col("unpriced", INT, M, "Open positions with no close on the date"),
+            ),
+            owned_rows=_value_rows,
         ),
     )
 }

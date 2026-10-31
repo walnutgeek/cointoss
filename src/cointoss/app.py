@@ -126,6 +126,7 @@ from cointoss.store import (
     TooManyRows,
     TradeAlreadyVoided,
     UnknownInstrument,
+    UnknownPortfolio,
     UnknownTrade,
     UnknownUniverse,
 )
@@ -435,7 +436,13 @@ class CointossApp(NamespaceFragment):
         try:
             with Store(self.settings.db_path) as store:
                 yield store
-        except (UnknownUniverse, UnknownInstrument, UnknownTrade, NotYetStarted) as exc:
+        except (
+            UnknownUniverse,
+            UnknownInstrument,
+            UnknownPortfolio,
+            UnknownTrade,
+            NotYetStarted,
+        ) as exc:
             raise NotFound(str(exc)) from exc
         except (DuplicatePortfolio, TradeAlreadyVoided) as exc:
             raise Conflict(str(exc)) from exc
@@ -620,6 +627,10 @@ class CointossApp(NamespaceFragment):
 
         An unknown Dataset is `NotFound`; params its model refuses, or a match over
         `cointoss.datasets.ROW_CAP` rows, are `BadRequest`. Nothing matching is an empty frame.
+
+        An owned Dataset (`trades`, `positions`, `portfolio_value`) holds only the caller's own
+        Portfolios, and another User's Portfolio named in its params is `NotFound`, as one that
+        does not exist. Read in-process, with no Caller, it is `Unauthorized`, as a write is.
         """
         try:
             found = lookup(dataset)
@@ -628,9 +639,10 @@ class CointossApp(NamespaceFragment):
             raise NotFound(str(exc)) from None
         except InvalidParams as exc:
             raise BadRequest(str(exc)) from None
+        owner = _reader(dataset) if found.owned else None
         with self._store() as store:
             try:
-                return found.read(store, parsed)
+                return found.read(store, parsed, owner)
             except TooManyRows as exc:
                 raise BadRequest(
                     f"{dataset}: {exc.count} rows match, over the cap of {exc.limit}; "
@@ -727,6 +739,17 @@ def _writer() -> UserId:
     caller = current_caller.get()
     if caller is None:
         raise Unauthorized("a portfolio write runs as a User; call it over JSON-RPC")
+    return caller.user_id or ANONYMOUS.name
+
+
+def _reader(dataset: str) -> UserId:
+    """The User whose Portfolios an owned Dataset reads: the Caller, as for a write.
+
+    Reading needs no Grant beyond the namespace's, so the explorer reads as its viewer.
+    """
+    caller = current_caller.get()
+    if caller is None:
+        raise Unauthorized(f"{dataset} reads a User's portfolios; call it over JSON-RPC")
     return caller.user_id or ANONYMOUS.name
 
 

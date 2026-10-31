@@ -110,7 +110,8 @@ cannot answer is a JSON-RPC error: `-32001` for an unknown universe or Instrumen
 with nothing stored; `-32002` before `init`; `-32602` for a malformed parameter.
 
 For exploring, `cointoss.data:datasets` lists the Datasets -- `instruments`, `bars`, `returns`,
-`membership`, `changes`, `runs` -- each with its typed columns and the JSON Schema of its params,
+`membership`, `changes`, `runs`, and `trades`, `positions` and `portfolio_value`, which hold only
+the caller's own Portfolios -- each with its typed columns and the JSON Schema of its params,
 and `cointoss.data:frame` (`dataset`, `params`) returns one as a long table (`columns` plus
 row-major `data`), at most 250,000 rows:
 

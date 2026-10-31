@@ -141,7 +141,7 @@ _Avoid_: correction, revision, fixup
 ### Reading
 
 **Dataset**:
-A named, typed, long-form table read through `frame`, one row per fact, with every column's type and role declared. A read projection over stored data, never written through; not a Series and not a Snapshot.
+A named, typed, long-form table read through `frame`, one row per fact, with every column's type and role declared. A read projection over stored data, never written through; not a Series and not a Snapshot. An owned Dataset, such as `positions`, holds only the reading User's own Portfolios.
 _Avoid_: report, view, query, table
 
 ### Risk

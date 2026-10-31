@@ -150,7 +150,7 @@ def test_returns_across_a_splice_match_the_aligned_closes(store: Store):
     btc = coin(store)
     store.upsert_bars([*stamped(btc, CG, *range(2, 8)), *stamped(btc, YH, 4, 5, 6)])
 
-    rows = DATASETS["returns"].rows(store, PriceParams(start=day(2), end=day(6)))
+    rows = DATASETS["returns"].read(store, PriceParams(start=day(2), end=day(6))).data
     assert [(r[0], r[3], r[4], r[5], r[6]) for r in rows] == [
         (day(2), "coingecko", day(1), 1, 30.0),
         (day(3), "coingecko", day(2), 1, 40.0),
@@ -161,7 +161,7 @@ def test_returns_across_a_splice_match_the_aligned_closes(store: Store):
         [30.0 / 20.0 - 1, 40.0 / 30.0 - 1, 500.0 / 400.0 - 1, 600.0 / 500.0 - 1]
     )
 
-    named = DATASETS["returns"].rows(store, PriceParams(start=day(3), end=day(7), source=CG))
+    named = DATASETS["returns"].read(store, PriceParams(start=day(3), end=day(7), source=CG)).data
     assert [(r[0], r[4], r[6]) for r in named] == [
         (day(n), day(n - 1), 10.0 * n) for n in range(3, 8)
     ]
