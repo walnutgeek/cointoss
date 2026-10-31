@@ -276,6 +276,47 @@ async def test_a_trade_that_cannot_be_recorded_writes_nothing(ns: Namespace, dat
         assert store.load_instrument(NEO) is None
 
 
+@pytest.mark.parametrize(
+    ("terms", "field"),
+    [
+        ({"quantity": 0.0}, "quantity"),
+        ({"quantity": float("nan")}, "quantity"),
+        ({"quantity": 1.0, "cost": -1.0}, "cost"),
+        ({"quantity": 1.0, "kind": "gift"}, "kind"),
+    ],
+    ids=["zero", "nan", "negative-cost", "kind"],
+)
+async def test_a_refused_trade_in_a_new_symbol_stores_no_instrument(
+    ns: Namespace, data_dir: Path, terms: dict[str, Any], field: str
+):
+    portfolio = create(ns, ALICE)
+    with stored(data_dir) as store:
+        before = store.load_instruments()
+
+    with pytest.raises(BadRequest, match=field):
+        await add(ns, ALICE, portfolio.id, "neo", **terms)
+
+    with stored(data_dir) as store:
+        assert store.load_instruments() == before
+        assert store.load_universe(PORTFOLIO_HELD) is None
+        assert store.load_instrument(NEO) is None
+
+
+async def test_a_trade_is_not_recorded_when_its_instrument_cannot_be_held(
+    ns: Namespace, data_dir: Path
+):
+    portfolio = create(ns, ALICE)
+
+    with (
+        patch("cointoss.ingest.hold", side_effect=RuntimeError("disk full")),
+        pytest.raises(RuntimeError, match="disk full"),
+    ):
+        await add(ns, ALICE, portfolio.id, BTC, quantity=1.0)
+
+    with stored(data_dir) as store:
+        assert store.trades_of(portfolio.id) == []
+
+
 async def test_voiding_twice_is_an_error_and_keeps_the_first_void(ns: Namespace, data_dir: Path):
     portfolio = create(ns, ALICE)
     trade = await add(ns, ALICE, portfolio.id, BTC, quantity=1.0)
