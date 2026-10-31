@@ -120,6 +120,7 @@ from cointoss.store import (
 from cointoss.universe import EvaluationRun
 
 __all__ = [
+    "BACKFILL_NODE",
     "BACKFILL_TRIGGER",
     "DEFAULT_BACKFILL_SCHEDULE",
     "DEFAULT_SWEEP_SCHEDULE",
@@ -128,6 +129,7 @@ __all__ = [
     "PORTFOLIO_GRANTS",
     "PORTFOLIO_ROLE",
     "SWEEP_LOCK_WAIT",
+    "SWEEP_NODE",
     "SWEEP_TRIGGER",
     "WRITE_TARGET",
     "ApiError",
@@ -145,6 +147,7 @@ __all__ = [
     "UniverseView",
     "fragment_entry",
     "fragment_schedule",
+    "one_line",
     "sweep_lock",
     "sweep_lock_async",
     "utc_today",
@@ -158,9 +161,12 @@ E = TypeVar("E", bound=StrEnum)
 DEFAULT_SWEEP_SCHEDULE = "5 0 * * *"
 """Five past midnight UTC: after CoinGecko's 00:00 point exists, and early enough to be it."""
 
+SWEEP_NODE = "sweep"
+"""The fragment's sweep node, as named in a namespace entry's `configs`."""
 SWEEP_TRIGGER = "daily_sweep"
 DEFAULT_BACKFILL_SCHEDULE = "0 1 * * *"
 """01:00 UTC: after the default sweep has written the day's bars and released the lock."""
+BACKFILL_NODE = "backfill"
 BACKFILL_TRIGGER = "daily_backfill"
 FRAGMENT_GREF = "cointoss.app:CointossApp"
 NAMESPACE = "cointoss"
@@ -204,8 +210,10 @@ def fragment_entry(
         "gref": FRAGMENT_GREF,
         "nsref": "data:",
         "configs": {
-            "sweep": {"triggers": [{"name": SWEEP_TRIGGER, "schedule": schedule}]},
-            "backfill": {"triggers": [{"name": BACKFILL_TRIGGER, "schedule": backfill_schedule}]},
+            SWEEP_NODE: {"triggers": [{"name": SWEEP_TRIGGER, "schedule": schedule}]},
+            BACKFILL_NODE: {
+                "triggers": [{"name": BACKFILL_TRIGGER, "schedule": backfill_schedule}]
+            },
         },
     }
     if data_dir is not None:
@@ -214,13 +222,13 @@ def fragment_entry(
 
 
 def fragment_schedule(
-    entry: dict[str, Any], node: str = "sweep", trigger: str = SWEEP_TRIGGER
+    entry: dict[str, Any], node: str = SWEEP_NODE, trigger: str = SWEEP_TRIGGER
 ) -> str | None:
     """A node's daily schedule in a namespace entry shaped like `fragment_entry`'s, if any.
 
     >>> fragment_schedule(fragment_entry(schedule="35 0 * * *"))
     '35 0 * * *'
-    >>> fragment_schedule(fragment_entry(), "backfill", BACKFILL_TRIGGER)
+    >>> fragment_schedule(fragment_entry(), BACKFILL_NODE, BACKFILL_TRIGGER)
     '0 1 * * *'
     >>> fragment_schedule({"type": "fragment"}) is None
     True
@@ -669,7 +677,7 @@ class CointossApp(NamespaceFragment):
                     portfolio_id, named, when, quantity, kind=trade_kind, cost=cost, note=note
                 )
             except ValidationError as exc:
-                raise BadRequest(_one_line(exc)) from None
+                raise BadRequest(one_line(exc)) from None
             ingest.hold(store, named, by_source, by_symbol, now.date())
         return trade
 
@@ -747,10 +755,21 @@ def _choice(enum: type[E], value: str, name: str) -> E:
         raise BadRequest(f"{name}: {value!r} is not one of {allowed}") from None
 
 
-def _one_line(exc: ValidationError) -> str:
-    return "; ".join(
-        f"{'.'.join(str(part) for part in error['loc'])}: {error['msg']}" for error in exc.errors()
-    )
+def one_line(exc: Exception, *, whole: str = "") -> str:
+    """An error's message on one line: each validation error's field and reason, or the text.
+
+    A validation error of the whole model, with no field, is labelled `whole` when given.
+
+    >>> one_line(ValueError("not   here"))
+    'not here'
+    """
+    if not isinstance(exc, ValidationError):
+        return " ".join(str(exc).split())
+    reasons: list[str] = []
+    for error in exc.errors():
+        label = ".".join(str(part) for part in error["loc"]) or whole
+        reasons.append(f"{label}: {error['msg']}" if label else error["msg"])
+    return "; ".join(reasons)
 
 
 def _moment(value: str, name: str) -> dt.datetime:

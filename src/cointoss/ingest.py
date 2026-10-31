@@ -64,7 +64,6 @@ from cointoss.instrument import (
     InstrumentType,
     Observation,
     Outcome,
-    ReferenceKind,
     Source,
     normalize_symbol,
 )
@@ -677,10 +676,9 @@ async def _unlisted_inclusions(
     listed = {coin.id for coin in listing}
     wanted = sorted(
         {
-            ref.value
+            coin_id
             for instrument_id in included
-            for ref in registry.survivor(instrument_id).references
-            if ref.kind is ReferenceKind.PROVIDER_ID and ref.qualifier == Source.COINGECKO
+            for coin_id in registry.survivor(instrument_id).provider_ids(Source.COINGECKO)
         }
         - listed
     )
