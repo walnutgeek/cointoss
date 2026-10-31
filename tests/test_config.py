@@ -25,6 +25,7 @@ from cointoss.config import (
     HOME_ENV,
     DuplicateUniverse,
     Reconciliation,
+    ReservedUniverse,
     Settings,
     UniverseDeclaration,
     UniverseReconciled,
@@ -33,6 +34,7 @@ from cointoss.config import (
 )
 from cointoss.ingest import DEFAULT_BAR_WINDOW, DEFAULT_TOP_N, pin_member
 from cointoss.instrument import InstrumentId, Source
+from cointoss.portfolio import PORTFOLIO_HELD
 from cointoss.sources.openfigi import API_KEY_ENV
 from cointoss.store import Store
 from cointoss.universe import (
@@ -165,6 +167,12 @@ def test_a_config_naming_an_unknown_field_is_refused():
         UniverseDeclaration.model_validate(
             {"name": "cg-top-100", "enter_rank": 100, "exit_rank": 120, "source": "coingecko"}
         )
+
+
+def test_the_portfolio_held_universe_cannot_be_declared():
+    """Trades own its Inclusions; a declared band would turn it into a rank universe."""
+    with pytest.raises(ReservedUniverse, match=PORTFOLIO_HELD):
+        UniverseDeclaration(name=PORTFOLIO_HELD, enter_rank=100, exit_rank=120)
 
 
 def test_a_definition_dropped_from_config_stays_stored_and_unchanged(store: Store):

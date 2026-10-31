@@ -20,6 +20,21 @@ The read nodes are tagged `api`, so woodglue serves them over JSON-RPC as `coint
 and so on. `sweep` is not: it writes and calls CoinGecko, so it runs from its trigger, from
 woodglue's `system.fire_trigger`, or from the CLI, never from an ordinary API call.
 
+The portfolio writes, `create_portfolio`, `add_trade` and `void_trade`, are `api` nodes too, but
+a woodglue Grant names a whole namespace, so `call cointoss` alone would reach them, and that is
+the explorer's Grant. Each write therefore checks a second Grant itself: `call` on
+`WRITE_TARGET`, `cointoss.portfolio`. No namespace can be called that, since woodglue splits a
+method name at its first dot, so the Grant means only "may write portfolios". The `portfolio`
+Role (`PORTFOLIO_ROLE`, `PORTFOLIO_GRANTS`) holds it beside `call cointoss`, and the built-in
+`admin` Role holds every Grant. A Delegated Token is narrowed to its UI's `grants`, so the
+explorer's token cannot write whoever views it. A refused write raises woodglue's
+`AccessDenied` before anything is read or written, which a JSON-RPC client receives as -32003.
+
+The caller is the owner: `create_portfolio` records the Caller's User id, and `add_trade` and
+`void_trade` act only on that User's Portfolios. Another User's Portfolio or Trade is reported
+exactly as a missing one is, `NotFound`, so ids do not reveal what others hold. With auth
+disabled every request is woodglue's anonymous Caller, and owns as `anonymous`.
+
 Runtime settings come from the data directory (`cointoss.config.Settings`): `init.data_dir` if
 given, else woodglue's instance data directory (`current_mount`), else `$COINTOSS_HOME`, else
 `~/.local/share/cointoss`. A `woodglue.yaml` written by `cointoss init` carries no
@@ -62,39 +77,56 @@ import logging
 import time
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager, contextmanager
+from enum import StrEnum
 from pathlib import Path
-from typing import IO, Any, ClassVar
+from typing import IO, Any, ClassVar, TypeVar
 
 from lythonic.compose.namespace import NamespaceFragment, nsnode
 from lythonic.frame import FrameData
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, ValidationError
+from woodglue.access import ANONYMOUS, Action, check, current_caller
 from woodglue.apps.rpc import RpcError
 from woodglue.mount import current_mount
 
 from cointoss import ingest
 from cointoss.config import Settings, UniverseReconciled, ensure_universes
 from cointoss.datasets import DatasetView, InvalidParams, UnknownDataset, describe, lookup
-from cointoss.instrument import InstrumentId, Source
+from cointoss.instrument import InstrumentError, InstrumentId, Source
+from cointoss.portfolio import PORTFOLIO_HELD, Portfolio, PortfolioKind, Trade, TradeKind, UserId
 from cointoss.prices import Bar, as_utc
 from cointoss.series import NotYetStarted
-from cointoss.store import Store, TooManyRows, UnknownInstrument, UnknownUniverse
+from cointoss.store import (
+    DuplicatePortfolio,
+    Store,
+    TooManyRows,
+    TradeAlreadyVoided,
+    UnknownInstrument,
+    UnknownTrade,
+    UnknownUniverse,
+)
 from cointoss.universe import EvaluationRun
 
 __all__ = [
     "DEFAULT_SWEEP_SCHEDULE",
     "FRAGMENT_GREF",
+    "NAMESPACE",
+    "PORTFOLIO_GRANTS",
+    "PORTFOLIO_ROLE",
     "SWEEP_LOCK_WAIT",
     "SWEEP_TRIGGER",
+    "WRITE_TARGET",
     "ApiError",
     "BadRequest",
     "ChangeView",
     "CointossApp",
+    "Conflict",
     "MemberView",
     "MembersView",
     "NotFound",
     "NotInitialized",
     "SweepInProgress",
     "SweepOutcome",
+    "Unauthorized",
     "UniverseView",
     "fragment_entry",
     "fragment_schedule",
@@ -106,11 +138,20 @@ __all__ = [
 
 log = logging.getLogger(__name__)
 
+E = TypeVar("E", bound=StrEnum)
+
 DEFAULT_SWEEP_SCHEDULE = "5 0 * * *"
 """Five past midnight UTC: after CoinGecko's 00:00 point exists, and early enough to be it."""
 
 SWEEP_TRIGGER = "daily_sweep"
 FRAGMENT_GREF = "cointoss.app:CointossApp"
+NAMESPACE = "cointoss"
+"""The woodglue namespace `cointoss init` mounts the fragment under."""
+WRITE_TARGET = f"{NAMESPACE}.portfolio"
+"""The target of the `call` Grant a portfolio write checks for; never a namespace's name."""
+PORTFOLIO_ROLE = "portfolio"
+PORTFOLIO_GRANTS = (f"call {NAMESPACE}", f"call {WRITE_TARGET}")
+"""The Grants of `PORTFOLIO_ROLE`: the read API and the portfolio writes."""
 SWEEP_LOCK = "sweep.lock"
 SWEEP_LOCK_WAIT = 600.0
 """Seconds a scheduled sweep or a backup waits for the sweep lock before giving up."""
@@ -186,6 +227,18 @@ class BadRequest(ApiError):
     """A parameter is malformed: not an ISO date, a range ending before it starts."""
 
     code: int = -32602
+
+
+class Unauthorized(ApiError):
+    """A write called in-process, with no Caller to own what it writes."""
+
+    code: int = -32000
+
+
+class Conflict(ApiError):
+    """The write contradicts what is stored: a Portfolio name taken, a Trade already voided."""
+
+    code: int = -32004
 
 
 class SweepInProgress(Exception):
@@ -334,8 +387,10 @@ class CointossApp(NamespaceFragment):
         try:
             with Store(self.settings.db_path) as store:
                 yield store
-        except (UnknownUniverse, UnknownInstrument, NotYetStarted) as exc:
+        except (UnknownUniverse, UnknownInstrument, UnknownTrade, NotYetStarted) as exc:
             raise NotFound(str(exc)) from exc
+        except (DuplicatePortfolio, TradeAlreadyVoided) as exc:
+            raise Conflict(str(exc)) from exc
 
     @nsnode(tags=["scheduled"])
     async def sweep(self, force: bool = False, wait: float = SWEEP_LOCK_WAIT) -> SweepOutcome:
@@ -348,11 +403,13 @@ class CointossApp(NamespaceFragment):
         evaluating it again, and keeps any bar already stored for the day, so a re-sweep only
         fills in what is missing and never files a Restatement against the day's own bars.
 
+        The universes swept are the declared ones and, once a trade has created it,
+        `portfolio-held`.
+
         Creates the data directory and store if absent. Waits up to `wait` seconds for the sweep
         lock, since the trigger fires the node with no arguments, and raises `SweepInProgress` if
         another sweep or a backup still holds it then.
         """
-        names = [declared.name for declared in self.settings.universes]
         self.settings.data_dir.mkdir(parents=True, exist_ok=True)
         async with sweep_lock_async(self.settings.data_dir, wait):
             # Read the clock once the lock is held: the wait may have taken minutes.
@@ -360,6 +417,9 @@ class CointossApp(NamespaceFragment):
             day = now.date()
             with Store(self.settings.db_path) as store:
                 reconciled = ensure_universes(store, self.settings.universes, day)
+                names = [declared.name for declared in self.settings.universes]
+                if store.load_universe(PORTFOLIO_HELD) is not None:
+                    names.append(PORTFOLIO_HELD)
                 swept_today = {name for name in names if store.runs_on(name, day)}
                 if not force and names and swept_today >= set(names):
                     log.info("sweep %s: already swept", day)
@@ -508,6 +568,150 @@ class CointossApp(NamespaceFragment):
                     f"{dataset}: {exc.count} rows match, over the cap of {exc.limit}; "
                     "narrow the range, the instruments or the universe"
                 ) from None
+
+    @nsnode(tags=["api"])
+    def create_portfolio(
+        self, name: str, kind: str = PortfolioKind.REAL, custodian: str | None = None
+    ) -> Portfolio:
+        """Create a Portfolio owned by the caller. `kind` is `real`, `paper` or `what_if`.
+
+        A name is unique among the caller's own Portfolios; reusing one is a `Conflict`.
+        """
+        owner = _writer()
+        portfolio_kind = _choice(PortfolioKind, kind, "kind")
+        if not name.strip():
+            raise BadRequest("name: a portfolio needs a name")
+        with self._store() as store:
+            return store.create_portfolio(owner, name.strip(), portfolio_kind, custodian)
+
+    @nsnode(tags=["api"])
+    async def add_trade(
+        self,
+        portfolio_id: int,
+        instrument: str,
+        quantity: float,
+        cost: float | None = None,
+        traded_at: str | None = None,
+        kind: str = TradeKind.REAL,
+        note: str | None = None,
+        source: str = Source.COINGECKO,
+        coingecko_id: str | None = None,
+    ) -> Trade:
+        """Record a Trade in one of the caller's Portfolios, and hold its Instrument for pricing.
+
+        `instrument` is a stored Instrument Id (`type.scope.symbol`) or a symbol typed against
+        `source`, pinned as `cointoss.ingest.resolve_typed_symbol` pins one, with its mandatory
+        FIGI attempt; `coingecko_id` names the coin when a CoinGecko symbol is shared. A positive
+        `quantity` is a buy, a negative one a sale; `cost` is the Trade's total in USD.
+        `traded_at` is an ISO time, read as UTC when it has no offset, and now by default.
+
+        The Instrument is then included in `portfolio-held`, created on first use, so the next
+        sweep writes its bar even when it ranks outside every declared universe.
+        """
+        owner = _writer()
+        now = as_utc(utcnow())
+        when = now if traded_at is None else _moment(traded_at, "traded_at")
+        trade_kind = _choice(TradeKind, kind, "kind")
+        typed_source = _choice(Source, source, "source")
+        with self._store() as store:
+            _require_owned(store, owner, portfolio_id)
+            named, by_source, by_symbol = await _named_instrument(
+                store, instrument, typed_source, now.date(), coingecko_id
+            )
+            try:
+                trade = store.record_trade(
+                    portfolio_id, named, when, quantity, kind=trade_kind, cost=cost, note=note
+                )
+            except ValidationError as exc:
+                raise BadRequest(_one_line(exc)) from None
+            ingest.hold(store, named, by_source, by_symbol, now.date())
+        return trade
+
+    @nsnode(tags=["api"])
+    def void_trade(self, trade_id: int) -> Trade:
+        """Void one of the caller's Trades now. It stays recorded and counts toward nothing.
+
+        A Trade is voided once: voiding it again is a `Conflict`, and the first Void stands.
+        """
+        owner = _writer()
+        with self._store() as store:
+            trade = store.load_trade(trade_id)
+            if trade is None or not _owns(store, owner, trade.portfolio_id):
+                raise NotFound(f"no trade {trade_id} of yours")
+            return store.void_trade(trade_id, at=as_utc(utcnow()))
+
+
+def _writer() -> UserId:
+    """The User a portfolio write runs as, once the Caller is shown to hold the write Grant."""
+    check(Action.call, WRITE_TARGET)
+    caller = current_caller.get()
+    if caller is None:
+        raise Unauthorized("a portfolio write runs as a User; call it over JSON-RPC")
+    return caller.user_id or ANONYMOUS.name
+
+
+def _owns(store: Store, owner: UserId, portfolio_id: int) -> bool:
+    portfolio = store.load_portfolio(portfolio_id)
+    return portfolio is not None and portfolio.owner == owner
+
+
+def _require_owned(store: Store, owner: UserId, portfolio_id: int) -> None:
+    if not _owns(store, owner, portfolio_id):
+        raise NotFound(f"no portfolio {portfolio_id} of yours")
+
+
+async def _named_instrument(
+    store: Store, instrument: str, source: Source, at: dt.date, coingecko_id: str | None
+) -> tuple[InstrumentId, Source, str]:
+    """The stored Instrument a trade names, with the source and symbol it was named by.
+
+    Text with the two dots of `type.scope.symbol` is an Id, which must be stored, and is
+    recorded by its Identity Source and display symbol. Anything else is a symbol, pinned
+    against `source`.
+    """
+    if instrument.count(".") == 2:
+        try:
+            stored = store.load_instrument(InstrumentId(instrument))
+        except (ValueError, InstrumentError) as exc:
+            raise BadRequest(f"instrument: {exc}") from None
+        if stored is None:
+            raise NotFound(f"{instrument} is not stored")
+        return stored.id, stored.identity_source, stored.symbol
+    try:
+        pinned = await ingest.resolve_typed_symbol(
+            store, source, instrument, at, coingecko_id=coingecko_id
+        )
+    except ValueError as exc:
+        raise BadRequest(str(exc)) from None
+    if pinned is None:
+        raise NotFound(f"{instrument!r} typed against {source} names no single Instrument")
+    return pinned, source, instrument
+
+
+def _choice(enum: type[E], value: str, name: str) -> E:
+    """`value` as a member of `enum`, or `BadRequest` naming the parameter and the choices.
+
+    >>> _choice(PortfolioKind, "paper", "kind")
+    <PortfolioKind.PAPER: 'paper'>
+    """
+    try:
+        return enum(value)
+    except ValueError:
+        allowed = ", ".join(member.value for member in enum)
+        raise BadRequest(f"{name}: {value!r} is not one of {allowed}") from None
+
+
+def _one_line(exc: ValidationError) -> str:
+    return "; ".join(
+        f"{'.'.join(str(part) for part in error['loc'])}: {error['msg']}" for error in exc.errors()
+    )
+
+
+def _moment(value: str, name: str) -> dt.datetime:
+    try:
+        return as_utc(dt.datetime.fromisoformat(value))
+    except (TypeError, ValueError):
+        raise BadRequest(f"{name}: {value!r} is not an ISO time (YYYY-MM-DDTHH:MM)") from None
 
 
 def _date(value: str, name: str) -> dt.date:

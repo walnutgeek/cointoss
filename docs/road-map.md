@@ -37,10 +37,10 @@ whose bearer token `cointoss token` prints; no Identity Provider is configured y
 | `cointoss.prices` | `Bar`, `CorporateAction`, `Restatement`, source mapping, split-aware restatement detection. ADR-0009. |
 | `cointoss.store` | The only module that touches SQL. Eighteen tables, enforced pragmas, `SchemaVersion` with migrations. Membership by date or Instrument, bars resolved through Price Sources and dated by the session closed (Session Offset). ADR-0008. |
 | `cointoss.portfolio` | `Portfolio` owned by a User, single-leg `Trade` voided rather than deleted, `PortfolioPosition` derived on read with average cost (#32). Stored as `Portfolio` and `Trade`, schema version 2. ADR-0001. |
-| `cointoss.ingest` | Pinning a typed ticker: the mandatory FIGI attempt, resolve or mint, retrying an unresolved Instrument. ADR-0004. The daily market sweep (#19): CoinGecko `markets` to Instruments, membership and the day's bars with market cap, written only within the bar window after 00:00 UTC and never over a bar already stored. |
+| `cointoss.ingest` | Pinning a typed ticker: the mandatory FIGI attempt, resolve or mint, retrying an unresolved Instrument. ADR-0004. The daily market sweep (#19): CoinGecko `markets` to Instruments, membership and the day's bars with market cap, written only within the bar window after 00:00 UTC and never over a bar already stored. An Inclusion the listing leaves out is fetched by its CoinGecko id (#33). |
 | `cointoss.config` | Universe Declarations in config, reconciled into stored Universe Definitions (#20). `Settings`: the data directory (`--data-dir`, `COINTOSS_HOME`, `~/.local/share/cointoss`), its `cointoss.db` and optional `cointoss.yaml` with `top_n` and `bar_window_hours` (#21). |
-| `cointoss.app` | The `CointossApp` namespace fragment (#21): a `sweep` node on a daily cron trigger, idempotent within a UTC day and serialised by a lock file, and read nodes `members`, `changes`, `bars`, `universes_of`, `runs`, `universes` served over woodglue JSON-RPC. |
-| `cointoss.cli` | The `cointoss` command (#22): `init` writes `cointoss.yaml`, `woodglue.yaml` and the store, idempotently, and with `--systemd` the `systemd --user` unit; `sweep` runs today's sweep through the fragment's node, with no date to choose; `status` and `token`. `init --unit`, `--port` and `--schedule` let instances run side by side (#23). |
+| `cointoss.app` | The `CointossApp` namespace fragment (#21): a `sweep` node on a daily cron trigger, idempotent within a UTC day and serialised by a lock file, and read nodes `members`, `changes`, `bars`, `universes_of`, `runs`, `universes` served over woodglue JSON-RPC. Portfolio writes `create_portfolio`, `add_trade`, `void_trade` behind the `portfolio` Role's `call cointoss.portfolio` Grant, owner-only, a traded Instrument held in `portfolio-held` (#33). |
+| `cointoss.cli` | The `cointoss` command (#22): `init` writes `cointoss.yaml`, `woodglue.yaml` and the store, idempotently, and with `--systemd` the `systemd --user` unit; `sweep` runs today's sweep through the fragment's node, with no date to choose; `status` and `token`. `init --unit`, `--port` and `--schedule` let instances run side by side (#23). `portfolio create`, `trade add` and `trade void` call the portfolio writes over JSON-RPC with a bearer token, against the local instance or any `--url` (#33). |
 
 ### Not built
 
@@ -143,8 +143,12 @@ early, because accumulated history is the one thing that cannot be produced late
    average cost, each Portfolio owned by a User, USD only, no Snapshot yet. Real holdings live on
    int, so it ships in a release.
    1. **Storage (#32).** Done. `Portfolio` and `Trade` tables, positions on read.
-   2. **Writes (#33).** JSON-RPC methods behind a Role, CLI as a client; a traded Instrument is
-      pinned into a `portfolio-held` universe.
+   2. **Writes (#33).** Done. `create_portfolio`, `add_trade` and `void_trade` over JSON-RPC,
+      each checking `call cointoss.portfolio`, which the `portfolio` Role and `admin` hold and the
+      explorer's Delegated Token does not; the caller owns what it creates and touches only its
+      own. `cointoss portfolio create`, `trade add` and `trade void` are clients of them. A traded
+      Instrument is an Inclusion of `portfolio-held`, which the sweep evaluates and prices,
+      fetching by CoinGecko id an Inclusion the `markets` listing leaves out.
    3. **Datasets (#34).** `trades`, `positions`, `portfolio_value`, each the caller's own only.
 8. **Yahoo and stocks.** Deferred 2026-10-30 behind the crypto portfolio. The FIGI path in
    earnest, exchange calendars, corporate actions. Grilling started on a curated, Inclusion-only

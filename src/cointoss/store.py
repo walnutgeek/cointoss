@@ -2441,6 +2441,10 @@ class Store:
         self.conn.commit()
         return self._trades_from([row])[0]
 
+    def load_trade(self, trade_id: int) -> Trade | None:
+        row = TradeRow.load_by_id(self.conn, trade_id)
+        return None if row is None else self._trades_from([row])[0]
+
     def trades_of(self, portfolio_id: int) -> list[Trade]:
         """Every Trade of a Portfolio in trade order, voided ones included and flagged.
 

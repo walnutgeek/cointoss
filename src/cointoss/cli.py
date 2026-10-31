@@ -7,6 +7,10 @@
     cointoss token    [--data-dir D]               print the JSON-RPC bearer token
     cointoss backup   [--data-dir D] DEST          copy the database and configs into DEST
     cointoss restore  [--data-dir D] SRC           copy a backup into a stopped instance
+    cointoss portfolio create NAME [--kind K] [--custodian C]       [--url U] [--token T]
+    cointoss trade add PORTFOLIO INSTRUMENT QUANTITY [--cost USD] [--at TIME] [--kind K]
+                       [--note N] [--source S] [--coingecko-id ID]  [--url U] [--token T]
+    cointoss trade void TRADE                                       [--url U] [--token T]
 
 The data directory is `--data-dir`, else `$COINTOSS_HOME`, else `~/.local/share/cointoss`
 (`cointoss.config.resolve_data_dir`). It holds `cointoss.db`, `cointoss.yaml`, `woodglue.yaml`
@@ -42,6 +46,15 @@ instance and waits for a sweep in progress; `restore` refuses while the server f
 directory runs, and checks the backup's configs as `init` checks an instance's before writing
 anything. It leaves `auth.db` alone: `cointoss init` afterwards creates a token if there is none.
 
+`portfolio` and `trade` are JSON-RPC clients of a running server rather than writers of the
+local store, so they work the same against int from another machine on the tailnet, and run as
+whoever the token names: that User owns what they create. They call the fragment's
+`create_portfolio`, `add_trade` and `void_trade` (see `cointoss.app` for the Role they need).
+The server is `--url`, else `$COINTOSS_URL`, else the local instance's own `woodglue.yaml`; the
+token is `--token`, else `$COINTOSS_TOKEN`, else the local instance's admin token when calling
+it, else the one `wgl login URL` stored. `init` writes the `portfolio` Role into a new
+`woodglue.yaml`, and reports a kept one that lacks it.
+
 Expected failures -- a config that does not load, a sweep already running, a missing store --
 are turned into `CliError` where they arise and reported as one line. Anything else is a bug
 and keeps its traceback.
@@ -65,19 +78,24 @@ from contextlib import contextmanager
 from importlib.resources import files
 from pathlib import Path
 from string import Template
-from typing import Any
+from typing import Any, NamedTuple
 
 import yaml
 from croniter import CroniterError, croniter
 from lythonic.compose.engine import resolve_file
 from pydantic import ValidationError
 from ruamel.yaml import YAMLError as WoodglueYAMLError
+from tornado.httpclient import HTTPClientError
 from woodglue.auth_store import AuthStore
+from woodglue.client import WoodglueClient, WoodglueRpcError
 from woodglue.config import CONFIG_FILENAME as WOODGLUE_CONFIG
 from woodglue.config import WoodglueConfig, load_config
 
 from cointoss.app import (
     DEFAULT_SWEEP_SCHEDULE,
+    NAMESPACE,
+    PORTFOLIO_GRANTS,
+    PORTFOLIO_ROLE,
     SWEEP_TRIGGER,
     CointossApp,
     SweepInProgress,
@@ -94,6 +112,7 @@ from cointoss.config import (
     resolve_data_dir,
 )
 from cointoss.instrument import Source
+from cointoss.portfolio import PORTFOLIO_HELD, PortfolioKind, TradeKind
 from cointoss.prices import as_utc
 from cointoss.store import Store, UnknownUniverse
 from cointoss.universe import UniverseError
@@ -103,7 +122,8 @@ __all__ = ["main", "render_unit", "user_unit_dir"]
 UNIT_TEMPLATE = "cointoss.service"
 DEFAULT_UNIT = "cointoss"
 DEFAULT_PORT = 5321
-NAMESPACE = "cointoss"
+URL_ENV = "COINTOSS_URL"
+TOKEN_ENV = "COINTOSS_TOKEN"
 EXPLORE_UI = "explore"
 EXPLORER_SCRIPT = Path(__file__).with_name("explorer_app.py")
 UNIT_NAME_CHARS = frozenset(string.ascii_letters + string.digits + "_.-")
@@ -197,7 +217,9 @@ def explorer_ui() -> dict[str, Any]:
 
     Its only Grant is `call` on the cointoss namespace, so whoever views it, the app can do no
     more than call cointoss's read nodes: woodglue exposes only `api` nodes over JSON-RPC, so
-    the sweep is not callable, and firing its trigger needs a `trigger` Grant.
+    the sweep is not callable, and firing its trigger needs a `trigger` Grant. The portfolio
+    writes are `api` nodes but also check `call` on `cointoss.app.WRITE_TARGET`, which this
+    Grant does not cover.
     """
     return {
         "kind": "streamlit",
@@ -205,6 +227,14 @@ def explorer_ui() -> dict[str, Any]:
         "label": "Explore",
         "grants": [f"call {NAMESPACE}"],
     }
+
+
+def auth_roles() -> dict[str, list[str]]:
+    """The Roles a new `woodglue.yaml` defines: `portfolio`, for Users who record their trades.
+
+    The built-in `admin` Role, whose token `cointoss token` prints, needs no definition.
+    """
+    return {PORTFOLIO_ROLE: list(PORTFOLIO_GRANTS)}
 
 
 def woodglue_config(
@@ -217,7 +247,7 @@ def woodglue_config(
     config: dict[str, Any] = {
         "host": "127.0.0.1",
         "port": port,
-        "auth": {"enabled": True},
+        "auth": {"enabled": True, "roles": auth_roles()},
         "namespaces": {
             NAMESPACE: {
                 "expose_api": True,
@@ -368,6 +398,7 @@ def cmd_init(
     elif schedule is not None:
         _warn_after_bar_window(schedule, settings.bar_window)
     _report_explorer(data_dir, config, installed=explorer)
+    _report_portfolio_role(config)
 
     with Store(settings.db_path) as store:
         for reconciled in ensure_universes(store, settings.universes, utc_today()):
@@ -396,6 +427,18 @@ def _report_differences(config: WoodglueConfig, *, port: int | None, schedule: s
             f"{WOODGLUE_CONFIG}: {SWEEP_TRIGGER} schedule {configured!r} differs from "
             f"--schedule {schedule!r}; {fix}"
         )
+
+
+def _report_portfolio_role(config: WoodglueConfig) -> None:
+    """Say what to add when a kept `woodglue.yaml` has no `portfolio` Role to grant Users.
+
+    Without it only the admin token can write portfolios, so it is reported rather than refused.
+    """
+    if not config.auth.enabled or PORTFOLIO_ROLE in config.auth.roles:
+        return
+    snippet = yaml.safe_dump({"auth": {"roles": auth_roles()}}, sort_keys=False)
+    print(f"{WOODGLUE_CONFIG}: no `{PORTFOLIO_ROLE}` Role; for Users who record trades, add:")
+    print("".join(f"  {line}" for line in snippet.splitlines(keepends=True)), end="")
 
 
 def _report_explorer(data_dir: Path, config: WoodglueConfig, *, installed: bool) -> None:
@@ -511,6 +554,8 @@ def cmd_status(data_dir: Path) -> None:
     with Store(settings.db_path) as store:
         for declared in settings.universes:
             print(_universe_status(store, declared.name, today))
+        if store.load_universe(PORTFOLIO_HELD) is not None:
+            print(_universe_status(store, PORTFOLIO_HELD, today))
         latest = store.latest_bar_date()
     print(f"last bar {latest}" if latest else "last bar: none yet")
 
@@ -579,6 +624,92 @@ def cmd_restore(data_dir: Path, src: Path) -> None:
         print("no auth.db: run `cointoss init` to create a token")
 
 
+class Endpoint(NamedTuple):
+    """A server's base URL, and the bearer token to send it; None for what `wgl login` stored."""
+
+    url: str
+    token: str | None
+
+
+def _endpoint(data_dir: Path, url: str | None, token: str | None) -> Endpoint:
+    """Where the portfolio commands send their calls, and as whom.
+
+    The URL is `--url`, else `$COINTOSS_URL`, else the local instance's `woodglue.yaml`. The
+    token is `--token`, else `$COINTOSS_TOKEN`, else the local instance's admin token when
+    calling that instance, else whatever `wgl login` stored for the URL.
+    """
+    url = url or os.environ.get(URL_ENV)
+    token = token or os.environ.get(TOKEN_ENV)
+    if url:
+        return Endpoint(url, token)
+    try:
+        config = load_config(data_dir)
+    except FileNotFoundError:
+        raise CliError(
+            f"no instance at {data_dir}; give --url (or ${URL_ENV}) to reach one elsewhere"
+        ) from None
+    except (ValidationError, WoodglueYAMLError) as exc:
+        raise CliError(f"{data_dir / WOODGLUE_CONFIG}: {_one_line(exc)}") from exc
+    # A server listening on every interface is reached locally on loopback.
+    host = "127.0.0.1" if config.host in ("0.0.0.0", "::", "") else config.host
+    if token is None and (auth := _auth_store(data_dir, config)) is not None:
+        tokens = auth.admin_tokens()
+        token = tokens[0] if len(tokens) == 1 else None
+    return Endpoint(f"http://{host}:{config.port}", token)
+
+
+def _call(endpoint: Endpoint, method: str, **params: Any) -> dict[str, Any]:
+    """Call one of the fragment's JSON-RPC methods; a failure of any kind is a `CliError`."""
+
+    async def call() -> Any:
+        # Built inside the loop `asyncio.run` makes: tornado binds a client to its loop.
+        client = WoodglueClient(endpoint.url, token=endpoint.token)
+        sent = {name: value for name, value in params.items() if value is not None}
+        return await client.call(f"{NAMESPACE}.data:{method}", **sent)
+
+    try:
+        return asyncio.run(call())
+    except WoodglueRpcError as exc:
+        hint = "; give --token, or `wgl login` to the server" if exc.code == -32000 else ""
+        raise CliError(f"{exc.message}{hint}") from None
+    except (HTTPClientError, OSError) as exc:
+        raise CliError(f"{endpoint.url}: {exc}") from None
+
+
+def cmd_portfolio_create(endpoint: Endpoint, name: str, kind: str, custodian: str | None) -> None:
+    portfolio = _call(endpoint, "create_portfolio", name=name, kind=kind, custodian=custodian)
+    print(
+        f"portfolio {portfolio['id']}: {portfolio['name']} ({portfolio['kind']}), "
+        f"owned by {portfolio['owner']}"
+    )
+
+
+def cmd_trade_add(endpoint: Endpoint, args: argparse.Namespace) -> None:
+    trade = _call(
+        endpoint,
+        "add_trade",
+        portfolio_id=args.portfolio_id,
+        instrument=args.instrument,
+        quantity=args.quantity,
+        cost=args.cost,
+        traded_at=args.at,
+        kind=args.kind,
+        note=args.note,
+        source=args.source,
+        coingecko_id=args.coingecko_id,
+    )
+    cost = "" if trade["cost"] is None else f", cost {trade['cost']:g} USD"
+    print(
+        f"trade {trade['id']}: {trade['quantity']:+g} {trade['instrument_id']} "
+        f"at {trade['traded_at']}{cost}"
+    )
+
+
+def cmd_trade_void(endpoint: Endpoint, trade_id: int) -> None:
+    trade = _call(endpoint, "void_trade", trade_id=trade_id)
+    print(f"trade {trade['id']}: voided at {trade['voided_at']}")
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="cointoss", description="Set up, sweep and check a cointoss instance."
@@ -626,6 +757,55 @@ def _parser() -> argparse.ArgumentParser:
         "restore", parents=[data], help="copy a backup into an instance with no database"
     )
     restore.add_argument("src", type=Path, help="a directory `cointoss backup` wrote")
+
+    server = argparse.ArgumentParser(add_help=False, parents=[data])
+    server.add_argument(
+        "--url",
+        help=f"the server's base URL (default: ${URL_ENV}, else the local instance's)",
+    )
+    server.add_argument(
+        "--token",
+        help=f"bearer token (default: ${TOKEN_ENV}, else the local instance's admin token, "
+        "else what `wgl login` stored for the URL)",
+    )
+    portfolio = commands.add_parser("portfolio", help="create a portfolio on a server")
+    portfolio_actions = portfolio.add_subparsers(dest="action", required=True)
+    create = portfolio_actions.add_parser(
+        "create", parents=[server], help="create a portfolio you own"
+    )
+    create.add_argument("name")
+    create.add_argument(
+        "--kind", choices=[k.value for k in PortfolioKind], default=PortfolioKind.REAL.value
+    )
+    create.add_argument("--custodian", help="who holds the assets, such as an exchange")
+
+    trade = commands.add_parser("trade", help="record or void a trade on a server")
+    trade_actions = trade.add_subparsers(dest="action", required=True)
+    add = trade_actions.add_parser(
+        "add", parents=[server], help="record a trade in a portfolio you own"
+    )
+    add.add_argument("portfolio_id", type=int, metavar="PORTFOLIO")
+    add.add_argument(
+        "instrument", metavar="INSTRUMENT", help="an Instrument Id or a symbol, such as btc"
+    )
+    add.add_argument("quantity", type=float, metavar="QUANTITY", help="negative for a sale")
+    add.add_argument("--cost", type=float, metavar="USD", help="the trade's total in USD")
+    add.add_argument(
+        "--at", metavar="TIME", help="when it traded, ISO, UTC unless an offset is given (now)"
+    )
+    add.add_argument("--kind", choices=[k.value for k in TradeKind], default=TradeKind.REAL.value)
+    add.add_argument("--note")
+    add.add_argument(
+        "--source",
+        choices=[s.value for s in Source],
+        default=Source.COINGECKO.value,
+        help="what a symbol is typed against (default: coingecko)",
+    )
+    add.add_argument("--coingecko-id", help="the CoinGecko coin, when several share a symbol")
+    void = trade_actions.add_parser(
+        "void", parents=[server], help="void a trade; it stays recorded and counts for nothing"
+    )
+    void.add_argument("trade_id", type=int, metavar="TRADE")
     return parser
 
 
@@ -653,6 +833,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                 cmd_backup(data_dir, args.dest.expanduser().absolute())
             case "restore":
                 cmd_restore(data_dir, args.src.expanduser().absolute())
+            case "portfolio":
+                endpoint = _endpoint(data_dir, args.url, args.token)
+                cmd_portfolio_create(endpoint, args.name, args.kind, args.custodian)
+            case "trade":
+                endpoint = _endpoint(data_dir, args.url, args.token)
+                if args.action == "add":
+                    cmd_trade_add(endpoint, args)
+                else:
+                    cmd_trade_void(endpoint, args.trade_id)
             case _:
                 raise AssertionError(args.command)
     except CliError as exc:

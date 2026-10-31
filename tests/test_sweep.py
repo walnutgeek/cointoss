@@ -38,7 +38,13 @@ from cointoss.instrument import (
 )
 from cointoss.prices import is_provisional
 from cointoss.store import Store
-from cointoss.universe import RunOutcome, UniverseDefinition, UniverseParameters
+from cointoss.universe import (
+    MemberRole,
+    RunOutcome,
+    UniverseDefinition,
+    UniverseMemberRecord,
+    UniverseParameters,
+)
 
 FIXTURE = Path(__file__).parent / "data" / "coingecko_markets_top250.json"
 AT = datetime(2026, 9, 30, 0, 5, tzinfo=UTC)
@@ -54,12 +60,21 @@ def recorded() -> list[Page]:
 
 
 def coingecko(*pages: Page) -> MagicMock:
-    """An `AsyncHTTPClient` answering `/coins/markets` with the page its query names."""
+    """An `AsyncHTTPClient` answering `/coins/markets` with the page its query names.
+
+    An `ids` query answers the coins it names, from every page.
+    """
 
     async def fetch(url: str) -> MagicMock:
-        page = int(parse_qs(urlparse(url).query).get("page", ["1"])[0])
+        query = {k: v[0] for k, v in parse_qs(urlparse(url).query).items()}
+        if "ids" in query:
+            wanted = set(query["ids"].split(","))
+            answer = [c for page in pages for c in page if c["id"] in wanted]
+        else:
+            page = int(query.get("page", "1"))
+            answer = pages[page - 1] if page <= len(pages) else []
         response = MagicMock()
-        response.body = json.dumps(pages[page - 1] if page <= len(pages) else []).encode()
+        response.body = json.dumps(answer).encode()
         return response
 
     client = MagicMock()
@@ -361,3 +376,60 @@ async def test_the_bar_window_is_the_callers_to_set(store: Store):
     next_day = DAY + timedelta(days=1)
     (bar,) = store.bars_for(BTC, next_day, next_day, source=Source.COINGECKO)
     assert bar.fetched_at == later
+
+
+def hold(store: Store, name: str, coin_id: str, symbol: str) -> InstrumentId:
+    """An Inclusion-only Definition holding one coin, minted as a pin would, with its CoinGecko id."""
+    registry = store.load_registry()
+    result = registry.observe(
+        Observation(
+            type=InstrumentType.CRYPTO,
+            symbol=symbol,
+            scope="native",
+            observed_at=date(2026, 1, 1),
+            source=Source.COINGECKO,
+            references=(ExternalReference.provider_id("coingecko", coin_id),),
+        )
+    )
+    assert result.instrument is not None
+    store.save_instruments([result.instrument])
+    held = result.instrument.id
+    store.save_universe(
+        UniverseDefinition.create(
+            name, UniverseParameters(inclusions=frozenset({held})), date(2026, 1, 1)
+        ),
+        [
+            UniverseMemberRecord(
+                role=MemberRole.INCLUSION,
+                source=Source.COINGECKO,
+                symbol_as_typed=symbol,
+                instrument_id=held,
+            )
+        ],
+    )
+    return held
+
+
+async def test_an_inclusion_outside_the_listing_is_fetched_by_its_coingecko_id(store: Store):
+    """NEO ranks 198, beyond a 120-coin listing, so only its Inclusion brings it a bar."""
+    neo = hold(store, "held", "neo", "NEO")
+    client = coingecko(*recorded())
+    with patch("cointoss.sources.coingecko.AsyncHTTPClient", return_value=client):
+        report = await sweep(store, AT, ("cg-top-100", "held"), top_n=120)
+
+    assert {"ids": "neo"}.items() <= queries(client)[-1].items()
+    assert report.listed == 120
+    assert set(store.members_at("held", DAY)) == {neo}
+    assert neo not in store.members_at("cg-top-100", DAY)
+    (bar,) = store.bars_for(neo, DAY, DAY, source=Source.COINGECKO)
+    assert (bar.close, bar.fetched_at) == (2.56, AT)
+
+
+async def test_an_inclusion_already_listed_is_not_fetched_again(store: Store):
+    hold(store, "held", "bitcoin", "BTC")
+    client = coingecko(*recorded())
+    with patch("cointoss.sources.coingecko.AsyncHTTPClient", return_value=client):
+        await sweep(store, AT, ("held",), top_n=120)
+
+    assert all("ids" not in q for q in queries(client))
+    assert set(store.members_at("held", DAY)) == {BTC}
