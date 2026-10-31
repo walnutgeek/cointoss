@@ -505,6 +505,18 @@ class Instrument:
         """This Instrument's Ticker History as reported by one source, oldest first."""
         return [r for r in self.ticker_history if r.source is source]
 
+    def provider_ids(self, source: Source) -> list[str]:
+        """This Instrument's provider ids from `source`, in the order they were recorded."""
+        return [
+            r.value
+            for r in self.references
+            if r.kind is ReferenceKind.PROVIDER_ID and r.qualifier == source
+        ]
+
+    def provider_id(self, source: Source) -> str | None:
+        """The first of this Instrument's provider ids from `source`, if it has one."""
+        return next(iter(self.provider_ids(source)), None)
+
     def absorb(self, obs: Observation) -> None:
         """Fold an Observation this Instrument has been identified with into itself."""
         known = set(self.references)

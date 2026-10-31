@@ -238,12 +238,12 @@ async def test_fills_every_missing_coingecko_date_and_leaves_stored_bars_unchang
     assert first.fetched_at == AT
 
 
-async def test_major_coins_link_their_yahoo_pairs_and_get_history_past_365_days(store: Store):
+async def test_major_coins_pair_with_yahoo_and_get_history_past_365_days(store: Store):
     seed(store)
     with sources():
         report = await run(store)
 
-    assert sorted(report.linked) == sorted(MAJORS)
+    assert sorted(report.paired) == sorted(MAJORS)
     for instrument_id in MAJORS:
         instrument = store.load_instrument(instrument_id)
         assert instrument is not None
@@ -284,7 +284,7 @@ async def test_no_yahoo_bar_is_written_for_todays_utc_date(store: Store):
         assert stamped(store, instrument_id, YH)[-1] == TODAY - timedelta(days=1)
 
 
-async def test_a_second_run_writes_nothing_and_does_not_relink(store: Store):
+async def test_a_second_run_writes_nothing_and_does_not_pair_again(store: Store):
     seed(store)
     with sources():
         await run(store)
@@ -294,9 +294,9 @@ async def test_a_second_run_writes_nothing_and_does_not_relink(store: Store):
         again = await run(store, AT + timedelta(hours=2))
 
     assert again.coingecko_bars == again.yahoo_bars == 0
-    assert again.linked == []
+    assert again.paired == []
     assert set(again.rejected) == {BEAM}
-    # One request each: the linked pairs' history, and the rejected pair tried again.
+    # One request each: the accepted pairs' history, and the rejected pair tried again.
     assert sorted(yahoo.asked) == ["BEAM-USD", "BTC-USD", "ETH-USD", "SOL-USD"]
     assert {i: (stamped(store, i, CG), stamped(store, i, YH)) for i in held} == held
     for instrument_id in MAJORS:
@@ -305,8 +305,8 @@ async def test_a_second_run_writes_nothing_and_does_not_relink(store: Store):
         assert len(instrument.ticker_history_from(YH)) == 1
 
 
-async def test_a_yahoo_pair_another_instrument_holds_is_not_linked_twice(store: Store):
-    # A second coin under the same symbol and, here, the same prices: linking it too would
+async def test_a_yahoo_pair_another_instrument_holds_is_not_paired_twice(store: Store):
+    # A second coin under the same symbol and, here, the same prices: pairing it too would
     # make the shared reference a Supersession of two different coins.
     COINS["bitcoin-2"] = ("btc", 60000.0)
     try:
@@ -316,7 +316,7 @@ async def test_a_yahoo_pair_another_instrument_holds_is_not_linked_twice(store: 
     finally:
         del COINS["bitcoin-2"]
 
-    assert report.linked == [BTC]
+    assert report.paired == [BTC]
     assert "BTC-USD" in report.rejected[twin]
     survivor = store.load_instrument(twin)
     assert survivor is not None and survivor.superseded_by is None

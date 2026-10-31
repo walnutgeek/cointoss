@@ -49,8 +49,8 @@ directory runs, and checks the backup's configs as `init` checks an instance's b
 anything. It leaves `auth.db` alone: `cointoss init` afterwards creates a token if there is none.
 
 `portfolio` and `trade` are JSON-RPC clients of a running server rather than writers of the
-local store, so they work the same against int from another machine on the tailnet, and run as
-whoever the token names: that User owns what they create. They call the fragment's
+local store, so they work the same from another machine on the tailnet, calling int, and run
+as whoever the token names: that User owns what they create. They call the fragment's
 `create_portfolio`, `add_trade` and `void_trade` (see `cointoss.app` for the Role they need).
 The server is `--url`, else `$COINTOSS_URL`, else the local instance's own `woodglue.yaml`; the
 token is `--token`, else `$COINTOSS_TOKEN`, else the local instance's admin token when calling
@@ -94,6 +94,7 @@ from woodglue.config import CONFIG_FILENAME as WOODGLUE_CONFIG
 from woodglue.config import WoodglueConfig, load_config
 
 from cointoss.app import (
+    BACKFILL_NODE,
     BACKFILL_TRIGGER,
     DEFAULT_BACKFILL_SCHEDULE,
     DEFAULT_SWEEP_SCHEDULE,
@@ -106,9 +107,11 @@ from cointoss.app import (
     SweepInProgress,
     fragment_entry,
     fragment_schedule,
+    one_line,
     utc_today,
 )
 from cointoss.backfill import DEFAULT_DAYS as BACKFILL_DAYS
+from cointoss.backfill import MIN_DAYS as BACKFILL_MIN_DAYS
 from cointoss.backup import CONFIGS, BackupError, read_manifest, restore, take
 from cointoss.config import (
     CONFIG_FILENAME,
@@ -120,6 +123,7 @@ from cointoss.config import (
 from cointoss.instrument import Source
 from cointoss.portfolio import PORTFOLIO_HELD, PortfolioKind, TradeKind
 from cointoss.prices import as_utc
+from cointoss.sources.coingecko import MARKET_CHART_MAX_DAYS
 from cointoss.store import Store, UnknownUniverse
 from cointoss.universe import UniverseError
 
@@ -267,10 +271,15 @@ def woodglue_config(
     return config
 
 
+def _namespace_entries(config: WoodglueConfig) -> list[dict[str, Any]]:
+    """The entries a loaded `woodglue.yaml` gives the cointoss namespace, if it has one."""
+    namespace = config.namespaces.get(NAMESPACE)
+    return (namespace.entries or []) if namespace else []
+
+
 def _sweep_schedule(config: WoodglueConfig) -> str | None:
     """The `daily_sweep` schedule a loaded `woodglue.yaml` gives the cointoss fragment, if any."""
-    namespace = config.namespaces.get(NAMESPACE)
-    for entry in (namespace.entries or []) if namespace else []:
+    for entry in _namespace_entries(config):
         if (schedule := fragment_schedule(entry)) is not None:
             return schedule
     return None
@@ -278,10 +287,9 @@ def _sweep_schedule(config: WoodglueConfig) -> str | None:
 
 def _backfill_scheduled(config: WoodglueConfig) -> bool:
     """Whether a loaded `woodglue.yaml` gives the cointoss fragment its `daily_backfill` trigger."""
-    namespace = config.namespaces.get(NAMESPACE)
     return any(
-        fragment_schedule(entry, "backfill", BACKFILL_TRIGGER) is not None
-        for entry in ((namespace.entries or []) if namespace else [])
+        fragment_schedule(entry, BACKFILL_NODE, BACKFILL_TRIGGER) is not None
+        for entry in _namespace_entries(config)
     )
 
 
@@ -315,7 +323,7 @@ def _load_woodglue(data_dir: Path) -> WoodglueConfig:
     except FileNotFoundError as exc:
         raise CliError(f"{exc}; run `cointoss init` first") from exc
     except (ValidationError, WoodglueYAMLError) as exc:
-        raise CliError(f"{data_dir / WOODGLUE_CONFIG}: {_one_line(exc)}") from exc
+        raise CliError(f"{data_dir / WOODGLUE_CONFIG}: {one_line(exc, whole='config')}") from exc
 
 
 def _auth_store(data_dir: Path, config: WoodglueConfig) -> AuthStore | None:
@@ -332,17 +340,7 @@ def _loading_settings(data_dir: Path) -> Iterator[None]:
     try:
         yield
     except (ValidationError, ConfigError, UniverseError, yaml.YAMLError) as exc:
-        raise CliError(f"{data_dir / CONFIG_FILENAME}: {_one_line(exc)}") from exc
-
-
-def _one_line(exc: Exception) -> str:
-    """An error's message on one line: each validation error's field and reason, or the text."""
-    if isinstance(exc, ValidationError):
-        return "; ".join(
-            f"{'.'.join(str(part) for part in error['loc']) or 'config'}: {error['msg']}"
-            for error in exc.errors()
-        )
-    return " ".join(str(exc).split())
+        raise CliError(f"{data_dir / CONFIG_FILENAME}: {one_line(exc, whole='config')}") from exc
 
 
 def _settings(data_dir: Path) -> Settings:
@@ -397,7 +395,8 @@ def cmd_init(
     written = _write_new(
         data_dir / WOODGLUE_CONFIG,
         _yaml(
-            "# woodglue: serves the cointoss namespace and runs its daily sweep trigger.\n",
+            "# woodglue: serves the cointoss namespace and runs its daily sweep and backfill "
+            "triggers.\n",
             woodglue_config(
                 port=DEFAULT_PORT if port is None else port,
                 schedule=schedule or DEFAULT_SWEEP_SCHEDULE,
@@ -412,6 +411,7 @@ def cmd_init(
         _report_differences(config, port=port, schedule=schedule)
     elif schedule is not None:
         _warn_after_bar_window(schedule, settings.bar_window)
+    _report_backfill_trigger(config)
     _report_explorer(data_dir, config, installed=explorer)
     _report_portfolio_role(config)
 
@@ -442,14 +442,18 @@ def _report_differences(config: WoodglueConfig, *, port: int | None, schedule: s
             f"{WOODGLUE_CONFIG}: {SWEEP_TRIGGER} schedule {configured!r} differs from "
             f"--schedule {schedule!r}; {fix}"
         )
-    if not _backfill_scheduled(config):
-        trigger = {"name": BACKFILL_TRIGGER, "schedule": DEFAULT_BACKFILL_SCHEDULE}
-        snippet = yaml.safe_dump({"backfill": {"triggers": [trigger]}}, sort_keys=False)
-        print(
-            f"{WOODGLUE_CONFIG}: no {BACKFILL_TRIGGER} trigger; to backfill daily, add to the "
-            "cointoss fragment entry's `configs`:"
-        )
-        print("".join(f"  {line}" for line in snippet.splitlines(keepends=True)), end="")
+
+
+def _report_backfill_trigger(config: WoodglueConfig) -> None:
+    """Say what to add when `woodglue.yaml` does not schedule the backfill."""
+    if _backfill_scheduled(config):
+        return
+    trigger = {"name": BACKFILL_TRIGGER, "schedule": DEFAULT_BACKFILL_SCHEDULE}
+    print(
+        f"{WOODGLUE_CONFIG}: no {BACKFILL_TRIGGER} trigger; to backfill daily, add to the "
+        "cointoss fragment entry's `configs`:"
+    )
+    _print_snippet({BACKFILL_NODE: {"triggers": [trigger]}})
 
 
 def _report_portfolio_role(config: WoodglueConfig) -> None:
@@ -459,8 +463,13 @@ def _report_portfolio_role(config: WoodglueConfig) -> None:
     """
     if not config.auth.enabled or PORTFOLIO_ROLE in config.auth.roles:
         return
-    snippet = yaml.safe_dump({"auth": {"roles": auth_roles()}}, sort_keys=False)
     print(f"{WOODGLUE_CONFIG}: no `{PORTFOLIO_ROLE}` Role; for Users who record trades, add:")
+    _print_snippet({"auth": {"roles": auth_roles()}})
+
+
+def _print_snippet(content: dict[str, Any]) -> None:
+    """Print `content` as YAML indented under the line before, for the user to add."""
+    snippet = yaml.safe_dump(content, sort_keys=False)
     print("".join(f"  {line}" for line in snippet.splitlines(keepends=True)), end="")
 
 
@@ -471,9 +480,8 @@ def _report_explorer(data_dir: Path, config: WoodglueConfig, *, installed: bool)
         if not installed:
             print("explorer: not served; install the `ui` extra (Streamlit) to have it")
             return
-        snippet = yaml.safe_dump({"uis": {EXPLORE_UI: explorer_ui()}}, sort_keys=False)
         print(f"{WOODGLUE_CONFIG}: no `{EXPLORE_UI}` UI; to serve the explorer, add:")
-        print("".join(f"  {line}" for line in snippet.splitlines(keepends=True)), end="")
+        _print_snippet({"uis": {EXPLORE_UI: explorer_ui()}})
     elif not installed:
         print(
             f"{WOODGLUE_CONFIG}: uis.{EXPLORE_UI} is configured but Streamlit is not installed "
@@ -558,8 +566,8 @@ def cmd_backfill(data_dir: Path, days: int) -> int:
         f"backfill {report.at.date()} over {report.days} days: {report.targets} Instruments, "
         f"{report.coingecko_bars} CoinGecko bars, {report.yahoo_bars} Yahoo bars"
     )
-    for instrument_id in report.linked:
-        print(f"  {instrument_id}: linked to Yahoo")
+    for instrument_id in report.paired:
+        print(f"  {instrument_id}: paired with Yahoo")
     for label, why_by_id in (
         ("rejected", report.rejected),
         ("FAILED", report.failed),
@@ -697,7 +705,7 @@ def _endpoint(data_dir: Path, url: str | None, token: str | None) -> Endpoint:
             f"no instance at {data_dir}; give --url (or ${URL_ENV}) to reach one elsewhere"
         ) from None
     except (ValidationError, WoodglueYAMLError) as exc:
-        raise CliError(f"{data_dir / WOODGLUE_CONFIG}: {_one_line(exc)}") from exc
+        raise CliError(f"{data_dir / WOODGLUE_CONFIG}: {one_line(exc, whole='config')}") from exc
     # A server listening on every interface is reached locally on loopback.
     host = "127.0.0.1" if config.host in ("0.0.0.0", "::", "") else config.host
     if token is None and (auth := _auth_store(data_dir, config)) is not None:
@@ -732,24 +740,36 @@ def cmd_portfolio_create(endpoint: Endpoint, name: str, kind: str, custodian: st
     )
 
 
-def cmd_trade_add(endpoint: Endpoint, args: argparse.Namespace) -> None:
+def cmd_trade_add(
+    endpoint: Endpoint,
+    portfolio_id: int,
+    instrument: str,
+    quantity: float,
+    *,
+    cost: float | None,
+    traded_at: str | None,
+    kind: str,
+    note: str | None,
+    source: str,
+    coingecko_id: str | None,
+) -> None:
     trade = _call(
         endpoint,
         "add_trade",
-        portfolio_id=args.portfolio_id,
-        instrument=args.instrument,
-        quantity=args.quantity,
-        cost=args.cost,
-        traded_at=args.at,
-        kind=args.kind,
-        note=args.note,
-        source=args.source,
-        coingecko_id=args.coingecko_id,
+        portfolio_id=portfolio_id,
+        instrument=instrument,
+        quantity=quantity,
+        cost=cost,
+        traded_at=traded_at,
+        kind=kind,
+        note=note,
+        source=source,
+        coingecko_id=coingecko_id,
     )
-    cost = "" if trade["cost"] is None else f", cost {trade['cost']:g} USD"
+    costed = "" if trade["cost"] is None else f", cost {trade['cost']:g} USD"
     print(
         f"trade {trade['id']}: {trade['quantity']:+g} {trade['instrument_id']} "
-        f"at {trade['traded_at']}{cost}"
+        f"at {trade['traded_at']}{costed}"
     )
 
 
@@ -802,7 +822,8 @@ def _parser() -> argparse.ArgumentParser:
         "--days",
         type=int,
         default=BACKFILL_DAYS,
-        help=f"how many days of CoinGecko history to fill, 90 to 365 (default: {BACKFILL_DAYS})",
+        help=f"how many days of CoinGecko history to fill, {BACKFILL_MIN_DAYS} to "
+        f"{MARKET_CHART_MAX_DAYS} (default: {BACKFILL_DAYS})",
     )
     commands.add_parser("status", parents=[data], help="last Evaluation Run per universe")
     commands.add_parser("token", parents=[data], help="print the JSON-RPC bearer token")
@@ -898,7 +919,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             case "trade":
                 endpoint = _endpoint(data_dir, args.url, args.token)
                 if args.action == "add":
-                    cmd_trade_add(endpoint, args)
+                    cmd_trade_add(
+                        endpoint,
+                        args.portfolio_id,
+                        args.instrument,
+                        args.quantity,
+                        cost=args.cost,
+                        traded_at=args.at,
+                        kind=args.kind,
+                        note=args.note,
+                        source=args.source,
+                        coingecko_id=args.coingecko_id,
+                    )
                 else:
                     cmd_trade_void(endpoint, args.trade_id)
             case _:

@@ -9,12 +9,12 @@ day the machine was down or swept late has no bar, and nothing before the first 
   date gets the bar the sweep would have written: the 00:00 UTC price, with volume and market
   cap. A day whose payload has no point at exactly 00:00 -- today, before CoinGecko publishes
   it -- is left alone rather than given a later price.
-- Yahoo, for a coin linked to its Yahoo pair: `get_prices(period="max")`, back to the pair's
+- Yahoo, for a coin paired with Yahoo: `get_prices(period="max")`, back to the pair's
   listing, for dates strictly before today UTC, so no Provisional Bar is written.
 
-A coin is linked by trying `{SYMBOL}-USD` (ADR-0009 amendment of 2026-10-30). The pair is
+A coin is paired by trying `{SYMBOL}-USD` (ADR-0009 amendment of 2026-10-30). The pair is
 accepted when Yahoo's close for session D and CoinGecko's bar stamped D+1, which closes D,
-differ by less than `LINK_TOLERANCE` in median over the last `LINK_SESSIONS` sessions both hold.
+differ by less than `PAIR_TOLERANCE` in median over the last `PAIR_SESSIONS` sessions both hold.
 An accepted pair is recorded through the Instrument Registry as an Observation from Yahoo
 carrying the coin's CoinGecko id and a Yahoo provider id, which adds the Yahoo External
 Reference and opens a Ticker History record at source `yahoo` without touching the display
@@ -56,7 +56,6 @@ from cointoss.instrument import (
     InstrumentType,
     Observation,
     Outcome,
-    ReferenceKind,
     Source,
 )
 from cointoss.prices import (
@@ -74,9 +73,9 @@ from cointoss.store import Store
 __all__ = [
     "COINGECKO_RPM",
     "DEFAULT_DAYS",
-    "LINK_SESSIONS",
-    "LINK_TOLERANCE",
     "MIN_DAYS",
+    "PAIR_SESSIONS",
+    "PAIR_TOLERANCE",
     "YAHOO_INTERVAL",
     "BackfillReport",
     "backfill",
@@ -91,10 +90,10 @@ DEFAULT_DAYS = MARKET_CHART_MAX_DAYS
 MIN_DAYS = 90
 """The shortest CoinGecko window: below it the API spaces points hourly, off 00:00 UTC."""
 
-LINK_SESSIONS = 30
+PAIR_SESSIONS = 30
 """How many of the latest sessions both sources hold a Yahoo pair is checked over."""
 
-LINK_TOLERANCE = 0.02
+PAIR_TOLERANCE = 0.02
 """The median relative difference under which a Yahoo pair is the coin CoinGecko names."""
 
 COINGECKO_RPM = 10.0
@@ -111,10 +110,10 @@ WriteLock = Callable[[], AbstractAsyncContextManager[None]]
 class BackfillReport(BaseModel):
     """What one backfill did, for a caller to log or report.
 
-    `linked` are the Instruments whose Yahoo pair was accepted this run; `rejected` maps an
+    `paired` are the Instruments whose Yahoo pair was accepted this run; `rejected` maps an
     Instrument whose pair was tried and refused, or has no Yahoo history, to why. `failed` maps
-    an Instrument to a fetch that failed, which leaves its dates for the next run. `skipped` maps a target that cannot be
-    backfilled -- not a coin, or with no CoinGecko id -- to why.
+    an Instrument to a fetch that failed, which leaves its dates for the next run. `skipped`
+    maps a target that cannot be backfilled -- not a coin, or with no CoinGecko id -- to why.
     """
 
     model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True)
@@ -124,7 +123,7 @@ class BackfillReport(BaseModel):
     targets: int
     coingecko_bars: int
     yahoo_bars: int
-    linked: list[InstrumentId]
+    paired: list[InstrumentId]
     rejected: dict[InstrumentId, str]
     failed: dict[InstrumentId, str]
     skipped: dict[InstrumentId, str]
@@ -133,7 +132,7 @@ class BackfillReport(BaseModel):
 def median_disagreement(
     yahoo: Mapping[date, float],
     coingecko: Mapping[date, float],
-    sessions: int = LINK_SESSIONS,
+    sessions: int = PAIR_SESSIONS,
 ) -> float | None:
     """Median relative difference of two close series over the last `sessions` both hold.
 
@@ -165,7 +164,7 @@ async def backfill(
     `at` is the moment of the run: its UTC date is today, the first date no Yahoo bar is written
     for, and it stamps the bars' `fetched_at`. `lock` is entered around each write. Raises
     `ValueError` for a `days` outside `MIN_DAYS` to `MARKET_CHART_MAX_DAYS`, before anything
-    is fetched. See the module docstring for what is written and how a pair is linked.
+    is fetched. See the module docstring for what is written and how a coin is paired.
     """
     if not MIN_DAYS <= days <= MARKET_CHART_MAX_DAYS:
         raise ValueError(f"days={days} is outside {MIN_DAYS}..{MARKET_CHART_MAX_DAYS}")
@@ -180,12 +179,12 @@ async def backfill(
     for instrument in targets:
         await run.instrument(instrument, days)
     log.info(
-        "backfill %s: %d targets, %d CoinGecko bars, %d Yahoo bars, linked %s, rejected %d",
+        "backfill %s: %d targets, %d CoinGecko bars, %d Yahoo bars, paired %s, rejected %d",
         moment.date(),
         len(targets),
         run.coingecko_bars,
         run.yahoo_bars,
-        sorted(run.linked) or "none",
+        sorted(run.paired) or "none",
         len(run.rejected),
     )
     return BackfillReport(
@@ -194,7 +193,7 @@ async def backfill(
         targets=len(targets),
         coingecko_bars=run.coingecko_bars,
         yahoo_bars=run.yahoo_bars,
-        linked=run.linked,
+        paired=run.paired,
         rejected=run.rejected,
         failed=run.failed,
         skipped=run.skipped,
@@ -206,14 +205,6 @@ def _targets(store: Store) -> list[Instrument]:
     ever = {i.instrument_id for i in store.membership_intervals(date.min, date.max)}
     loaded = [store.load_instrument(i) for i in ever]
     return sorted((i for i in loaded if i is not None), key=lambda i: i.mint_seq)
-
-
-def _provider_id(instrument: Instrument, source: Source) -> str | None:
-    """The first of the Instrument's provider ids from `source`, if it has one."""
-    for ref in instrument.references:
-        if ref.kind is ReferenceKind.PROVIDER_ID and ref.qualifier == source.value:
-            return ref.value
-    return None
 
 
 def _midnight_days(chart: MarketChart) -> set[date]:
@@ -231,7 +222,7 @@ class _Run:
     lock: WriteLock
     coingecko_bars: int
     yahoo_bars: int
-    linked: list[InstrumentId]
+    paired: list[InstrumentId]
     rejected: dict[InstrumentId, str]
     failed: dict[InstrumentId, str]
     skipped: dict[InstrumentId, str]
@@ -247,7 +238,7 @@ class _Run:
         self.lock = lock
         self.coingecko_bars = 0
         self.yahoo_bars = 0
-        self.linked = []
+        self.paired = []
         self.rejected = {}
         self.failed = {}
         self.skipped = {}
@@ -257,23 +248,23 @@ class _Run:
         if instrument.type is not InstrumentType.CRYPTO:
             self.skipped[instrument.id] = f"a {instrument.type}, not a coin"
             return
-        coin_id = _provider_id(instrument, Source.COINGECKO)
+        coin_id = instrument.provider_id(Source.COINGECKO)
         if coin_id is None:
             log.warning("backfill: %s has no CoinGecko id; skipped", instrument.id)
             self.skipped[instrument.id] = "no CoinGecko id"
             return
         await self._coingecko(instrument.id, coin_id, days)
-        linked = _provider_id(instrument, Source.YAHOO)
-        ticker = linked or f"{instrument.symbol}-USD"
+        known = instrument.provider_id(Source.YAHOO)
+        ticker = known or f"{instrument.symbol}-USD"
         frame = await self._yahoo(ticker)
         if isinstance(frame, str):
-            if linked is None:
+            if known is None:
                 self._reject(instrument.id, ticker, f"no Yahoo history: {frame}")
             else:
                 log.warning("backfill: Yahoo %s for %s failed: %s", ticker, instrument.id, frame)
                 self.failed[instrument.id] = f"Yahoo {ticker}: {frame}"
             return
-        if linked is not None or await self._link(instrument, coin_id, ticker, frame):
+        if known is not None or await self._pair(instrument, coin_id, ticker, frame):
             await self._write_yahoo(instrument.id, frame)
 
     async def _coingecko(self, instrument_id: InstrumentId, coin_id: str, days: int) -> None:
@@ -320,7 +311,7 @@ class _Run:
             [a for a in actions if a.action_date < self.today],
         )
 
-    async def _link(
+    async def _pair(
         self, instrument: Instrument, coin_id: str, ticker: str, frame: FrameData
     ) -> bool:
         """Record `ticker` as the coin's Yahoo pair if its prices agree; whether it was."""
@@ -336,9 +327,9 @@ class _Run:
         disagreement = median_disagreement(yahoo, coingecko)
         if disagreement is None:
             return self._reject(
-                instrument.id, ticker, f"fewer than {LINK_SESSIONS} sessions overlap CoinGecko"
+                instrument.id, ticker, f"fewer than {PAIR_SESSIONS} sessions overlap CoinGecko"
             )
-        if disagreement >= LINK_TOLERANCE:
+        if disagreement >= PAIR_TOLERANCE:
             return self._reject(
                 instrument.id, ticker, f"median difference {disagreement:.1%} from CoinGecko"
             )
@@ -347,12 +338,12 @@ class _Run:
         if review is not None:
             return self._reject(instrument.id, ticker, review)
         log.info(
-            "backfill: %s linked to Yahoo %s (median %.2f%%)",
+            "backfill: %s paired with Yahoo %s (median %.2f%%)",
             instrument.id,
             ticker,
             disagreement * 100,
         )
-        self.linked.append(instrument.id)
+        self.paired.append(instrument.id)
         return True
 
     def _reject(self, instrument_id: InstrumentId, ticker: str, why: str) -> bool:
@@ -363,7 +354,7 @@ class _Run:
     def _record_pair(self, instrument_id: InstrumentId, coin_id: str, ticker: str) -> str | None:
         """Add the Yahoo reference and Ticker History; why not, or None once it is stored.
 
-        Read from the store again under the lock, so a pair another run linked meanwhile is
+        Read from the store again under the lock, so a pair another run recorded meanwhile is
         found rather than recorded twice.
         """
         registry = self.store.load_registry()
