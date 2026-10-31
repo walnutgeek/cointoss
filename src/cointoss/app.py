@@ -37,8 +37,11 @@ the explorer's Grant. Each write therefore checks a second Grant itself: `call` 
 method name at its first dot, so the Grant means only "may write portfolios". The `portfolio`
 Role (`PORTFOLIO_ROLE`, `PORTFOLIO_GRANTS`) holds it beside `call cointoss`, and the built-in
 `admin` Role holds every Grant. A Delegated Token is narrowed to its UI's `grants`, so the
-explorer's token cannot write whoever views it. A refused write raises woodglue's
-`AccessDenied` before anything is read or written, which a JSON-RPC client receives as -32003.
+explorer's token cannot write whoever views it. A Grant's target is an fnmatch pattern, so a
+wildcard that also matches `cointoss.portfolio`, such as `call *` or `call cointoss*`, grants
+the writes too: a Role meant only to read names `call cointoss` exactly. A refused write raises
+woodglue's `AccessDenied` before anything is read or written, which a JSON-RPC client receives
+as -32003.
 
 The caller is the owner: `create_portfolio` records the Caller's User id, and `add_trade` and
 `void_trade` act only on that User's Portfolios. Another User's Portfolio or Trade is reported
@@ -85,7 +88,7 @@ import datetime as dt
 import fcntl
 import logging
 import time
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from enum import StrEnum
 from pathlib import Path
@@ -105,7 +108,16 @@ from cointoss.backfill import backfill as run_backfill
 from cointoss.config import Settings, UniverseReconciled, ensure_universes
 from cointoss.datasets import DatasetView, InvalidParams, UnknownDataset, describe, lookup
 from cointoss.instrument import InstrumentError, InstrumentId, Source
-from cointoss.portfolio import PORTFOLIO_HELD, Portfolio, PortfolioKind, Trade, TradeKind, UserId
+from cointoss.portfolio import (
+    PORTFOLIO_HELD,
+    Portfolio,
+    PortfolioKind,
+    Trade,
+    TradeKind,
+    UserId,
+    check_cost,
+    check_quantity,
+)
 from cointoss.prices import Bar, as_utc
 from cointoss.series import NotYetStarted
 from cointoss.store import (
@@ -172,7 +184,9 @@ FRAGMENT_GREF = "cointoss.app:CointossApp"
 NAMESPACE = "cointoss"
 """The woodglue namespace `cointoss init` mounts the fragment under."""
 WRITE_TARGET = f"{NAMESPACE}.portfolio"
-"""The target of the `call` Grant a portfolio write checks for; never a namespace's name."""
+"""The target of the `call` Grant a portfolio write checks for; never a namespace's name.
+
+Matched as an fnmatch pattern, so `call *` and `call cointoss*` grant the writes as well."""
 PORTFOLIO_ROLE = "portfolio"
 PORTFOLIO_GRANTS = (f"call {NAMESPACE}", f"call {WRITE_TARGET}")
 """The Grants of `PORTFOLIO_ROLE`: the read API and the portfolio writes."""
@@ -659,27 +673,39 @@ class CointossApp(NamespaceFragment):
         `quantity` is a buy, a negative one a sale; `cost` is the Trade's total in USD.
         `traded_at` is an ISO time, read as UTC when it has no offset, and now by default.
 
-        The Instrument is then included in `portfolio-held`, created on first use, so the next
+        The Instrument is included in `portfolio-held`, created on first use, so the next
         sweep writes its bar even when it ranks outside every declared universe.
+
+        The other arguments are checked before the Instrument is named, since pinning a symbol
+        stores its Instrument. The Inclusion is written before the Trade, each in its own commit:
+        should the Trade then fail, an Instrument held with no Trade only costs the sweep a
+        bar, while a Trade whose Instrument is not held would go unpriced.
         """
         owner = _writer()
         now = as_utc(utcnow())
         when = now if traded_at is None else _moment(traded_at, "traded_at")
         trade_kind = _choice(TradeKind, kind, "kind")
         typed_source = _choice(Source, source, "source")
+        checked_quantity = _checked(check_quantity, quantity, "quantity")
+        checked_cost = None if cost is None else _checked(check_cost, cost, "cost")
         with self._store() as store:
             _require_owned(store, owner, portfolio_id)
             named, by_source, by_symbol = await _named_instrument(
                 store, instrument, typed_source, now.date(), coingecko_id
             )
+            ingest.hold(store, named, by_source, by_symbol, now.date())
             try:
-                trade = store.record_trade(
-                    portfolio_id, named, when, quantity, kind=trade_kind, cost=cost, note=note
+                return store.record_trade(
+                    portfolio_id,
+                    named,
+                    when,
+                    checked_quantity,
+                    kind=trade_kind,
+                    cost=checked_cost,
+                    note=note,
                 )
             except ValidationError as exc:
                 raise BadRequest(one_line(exc)) from None
-            ingest.hold(store, named, by_source, by_symbol, now.date())
-        return trade
 
     @nsnode(tags=["api"])
     def void_trade(self, trade_id: int) -> Trade:
@@ -770,6 +796,18 @@ def one_line(exc: Exception, *, whole: str = "") -> str:
         label = ".".join(str(part) for part in error["loc"]) or whole
         reasons.append(f"{label}: {error['msg']}" if label else error["msg"])
     return "; ".join(reasons)
+
+
+def _checked(check: Callable[[float], float], value: float, name: str) -> float:
+    """`value` passed through `check`, or `BadRequest` naming the parameter.
+
+    >>> _checked(check_quantity, 2, "quantity")
+    2.0
+    """
+    try:
+        return check(float(value))
+    except (TypeError, ValueError) as exc:
+        raise BadRequest(f"{name}: {exc}") from None
 
 
 def _moment(value: str, name: str) -> dt.datetime:

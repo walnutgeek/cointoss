@@ -8,10 +8,10 @@
     cointoss token    [--data-dir D]               print the JSON-RPC bearer token
     cointoss backup   [--data-dir D] DEST          copy the database and configs into DEST
     cointoss restore  [--data-dir D] SRC           copy a backup into a stopped instance
-    cointoss portfolio create NAME [--kind K] [--custodian C]       [--url U] [--token T]
+    cointoss portfolio create NAME [--kind K] [--custodian C]       [--url U] [--token=T]
     cointoss trade add PORTFOLIO INSTRUMENT QUANTITY [--cost USD] [--at TIME] [--kind K]
-                       [--note N] [--source S] [--coingecko-id ID]  [--url U] [--token T]
-    cointoss trade void TRADE                                       [--url U] [--token T]
+                       [--note N] [--source S] [--coingecko-id ID]  [--url U] [--token=T]
+    cointoss trade void TRADE                                       [--url U] [--token=T]
 
 The data directory is `--data-dir`, else `$COINTOSS_HOME`, else `~/.local/share/cointoss`
 (`cointoss.config.resolve_data_dir`). It holds `cointoss.db`, `cointoss.yaml`, `woodglue.yaml`
@@ -242,7 +242,10 @@ def explorer_ui() -> dict[str, Any]:
 def auth_roles() -> dict[str, list[str]]:
     """The Roles a new `woodglue.yaml` defines: `portfolio`, for Users who record their trades.
 
-    The built-in `admin` Role, whose token `cointoss token` prints, needs no definition.
+    The built-in `admin` Role, whose token `cointoss token` prints, needs no definition. A Role
+    added by hand that grants `call *` or `call cointoss*` can write portfolios too, since the
+    write check matches `call cointoss.portfolio` against Grant patterns; one meant only to read
+    names `call cointoss` exactly.
     """
     return {PORTFOLIO_ROLE: list(PORTFOLIO_GRANTS)}
 
@@ -459,7 +462,8 @@ def _report_backfill_trigger(config: WoodglueConfig) -> None:
 def _report_portfolio_role(config: WoodglueConfig) -> None:
     """Say what to add when a kept `woodglue.yaml` has no `portfolio` Role to grant Users.
 
-    Without it only the admin token can write portfolios, so it is reported rather than refused.
+    Without it only the admin token, or a wildcard `call` Grant (see `auth_roles`), can write
+    portfolios, so it is reported rather than refused.
     """
     if not config.auth.enabled or PORTFOLIO_ROLE in config.auth.roles:
         return
@@ -726,7 +730,7 @@ def _call(endpoint: Endpoint, method: str, **params: Any) -> dict[str, Any]:
     try:
         return asyncio.run(call())
     except WoodglueRpcError as exc:
-        hint = "; give --token, or `wgl login` to the server" if exc.code == -32000 else ""
+        hint = "; give --token=TOKEN, or `wgl login` to the server" if exc.code == -32000 else ""
         raise CliError(f"{exc.message}{hint}") from None
     except (HTTPClientError, OSError) as exc:
         raise CliError(f"{endpoint.url}: {exc}") from None
@@ -843,8 +847,9 @@ def _parser() -> argparse.ArgumentParser:
     )
     server.add_argument(
         "--token",
-        help=f"bearer token (default: ${TOKEN_ENV}, else the local instance's admin token, "
-        "else what `wgl login` stored for the URL)",
+        help=f"bearer token, given as --token=TOKEN since one may start with '-'; prefer "
+        f"${TOKEN_ENV}, which keeps it out of the process list (default: ${TOKEN_ENV}, else the "
+        "local instance's admin token, else what `wgl login` stored for the URL)",
     )
     portfolio = commands.add_parser("portfolio", help="create a portfolio on a server")
     portfolio_actions = portfolio.add_subparsers(dest="action", required=True)

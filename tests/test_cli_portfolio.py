@@ -135,7 +135,7 @@ def test_a_token_without_the_role_is_refused_in_one_line(
         url = f"http://127.0.0.1:{load_config(home).port}"
         monkeypatch.setenv("COINTOSS_URL", url)
 
-        code, out = run(capsys, home, "portfolio", "create", "main", "--token", explorer)
+        code, out = run(capsys, home, "portfolio", "create", "main", f"--token={explorer}")
 
     assert code == 1
     assert out == ("cointoss portfolio: Forbidden: requires 'call' on 'cointoss.portfolio'\n")
@@ -143,11 +143,32 @@ def test_a_token_without_the_role_is_refused_in_one_line(
         assert store.portfolios_of("admin") == []
 
 
+@pytest.mark.parametrize("by_env", [False, True], ids=["option", "env"])
+def test_a_token_starting_with_a_dash_reaches_the_server(
+    home: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, by_env: bool
+):
+    # A token is random base64url, so about one in 64 starts with `-`.
+    token = "-" + "x" * 42
+    with serving(home):
+        if by_env:
+            monkeypatch.setenv("COINTOSS_TOKEN", token)
+            code, out = run(capsys, home, "portfolio", "create", "main")
+        else:
+            code, out = run(capsys, home, "portfolio", "create", "main", f"--token={token}")
+
+    assert code == 1
+    # Refused by the server, not by argparse, which would read the token as an option.
+    assert (
+        out
+        == "cointoss portfolio: Unauthorized; give --token=TOKEN, or `wgl login` to the server\n"
+    )
+
+
 def test_an_unreachable_server_is_one_line(home: Path, capsys: pytest.CaptureFixture[str]):
     sock, port = bind_unused_port()
     sock.close()
     code, out = run(
-        capsys, home, "trade", "void", "1", "--url", f"http://127.0.0.1:{port}", "--token", "x"
+        capsys, home, "trade", "void", "1", "--url", f"http://127.0.0.1:{port}", "--token=x"
     )
     assert code == 1
     assert out.startswith(f"cointoss trade: http://127.0.0.1:{port}: ")

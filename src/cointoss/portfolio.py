@@ -33,6 +33,8 @@ __all__ = [
     "Trade",
     "TradeKind",
     "UserId",
+    "check_cost",
+    "check_quantity",
     "derive_positions",
     "end_of_day",
 ]
@@ -74,6 +76,24 @@ class Portfolio(BaseModel):
     custodian: str | None = None
 
 
+def check_quantity(value: float) -> float:
+    """`value` as a Trade's quantity, or `ValueError` unless it is finite and nonzero.
+
+    >>> check_quantity(-2.5)
+    -2.5
+    """
+    if not math.isfinite(value) or value == 0:
+        raise ValueError(f"a trade's quantity must be finite and nonzero, got {value}")
+    return value
+
+
+def check_cost(value: float) -> float:
+    """`value` as a Trade's cost, or `ValueError` unless it is finite and not negative."""
+    if not math.isfinite(value) or value < 0:
+        raise ValueError(f"a trade's cost must be finite and not negative, got {value}")
+    return value
+
+
 class Trade(BaseModel):
     """One single-leg Trade: a signed quantity of one Instrument at one moment.
 
@@ -113,16 +133,12 @@ class Trade(BaseModel):
     @field_validator("quantity")
     @classmethod
     def _nonzero(cls, value: float) -> float:
-        if not math.isfinite(value) or value == 0:
-            raise ValueError(f"a trade's quantity must be finite and nonzero, got {value}")
-        return value
+        return check_quantity(value)
 
     @field_validator("cost")
     @classmethod
     def _cost(cls, value: float | None) -> float | None:
-        if value is not None and (not math.isfinite(value) or value < 0):
-            raise ValueError(f"a trade's cost must be finite and not negative, got {value}")
-        return value
+        return None if value is None else check_cost(value)
 
     @property
     def voided(self) -> bool:
