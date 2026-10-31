@@ -151,8 +151,11 @@ def derive_positions(trades: Iterable[Trade], as_of: date) -> list[PortfolioPosi
     Instruments are aggregated as given, so a caller folds Supersession first.
 
     Average cost is the USD cost of the acquisitions that carry one divided by their quantity.
-    Acquisitions without a cost are ignored, and disposals do not move it, which is the
-    average-cost convention. A position whose trades net to zero is still returned.
+    Acquisitions without a cost are ignored, and a disposal removes its share of the costed
+    quantity at the average, so it does not move the average. Once a position reaches zero or
+    goes short its cost is forgotten: a short has no average cost, and an acquisition that
+    reopens a long position counts only the part of it that is long. A position whose trades
+    net to zero is still returned.
 
     >>> btc = InstrumentId("crypto.native.btc")
     >>> def trade(day: int, quantity: float, cost: float | None = None) -> Trade:
@@ -167,19 +170,27 @@ def derive_positions(trades: Iterable[Trade], as_of: date) -> list[PortfolioPosi
     cutoff = end_of_day(as_of)
     quantity: dict[InstrumentId, float] = {}
     costed_quantity: dict[InstrumentId, float] = {}
-    cost: dict[InstrumentId, float] = {}
-    for t in trades:
+    average: dict[InstrumentId, float] = {}
+    for t in sorted(trades, key=lambda t: t.traded_at):
         if t.voided or t.traded_at >= cutoff:
             continue
         i = t.instrument_id
-        quantity[i] = quantity.get(i, 0.0) + t.quantity
-        if t.cost is not None and t.quantity > 0:
-            costed_quantity[i] = costed_quantity.get(i, 0.0) + t.quantity
-            cost[i] = cost.get(i, 0.0) + t.cost
-    return [
-        PortfolioPosition(i, quantity[i], cost[i] / costed_quantity[i] if i in cost else None)
-        for i in sorted(quantity)
-    ]
+        before = quantity.get(i, 0.0)
+        after = before + t.quantity
+        quantity[i] = after
+        if after <= 0:
+            costed_quantity.pop(i, None)
+            average.pop(i, None)
+        elif t.quantity < 0:
+            if i in average:
+                costed_quantity[i] *= after / before
+        elif t.cost is not None:
+            # Of an acquisition that covers a short, only the part that ends up long is held.
+            held = min(t.quantity, after)
+            had = costed_quantity.get(i, 0.0)
+            costed_quantity[i] = had + held
+            average[i] = (average.get(i, 0.0) * had + t.cost * held / t.quantity) / (had + held)
+    return [PortfolioPosition(i, quantity[i], average.get(i)) for i in sorted(quantity)]
 
 
 ## Tests
@@ -240,6 +251,22 @@ def test_average_cost_ignores_trades_without_a_cost_and_disposals() -> None:
         PortfolioPosition(_BTC, 1.0, None),
         PortfolioPosition(_ETH, 11.0, 3_000.0),
     ]
+
+
+def test_average_cost_starts_afresh_once_a_position_closes() -> None:
+    def at(day: int) -> datetime:
+        return datetime(2024, 3, day, tzinfo=UTC)
+
+    reopened = [
+        _trade(_BTC, at(1), 1.0, 100.0),
+        _trade(_BTC, at(2), -1.0),
+        _trade(_BTC, at(3), 1.0, 200.0),
+    ]
+    assert derive_positions(reopened, date(2024, 3, 3)) == [PortfolioPosition(_BTC, 1.0, 200.0)]
+    short = [_trade(_BTC, at(1), 1.0, 100.0), _trade(_BTC, at(2), -3.0)]
+    assert derive_positions(short, date(2024, 3, 2)) == [PortfolioPosition(_BTC, -2.0, None)]
+    covered = [*short, _trade(_BTC, at(3), 4.0, 1_200.0)]
+    assert derive_positions(covered, date(2024, 3, 3)) == [PortfolioPosition(_BTC, 2.0, 300.0)]
 
 
 def test_a_trade_refuses_a_zero_quantity_and_a_negative_cost() -> None:

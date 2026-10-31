@@ -387,7 +387,12 @@ class CointossApp(NamespaceFragment):
 
     @nsnode(tags=["api"])
     def members(self, universe: str, date: str) -> MembersView:
-        """The members of a universe on a date, each with that date's close, volume and market cap."""
+        """The members of a universe on a date, each with that date's close, volume and market cap.
+
+        Bars are dated by the session they close (Session Offset), so on the latest swept date a
+        CoinGecko-priced member has no close yet: its close is the next day's 00:00 price, and
+        arrives with the next sweep.
+        """
         on = _date(date, "date")
         with self._store() as store:
             bar_by_member = store.member_bars(universe, on)
