@@ -104,6 +104,7 @@ nav:
           - cointoss.universe: reference/universe.md
           - cointoss.prices: reference/prices.md
           - cointoss.risk: reference/risk.md
+          - cointoss.portfolio: reference/portfolio.md
       - Storage:
           - cointoss.store: reference/store.md
           - cointoss.backup: reference/backup.md

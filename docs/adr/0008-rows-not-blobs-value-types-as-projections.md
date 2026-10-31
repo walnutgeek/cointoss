@@ -36,6 +36,9 @@ durable
   UniverseMember          definition FK | role | source | symbol_as_typed | instrument FK NULL
                           added_in_revision | removed_in_revision NULL
   UniverseMembership      definition FK | instrument FK | valid_from | valid_to
+  Portfolio               owner AK | name AK | kind | custodian
+  Trade                   portfolio FK | instrument FK | traded_at | quantity | kind | cost
+                          note | voided_at
 rebuildable
   EvaluationRun           definition FK | revision | run_at | source_asof | outcome
                           n_admitted | n_dropped | n_unresolved
