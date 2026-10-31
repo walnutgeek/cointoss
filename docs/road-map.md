@@ -4,7 +4,7 @@ Where cointoss is, where it is going, and what has to be decided before it gets 
 as directions change. Decisions that survive belong in `docs/adr/`; vocabulary belongs in
 `CONTEXT.md`. This file holds the parts that are still moving.
 
-Last updated: 2026-10-23, at `086a7cd` (v0.0.2).
+Last updated: 2026-10-30, at `6ce6319` (v0.0.3).
 
 ## Where we are
 
@@ -48,7 +48,7 @@ Everything that makes it a system rather than a library:
 - **Missed days have no bars.** The unit catches up today's sweep when the service starts, but a
   day the machine was down for is never swept, and a sweep later than the bar window (default
   three hours after 00:00 UTC) records membership and writes no bars (ADR-0009 amendment).
-  Both leave a date with no bar, which backfill (step 5) is to fill.
+  Both leave a date with no bar, which backfill (step 6, #26) is to fill.
 - **No retry runner.** The daily sweep is a scheduled node (#21), but nothing runs the
   unresolved retry queue.
 - **No returns.** Nothing turns prices into returns, so no covariance can be computed; the only
@@ -113,9 +113,7 @@ early, because accumulated history is the one thing that cannot be produced late
 5. **Next milestone: explorable data on int.** Decided 2026-10-23. Three weeks of bars is too
    little to analyse, and the UI should not be tied to the datasets that exist today. In order:
    1. **Backup and restore (#24).** Done. Protects the history before anything else touches it.
-   2. **History backfill (#26).** `market_chart` for members, filling every date with no stored bar:
-      before the first sweep, days the machine was down, and days swept after the bar window. It
-      never overwrites a stored bar, so it files no Restatement.
+   2. **History backfill.** Moved to step 6 and widened to Yahoo (#26).
    3. **A generic dataset API (#27, ADR-0010).** Done. On the cointoss namespace: `datasets()` names
       each dataset, its columns and its params' JSON Schema, `frame(dataset, params)` returns it as
       a table. First datasets: instruments, bars, returns derived on read, membership, universe
@@ -129,14 +127,31 @@ early, because accumulated history is the one thing that cannot be produced late
       signs in becomes a User with no Roles (pending) until the admin approves or disables them.
       Registering the OAuth apps is manual; `woodglue.yaml` gets the providers, `public_url`,
       admission (`anyone`, with no default Roles) and roles.
-6. **Portfolio.** ADR-0001's `Trade` as system of record, `Position`, `PortfolioSnapshot`, valued
-   from stored bars.
-7. **Yahoo and stocks.** The FIGI path in earnest, exchange calendars, corporate actions.
-8. **Returns, stored.** Whatever representation the estimator needs, beyond the derived-on-read
+6. **Yahoo crypto bars.** Decided 2026-10-30. Years of history for valuing a portfolio and
+   for returns, beyond CoinGecko's 365-day window. In order:
+   1. **Session Offset on read (#31).** CoinGecko's bar stamped D+1 closes D; resolved reads align
+      the two sources so a per-date fallback splices like with like (ADR-0009 amendment).
+   2. **History backfill (#26).** One `backfill` for both sources, filling only dates with no
+      stored bar: CoinGecko `market_chart` for its window, and Yahoo `period="max"` for coins whose
+      `{SYMBOL}-USD` pair passes a price-agreement check against CoinGecko. Price Sources stay
+      Yahoo first. On demand and daily after the sweep.
+7. **Crypto portfolio.** Decided 2026-10-30 (ADR-0001 amendment). Independent of step 6 until
+   valuation. Single-leg trades with no cash leg, UTC timestamps, voided rather than deleted,
+   average cost, each Portfolio owned by a User, USD only, no Snapshot yet. Real holdings live on
+   int, so it ships in a release.
+   1. **Storage (#32).** `Portfolio` and `Trade` tables, positions on read.
+   2. **Writes (#33).** JSON-RPC methods behind a Role, CLI as a client; a traded Instrument is
+      pinned into a `portfolio-held` universe.
+   3. **Datasets (#34).** `trades`, `positions`, `portfolio_value`, each the caller's own only.
+8. **Yahoo and stocks.** Deferred 2026-10-30 behind the crypto portfolio. The FIGI path in
+   earnest, exchange calendars, corporate actions. Grilling started on a curated, Inclusion-only
+   stock universe with a golden-file FIGI test, and an OpenFIGI key from the environment; resume
+   from there.
+9. **Returns, stored.** Whatever representation the estimator needs, beyond the derived-on-read
    dataset of step 5.
-9. **The estimator.** Closes ADR-0005's gap so a covariance can be computed rather than only
+10. **The estimator.** Closes ADR-0005's gap so a covariance can be computed rather than only
     imported.
-10. **The FIGI mapping cache.** ADR-0006's `(universe_name, as_of)` key.
+11. **The FIGI mapping cache.** ADR-0006's `(universe_name, as_of)` key.
 
 ## Settled in grilling
 
@@ -157,6 +172,14 @@ the ADRs; what follows is only the index, so nothing here is re-litigated from m
 - **What is a bar, and vendor disagreement** - ADR-0009. Session date in the venue's own calendar,
   keyed by source so disagreement is recorded rather than resolved.
 
+Yahoo crypto bars and the crypto portfolio were grilled on 2026-10-30 and closed:
+
+- **CoinGecko and Yahoo crypto bars a day apart** - ADR-0009 amendment. A Session Offset per
+  source, applied on read; storage untouched.
+- **Linking a coin to its Yahoo pair** - ADR-0009 amendment. `{SYMBOL}-USD`, accepted on price
+  agreement with CoinGecko, recorded as an External Reference. No FIGI involved.
+- **Trades, voids, ownership, cost basis, cash** - ADR-0001 amendment.
+
 ## Still open
 
 - **Where Streamlit is installed.** int runs the released package as a `uv tool`; Streamlit and
@@ -168,12 +191,8 @@ the ADRs; what follows is only the index, so nothing here is re-litigated from m
   walnutgeek/woodglue#23.
 - **Delisting versus absence.** Absence from a source is not the same fact as a delisting, and
   nothing yet distinguishes them. ADR-0007 drops an instrument from membership either way. This
-  needs settling before stocks (step 8).
-- **CoinGecko and Yahoo crypto bars are about a day apart.** CoinGecko's 00:00 UTC point for day
-  D is roughly D-1's close; Yahoo's bar closes at the end of D. `bars_for` falling back between
-  them splices series offset by a day. ADR-0009's amendment records that "agree on what a
-  crypto day is" holds for the label only; what to do about it is open. Settle before Yahoo
-  crypto bars are ingested alongside CoinGecko.
+  needs settling before a stock universe ranked from a listing (step 8); an Inclusion-only one
+  sidesteps it.
 - **A fixed `days` for `market_chart`.** Mostly settled by #19: a CoinGecko bar is the date's
   first (00:00) point, so hourly and daily windows agree, except on the first day of an hourly
   window, which has no 00:00 point. A backfill should ask for 90 days or more.

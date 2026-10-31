@@ -126,6 +126,10 @@ _Avoid_: candle, quote, price point, tick
 A Bar fetched on or before its own session date, judged on the UTC calendar, so possibly describing a day still in progress. Its replacement by a later fetch is the day finishing, not a Restatement. A CoinGecko Bar is the price at its date's 00:00 UTC, so it is final once that day has begun.
 _Avoid_: partial bar, live bar, intraday bar
 
+**Session Offset**:
+The number of days by which the date a source stamps on a Bar leads the session that Bar closes: 0 for Yahoo, 1 for CoinGecko. Applied on read when Price Sources are resolved; stored Bars keep the stamped date.
+_Avoid_: lag, shift, date adjustment
+
 **Corporate Action**:
 A dividend or split recorded against an Instrument on a date. The only record of why a stored price history changed.
 _Avoid_: event, adjustment, split factor
@@ -171,6 +175,10 @@ _Avoid_: Account (unless broker-specific), Wallet
 **Trade**:
 Single-leg system of record for portfolio evolution. Signed quantity: positive is buy/deposit, negative is sell/withdrawal. Includes kind to support incomplete histories.
 _Avoid_: Transaction (too generic), Lot
+
+**Void**:
+The mark that retires a mistaken Trade. The Trade stays recorded and visible as voided; positions and values skip it.
+_Avoid_: delete, cancel, reversal
 
 **Trade Kind**:
 Discriminator for Trade provenance: `real` (broker import), `synthetic` (adjustment), `opening_balance` (bootstrap when prior history unknown).
