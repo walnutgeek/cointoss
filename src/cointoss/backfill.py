@@ -22,7 +22,8 @@ carrying the coin's CoinGecko id and a Yahoo provider id, which adds the Yahoo E
 Reference and opens a Ticker History record at source `yahoo` without touching the display
 symbol or the Price Sources. A refused ticker is logged; a coin none of whose tickers agree
 stores nothing, and is tried again on the next backfill. A ticker whose Yahoo reference another
-Instrument already holds is refused too: recording it would be read as evidence the two are one coin, and supersede one of them.
+Instrument already holds is refused too: recording it would be read as evidence the two are one
+coin, and supersede one of them.
 
 Only dates with no stored bar from the source are written, so no stored bar is overwritten and
 no Restatement is filed. Membership is not backfilled: `record_membership` refuses a date
