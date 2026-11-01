@@ -67,7 +67,7 @@ from cointoss.prices import (
     bars_from_yahoo,
 )
 from cointoss.sources.coingecko import MARKET_CHART_MAX_DAYS, CoinGeckoClient, MarketChart
-from cointoss.sources.yahoofinance import get_prices
+from cointoss.sources.yahoofinance import NoSuchTicker, get_prices
 from cointoss.store import Store
 
 __all__ = [
@@ -257,12 +257,15 @@ class _Run:
         known = instrument.provider_id(Source.YAHOO)
         ticker = known or f"{instrument.symbol}-USD"
         frame = await self._yahoo(ticker)
-        if isinstance(frame, str):
+        if isinstance(frame, Exception):
+            why = str(frame) or type(frame).__name__
             if known is None:
-                self._reject(instrument.id, ticker, f"no Yahoo history: {frame}")
+                if not isinstance(frame, NoSuchTicker):
+                    why = f"no Yahoo history: {why}"
+                self._reject(instrument.id, ticker, why)
             else:
-                log.warning("backfill: Yahoo %s for %s failed: %s", ticker, instrument.id, frame)
-                self.failed[instrument.id] = f"Yahoo {ticker}: {frame}"
+                log.warning("backfill: Yahoo %s for %s failed: %s", ticker, instrument.id, why)
+                self.failed[instrument.id] = f"Yahoo {ticker}: {why}"
             return
         if known is not None or await self._pair(instrument, coin_id, ticker, frame):
             await self._write_yahoo(instrument.id, frame)
@@ -290,7 +293,7 @@ class _Run:
             self.store.upsert_bars(missing)
         self.coingecko_bars += len(missing)
 
-    async def _yahoo(self, ticker: str) -> FrameData | str:
+    async def _yahoo(self, ticker: str) -> FrameData | Exception:
         """Yahoo's whole daily history for `ticker`, or why there is none."""
         wait = self._last_yahoo + YAHOO_INTERVAL - time.monotonic()
         if wait > 0:
@@ -299,7 +302,7 @@ class _Run:
             # yfinance blocks, and raises an assortment of types for a ticker it does not know.
             return await asyncio.to_thread(get_prices, ticker, period="max")
         except Exception as exc:
-            return str(exc) or type(exc).__name__
+            return exc
         finally:
             self._last_yahoo = time.monotonic()
 
