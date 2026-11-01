@@ -12,15 +12,17 @@ day the machine was down or swept late has no bar, and nothing before the first 
 - Yahoo, for a coin paired with Yahoo: `get_prices(period="max")`, back to the pair's
   listing, for dates strictly before today UTC, so no Provisional Bar is written.
 
-A coin is paired by trying `{SYMBOL}-USD` (ADR-0009 amendment of 2026-10-30). The pair is
+A coin is paired by trying its `YAHOO_PAIRS` entry, if it has one, then `{SYMBOL}-USD` (ADR-0009
+amendment of 2026-10-30), then the tickers Yahoo search lists for the symbol with a numeric
+suffix, such as `UNI7083-USD`; the first whose prices agree is the pair. A ticker is
 accepted when Yahoo's close for session D and CoinGecko's bar stamped D+1, which closes D,
 differ by less than `PAIR_TOLERANCE` in median over the last `PAIR_SESSIONS` sessions both hold.
 An accepted pair is recorded through the Instrument Registry as an Observation from Yahoo
 carrying the coin's CoinGecko id and a Yahoo provider id, which adds the Yahoo External
 Reference and opens a Ticker History record at source `yahoo` without touching the display
-symbol or the Price Sources. A rejected pair is logged, stores nothing, and is tried again on
-the next backfill. A pair whose Yahoo reference another Instrument already holds is rejected
-too: recording it would be read as evidence the two are one coin, and supersede one of them.
+symbol or the Price Sources. A refused ticker is logged; a coin none of whose tickers agree
+stores nothing, and is tried again on the next backfill. A ticker whose Yahoo reference another
+Instrument already holds is refused too: recording it would be read as evidence the two are one coin, and supersede one of them.
 
 Only dates with no stored bar from the source are written, so no stored bar is overwritten and
 no Restatement is filed. Membership is not backfilled: `record_membership` refuses a date
@@ -30,7 +32,7 @@ Network fetches run outside the sweep lock and each write inside it, through the
 caller passes: the store is read again for what is missing once the lock is held, so a sweep
 that wrote today's bar meanwhile keeps it, and a sweep waiting for the lock is held up for one
 coin's write rather than the whole backfill. CoinGecko is paced by its client's `rpm`, Yahoo by
-`YAHOO_INTERVAL` between requests.
+`YAHOO_INTERVAL` between requests, searches included.
 """
 
 from __future__ import annotations
@@ -42,7 +44,7 @@ import time
 from collections.abc import Callable, Mapping
 from contextlib import AbstractAsyncContextManager, nullcontext
 from datetime import date, datetime
-from typing import ClassVar
+from typing import ClassVar, ParamSpec, TypeVar
 
 from pydantic import BaseModel, ConfigDict
 from tornado.httpclient import HTTPClientError
@@ -67,7 +69,7 @@ from cointoss.prices import (
     bars_from_yahoo,
 )
 from cointoss.sources.coingecko import MARKET_CHART_MAX_DAYS, CoinGeckoClient, MarketChart
-from cointoss.sources.yahoofinance import NoSuchTicker, get_prices
+from cointoss.sources.yahoofinance import NoSuchTicker, get_prices, search_pairs
 from cointoss.store import Store
 
 __all__ = [
@@ -77,6 +79,7 @@ __all__ = [
     "PAIR_SESSIONS",
     "PAIR_TOLERANCE",
     "YAHOO_INTERVAL",
+    "YAHOO_PAIRS",
     "BackfillReport",
     "backfill",
     "median_disagreement",
@@ -93,8 +96,12 @@ MIN_DAYS = 90
 PAIR_SESSIONS = 30
 """How many of the latest sessions both sources hold a Yahoo pair is checked over."""
 
-PAIR_TOLERANCE = 0.02
-"""The median relative difference under which a Yahoo pair is the coin CoinGecko names."""
+PAIR_TOLERANCE = 0.03
+"""The median relative difference under which a Yahoo pair is the coin CoinGecko names.
+
+3% rather than 2% admits SHIB-USD, which differs by 2.7%; the coins that collide with an
+unrelated Yahoo asset differ by far more.
+"""
 
 COINGECKO_RPM = 10.0
 """Requests per minute to CoinGecko's free tier, which throttles a second immediate call."""
@@ -102,9 +109,28 @@ COINGECKO_RPM = 10.0
 YAHOO_INTERVAL = 2.0
 """Seconds between Yahoo requests. yfinance has no limiter of its own."""
 
+YAHOO_PAIRS: dict[str, str] = {
+    "blockstack": "STX4847-USD",
+    "bittensor": "TAO22974-USD",
+    "layerzero": "ZRO26997-USD",
+    "ondo-us-dollar-yield": "USDY29256-USD",
+    "polygon-ecosystem-token": "POL28321-USD",
+    "quack-ai": "Q38236-USD",
+    "united-stables": "U39120-USD",
+    "usd1-wlfi": "USD136148-USD",
+    "venice-token": "VVV35509-USD",
+}
+"""CoinGecko id -> Yahoo ticker, for coins Yahoo lists that neither the guess nor search finds.
+
+Tried before the guess, and accepted only when its prices agree, as any other ticker.
+"""
+
 _DAY_MS = 86_400_000
 
 WriteLock = Callable[[], AbstractAsyncContextManager[None]]
+
+_P = ParamSpec("_P")
+_T = TypeVar("_T")
 
 
 class BackfillReport(BaseModel):
@@ -207,6 +233,10 @@ def _targets(store: Store) -> list[Instrument]:
     return sorted((i for i in loaded if i is not None), key=lambda i: i.mint_seq)
 
 
+def _reason(exc: Exception) -> str:
+    return str(exc) or type(exc).__name__
+
+
 def _midnight_days(chart: MarketChart) -> set[date]:
     """The UTC days with a price point at exactly 00:00, which is then the day's bar."""
     return {p.dt.date() for p in chart.prices if p.timestamp % _DAY_MS == 0}
@@ -255,20 +285,64 @@ class _Run:
             return
         await self._coingecko(instrument.id, coin_id, days)
         known = instrument.provider_id(Source.YAHOO)
-        ticker = known or f"{instrument.symbol}-USD"
+        if known is None:
+            frame = await self._find_pair(instrument, coin_id)
+        else:
+            frame = await self._yahoo(known)
+            if isinstance(frame, Exception):
+                why = _reason(frame)
+                log.warning("backfill: Yahoo %s for %s failed: %s", known, instrument.id, why)
+                self.failed[instrument.id] = f"Yahoo {known}: {why}"
+                return
+        if frame is not None:
+            await self._write_yahoo(instrument.id, frame)
+
+    async def _find_pair(self, instrument: Instrument, coin_id: str) -> FrameData | None:
+        """The frame of the first ticker recorded as the coin's Yahoo pair, or None.
+
+        Search is asked only once the hand-kept ticker and the guess are refused. A coin left
+        unpaired is rejected with why each ticker was refused.
+        """
+        refused: dict[str, str] = {}
+        first = (YAHOO_PAIRS.get(coin_id), f"{instrument.symbol}-USD")
+        for ticker in dict.fromkeys(t for t in first if t is not None):
+            frame = await self._try_pair(instrument, coin_id, ticker, refused)
+            if frame is not None:
+                return frame
+        found = await self._paced(search_pairs, instrument.symbol)
+        if isinstance(found, Exception):
+            searched = f"Yahoo search failed: {_reason(found)}"
+        else:
+            others = [t for t in dict.fromkeys(found) if t not in refused]
+            for ticker in others:
+                frame = await self._try_pair(instrument, coin_id, ticker, refused)
+                if frame is not None:
+                    return frame
+            searched = (
+                "no Yahoo search candidate agreed"
+                if others
+                else "Yahoo search found no other ticker"
+            )
+        tickers = "; ".join(f"{t}: {why}" for t, why in refused.items())
+        self.rejected[instrument.id] = f"{tickers}; {searched}"
+        return None
+
+    async def _try_pair(
+        self, instrument: Instrument, coin_id: str, ticker: str, refused: dict[str, str]
+    ) -> FrameData | None:
+        """`ticker`'s frame once recorded as the coin's pair; else None, with why in `refused`."""
         frame = await self._yahoo(ticker)
         if isinstance(frame, Exception):
-            why = str(frame) or type(frame).__name__
-            if known is None:
-                if not isinstance(frame, NoSuchTicker):
-                    why = f"no Yahoo history: {why}"
-                self._reject(instrument.id, ticker, why)
-            else:
-                log.warning("backfill: Yahoo %s for %s failed: %s", ticker, instrument.id, why)
-                self.failed[instrument.id] = f"Yahoo {ticker}: {why}"
-            return
-        if known is not None or await self._pair(instrument, coin_id, ticker, frame):
-            await self._write_yahoo(instrument.id, frame)
+            why = _reason(frame)
+            if not isinstance(frame, NoSuchTicker):
+                why = f"no Yahoo history: {why}"
+        else:
+            why = await self._pair(instrument, coin_id, ticker, frame)
+            if why is None:
+                return frame
+        log.warning("backfill: Yahoo %s rejected for %s: %s", ticker, instrument.id, why)
+        refused[ticker] = why
+        return None
 
     async def _coingecko(self, instrument_id: InstrumentId, coin_id: str, days: int) -> None:
         try:
@@ -295,12 +369,18 @@ class _Run:
 
     async def _yahoo(self, ticker: str) -> FrameData | Exception:
         """Yahoo's whole daily history for `ticker`, or why there is none."""
+        return await self._paced(get_prices, ticker, period="max")
+
+    async def _paced(
+        self, call: Callable[_P, _T], *args: _P.args, **kwargs: _P.kwargs
+    ) -> _T | Exception:
+        """`call` in a thread, `YAHOO_INTERVAL` after the last Yahoo request, or what it raised."""
         wait = self._last_yahoo + YAHOO_INTERVAL - time.monotonic()
         if wait > 0:
             await asyncio.sleep(wait)
         try:
             # yfinance blocks, and raises an assortment of types for a ticker it does not know.
-            return await asyncio.to_thread(get_prices, ticker, period="max")
+            return await asyncio.to_thread(call, *args, **kwargs)
         except Exception as exc:
             return exc
         finally:
@@ -318,12 +398,12 @@ class _Run:
 
     async def _pair(
         self, instrument: Instrument, coin_id: str, ticker: str, frame: FrameData
-    ) -> bool:
-        """Record `ticker` as the coin's Yahoo pair if its prices agree; whether it was."""
+    ) -> str | None:
+        """Record `ticker` as the coin's Yahoo pair if its prices agree; why not, or None."""
         try:
             bars, _ = self._settled(instrument.id, frame)
         except PriceError as exc:
-            return self._reject(instrument.id, ticker, f"unreadable frame: {exc}")
+            return f"unreadable frame: {exc}"
         yahoo = {b.bar_date: b.close for b in bars}
         coingecko = {
             Source.COINGECKO.session_of(b.bar_date): b.close
@@ -331,17 +411,13 @@ class _Run:
         }
         disagreement = median_disagreement(yahoo, coingecko)
         if disagreement is None:
-            return self._reject(
-                instrument.id, ticker, f"fewer than {PAIR_SESSIONS} sessions overlap CoinGecko"
-            )
+            return f"fewer than {PAIR_SESSIONS} sessions overlap CoinGecko"
         if disagreement >= PAIR_TOLERANCE:
-            return self._reject(
-                instrument.id, ticker, f"median difference {disagreement:.1%} from CoinGecko"
-            )
+            return f"median difference {disagreement:.1%} from CoinGecko"
         async with self.lock():
             review = self._record_pair(instrument.id, coin_id, ticker)
         if review is not None:
-            return self._reject(instrument.id, ticker, review)
+            return review
         log.info(
             "backfill: %s paired with Yahoo %s (median %.2f%%)",
             instrument.id,
@@ -349,12 +425,7 @@ class _Run:
             disagreement * 100,
         )
         self.paired.append(instrument.id)
-        return True
-
-    def _reject(self, instrument_id: InstrumentId, ticker: str, why: str) -> bool:
-        log.warning("backfill: Yahoo %s rejected for %s: %s", ticker, instrument_id, why)
-        self.rejected[instrument_id] = f"{ticker}: {why}"
-        return False
+        return None
 
     def _record_pair(self, instrument_id: InstrumentId, coin_id: str, ticker: str) -> str | None:
         """Add the Yahoo reference and Ticker History; why not, or None once it is stored.

@@ -370,6 +370,7 @@ def history(at: datetime) -> Iterator[None]:
     with (
         patch("cointoss.sources.coingecko.AsyncHTTPClient", return_value=client),
         patch("cointoss.backfill.get_prices", side_effect=ValueError("no data")),
+        patch("cointoss.backfill.search_pairs", return_value=[]),
         patch("cointoss.app.utcnow", return_value=at),
     ):
         yield
@@ -395,7 +396,9 @@ async def test_the_backfill_writes_under_the_sweep_lock(
     with history(DAY2_AT):
         report = await ns.get("data:backfill")(days=90)
     assert report.coingecko_bars == 91
-    assert report.rejected == {InstrumentId(BTC): "BTC-USD: no Yahoo history: no data"}
+    assert report.rejected == {
+        InstrumentId(BTC): "BTC-USD: no Yahoo history: no data; Yahoo search found no other ticker"
+    }
 
 
 async def test_members_returns_each_member_with_its_bar(seeded: Namespace):
