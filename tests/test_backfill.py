@@ -3,8 +3,9 @@
 CoinGecko is answered by patching `AsyncHTTPClient` in `cointoss.sources.coingecko`, as
 `tests/test_sweep.py` does, with a synthetic 365-day `market_chart`: one point at each 00:00
 UTC from `TODAY - 365` to `TODAY`, plus the trailing point the API appends at the fetch time.
-Yahoo is answered by patching `get_prices` where `cointoss.backfill` calls it, with daily frames
-back to 2025 that include today's still-running session. Nothing touches the network.
+Yahoo is answered by patching `get_prices` and `search_pairs` where `cointoss.backfill` calls
+them, with daily frames back to 2025 that include today's still-running session, and search
+results from `SEARCH`. Nothing touches the network.
 
 Prices are synthetic and say which source and date they belong to. CoinGecko's bar stamped D+1
 is `cg(coin, D+1)`, and Yahoo's close for session D is that price within 0.3%, so the major
@@ -130,11 +131,16 @@ YAHOO: dict[str, FrameData] = {
 }
 
 
+# Symbol -> the tickers Yahoo search lists for it; none for a symbol not here.
+SEARCH: dict[str, list[str]] = {}
+
+
 class FakeYahoo:
-    """`get_prices` over `YAHOO`, recording each ticker asked for."""
+    """`get_prices` over `YAHOO` and `search_pairs` over `SEARCH`, recording each request."""
 
     def __init__(self) -> None:
         self.asked: list[str] = []
+        self.searched: list[str] = []
 
     def __call__(self, ticker: str, period: str = "max") -> FrameData:
         assert period == "max"
@@ -142,6 +148,10 @@ class FakeYahoo:
         if ticker not in YAHOO:
             raise ValueError(f"{ticker}: no data found, symbol may be delisted")
         return YAHOO[ticker]
+
+    def search(self, symbol: str) -> list[str]:
+        self.searched.append(symbol)
+        return SEARCH.get(symbol, [])
 
 
 @pytest.fixture
@@ -203,6 +213,7 @@ def sources() -> Iterator[FakeYahoo]:
     with (
         patch("cointoss.sources.coingecko.AsyncHTTPClient", return_value=coingecko_http()),
         patch("cointoss.backfill.get_prices", side_effect=yahoo),
+        patch("cointoss.backfill.search_pairs", side_effect=yahoo.search),
     ):
         yield yahoo
 
@@ -350,10 +361,93 @@ async def test_a_ticker_yahoo_does_not_know_is_rejected_as_no_such_ticker(store:
         with (
             patch("cointoss.sources.coingecko.AsyncHTTPClient", return_value=coingecko_http()),
             patch("cointoss.sources.yahoofinance.yf.Ticker") as ticker,
+            patch("cointoss.sources.yahoofinance.yf.Search") as search,
         ):
             ticker.return_value.history.return_value = pd.DataFrame()
+            search.return_value.quotes = []
             report = await run(store)
 
     ticker.assert_called_once_with("UNI-USD")
-    assert report.rejected == {uni: "UNI-USD: no such ticker"}
+    assert report.rejected == {uni: "UNI-USD: no such ticker; Yahoo search found no other ticker"}
     assert report.failed == {}
+
+
+async def test_a_coin_whose_guess_yahoo_lacks_pairs_with_a_suffixed_ticker_search_finds(
+    store: Store,
+):
+    with (
+        patch.dict(COINS, {"uniswap": ("uni", 6.0)}),
+        patch.dict(YAHOO, {"UNI7083-USD": yahoo_pair("uniswap", 1.0)}),
+        patch.dict(SEARCH, {"UNI": ["UNI7083-USD"]}),
+    ):
+        (uni,) = seed(store, ("uniswap",))
+        with sources() as yahoo:
+            report = await run(store)
+
+    assert yahoo.asked == ["UNI-USD", "UNI7083-USD"]
+    assert yahoo.searched == ["UNI"]
+    assert report.paired == [uni]
+    assert report.rejected == {}
+    instrument = store.load_instrument(uni)
+    assert instrument is not None
+    assert ExternalReference.provider_id("yahoo", "UNI7083-USD") in instrument.references
+    assert instrument.ticker_history_from(YH) == [TickerRecord(YH, "UNI7083-USD", "native", TODAY)]
+    assert stamped(store, uni, YH)[0] == YAHOO_START
+
+
+async def test_search_candidates_that_disagree_are_refused_and_the_first_that_agrees_wins(
+    store: Store,
+):
+    with patch.dict(
+        YAHOO,
+        {
+            "BEAM1-USD": yahoo_pair("beam-2", 3.0),
+            "BEAM2-USD": yahoo_pair("beam-2", 1.0),
+            "BEAM3-USD": yahoo_pair("beam-2", 1.0),
+        },
+    ):
+        (beam,) = seed(store, ("beam-2",))
+        with patch.dict(SEARCH, {"BEAM": ["BEAM1-USD"]}), sources():
+            refused = await run(store)
+        assert refused.paired == []
+        why = refused.rejected[beam]
+        assert why.startswith("BEAM-USD: median difference ")
+        assert "BEAM1-USD: median difference " in why
+        assert why.endswith("no Yahoo search candidate agreed")
+        assert stamped(store, beam, YH) == []
+
+        with (
+            patch.dict(SEARCH, {"BEAM": ["BEAM1-USD", "BEAM2-USD", "BEAM3-USD"]}),
+            sources() as yahoo,
+        ):
+            paired = await run(store)
+
+    assert paired.paired == [beam]
+    assert yahoo.asked == ["BEAM-USD", "BEAM1-USD", "BEAM2-USD"]
+    instrument = store.load_instrument(beam)
+    assert instrument is not None
+    assert ExternalReference.provider_id("yahoo", "BEAM2-USD") in instrument.references
+
+
+async def test_a_hand_kept_ticker_is_tried_before_the_guess_and_still_price_checked(store: Store):
+    with (
+        patch.dict(COINS, {"bittensor": ("tao", 300.0), "blockstack": ("stx", 0.3)}),
+        patch.dict(
+            YAHOO,
+            {
+                "TAO22974-USD": yahoo_pair("bittensor", 1.0),
+                "STX4847-USD": yahoo_pair("blockstack", 2.0),
+            },
+        ),
+    ):
+        tao, stx = seed(store, ("bittensor", "blockstack"))
+        with sources() as yahoo:
+            report = await run(store)
+
+    assert report.paired == [tao]
+    assert yahoo.asked == ["TAO22974-USD", "STX4847-USD", "STX-USD"]
+    assert yahoo.searched == ["STX"]
+    assert report.rejected[stx].startswith("STX4847-USD: median difference ")
+    instrument = store.load_instrument(tao)
+    assert instrument is not None
+    assert ExternalReference.provider_id("yahoo", "TAO22974-USD") in instrument.references

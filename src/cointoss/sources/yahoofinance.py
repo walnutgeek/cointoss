@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any, Literal, cast
 
 import yfinance as yf
@@ -36,6 +37,21 @@ def get_prices(ticker: str, period: YfPeriod = "max") -> FrameData:
     dd: list[str] = list(map(str, df.index.date))  # pyright: ignore[reportAttributeAccessIssue,reportUnknownArgumentType]
     df.insert(loc=0, column="date", value=dd)  # pyright: ignore
     return FrameData.pd.from_frame(df)
+
+
+def search_pairs(symbol: str) -> list[str]:
+    """Yahoo's USD tickers for the coin `symbol`, in search order.
+
+    Yahoo lists many coins under `{SYMBOL}{n}-USD`, a numeric suffix telling apart coins that
+    share a symbol, so the candidates are the crypto quotes for `{symbol} USD` of that shape.
+    """
+    pattern = re.compile(rf"{re.escape(symbol)}\d*-USD", re.IGNORECASE)
+    quotes = cast(list[dict[str, Any]], yf.Search(f"{symbol} USD", max_results=20).quotes)
+    return [
+        str(q["symbol"])
+        for q in quotes
+        if q.get("quoteType") == "CRYPTOCURRENCY" and pattern.fullmatch(str(q.get("symbol", "")))
+    ]
 
 
 @require_cache
