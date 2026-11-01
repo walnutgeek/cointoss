@@ -26,6 +26,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import urlparse
 
+import pandas as pd
 import pytest
 
 from cointoss import FrameData
@@ -340,3 +341,19 @@ async def test_a_window_shorter_than_90_days_is_refused(store: Store):
     seed(store)
     with sources(), pytest.raises(ValueError, match="90"):
         await run(store, days=30)
+
+
+async def test_a_ticker_yahoo_does_not_know_is_rejected_as_no_such_ticker(store: Store):
+    """yfinance answers an unknown ticker with an empty frame, read here by the real `get_prices`."""
+    with patch.dict(COINS, {"uniswap": ("uni", 6.0)}):
+        (uni,) = seed(store, ("uniswap",))
+        with (
+            patch("cointoss.sources.coingecko.AsyncHTTPClient", return_value=coingecko_http()),
+            patch("cointoss.sources.yahoofinance.yf.Ticker") as ticker,
+        ):
+            ticker.return_value.history.return_value = pd.DataFrame()
+            report = await run(store)
+
+    ticker.assert_called_once_with("UNI-USD")
+    assert report.rejected == {uni: "UNI-USD: no such ticker"}
+    assert report.failed == {}

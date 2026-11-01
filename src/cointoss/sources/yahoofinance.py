@@ -10,6 +10,16 @@ from cointoss import FrameData
 YfPeriod = Literal["1d", "5d", "1mo", "3mo", "6mo", "1y", "2y", "5y", "10y", "ytd", "max"]
 
 
+class NoSuchTicker(LookupError):
+    """Yahoo has no history for `ticker`."""
+
+    ticker: str
+
+    def __init__(self, ticker: str) -> None:
+        super().__init__("no such ticker")
+        self.ticker = ticker
+
+
 @require_cache
 @nsnode(tags=["api"])
 def get_info(ticker: str) -> dict[str, Any]:
@@ -20,6 +30,9 @@ def get_info(ticker: str) -> dict[str, Any]:
 @nsnode(tags=["api"])
 def get_prices(ticker: str, period: YfPeriod = "max") -> FrameData:
     df = yf.Ticker(ticker).history(period=period, interval="1d", auto_adjust=False, timeout=10)  # pyright: ignore[reportUnknownMemberType]
+    # yfinance answers a ticker it does not know with an empty frame, not an error.
+    if df.empty:
+        raise NoSuchTicker(ticker)
     dd: list[str] = list(map(str, df.index.date))  # pyright: ignore[reportAttributeAccessIssue,reportUnknownArgumentType]
     df.insert(loc=0, column="date", value=dd)  # pyright: ignore
     return FrameData.pd.from_frame(df)
