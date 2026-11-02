@@ -1,6 +1,6 @@
 # Rows, Not Blobs: Series Value Types Become Projections of the Store
 
-Status: accepted, amended 2026-09-29.
+Status: accepted, amended 2026-09-29 and 2026-11-01.
 
 Context: Every module built so far is storage-agnostic by design, which was right for getting the rules correct and means nothing is written down. `lythonic.state` supplies the persistence answer - a Pydantic-to-SQLite ORM with `DbModel`, `Schema`, `DbFile`, and alternative keys - so no database choice is needed. What is needed is a shape. All three Series types are immutable values whose `append` returns a new whole Series, so loading, appending and rewriting a ten-year daily Series to add one entry is absurd; either storage grows a row-level append that bypasses the value type, or the value type stops being the storage unit.
 
@@ -21,6 +21,7 @@ Decision:
 - Amended 2026-09-29: `record_membership` refuses a `when` earlier than the latest Evaluation Run, and than the latest entry, even where no entry sits in between. Hysteresis makes each evaluation depend on the membership before it, so a result slotted in behind a later run would contradict the input that run was computed from. Backfilling a past stretch is therefore refused rather than interleaved; `source_asof` still separates a late run from a stale market, but a late run can only move forward.
 - Amended 2026-09-29: the evaluation diff folds Supersession (ADR-0004) before comparing, so a member re-expressed under its survivor is not a change, dropping a survivor closes the intervals held under its predecessors, and a newly admitted member is opened under its survivor. Nothing stored is rewritten; membership reads fold the same way.
 - Amended 2026-09-29: secondary indexes where a read starts from something no alternative key leads with - `TickerRecord (source, symbol, valid_from)` and `InstrumentReference (kind, value, qualifier)` for identity resolution, `UniverseMembership (definition, valid_from, valid_to)` for the point read, `UniverseMembership (instrument, valid_from, valid_to)` for which universes held an Instrument, and `Instrument (superseded_by)` for gathering everything superseded into a survivor. Indexes are created on open if absent and are not a schema version change.
+- Amended 2026-11-01: a store opened on a file at an older schema version first copies it beside itself as `cointoss.db.v<old>-<UTC time>.bak`, with SQLite's online backup, before it creates a table or runs a step. Migrations are reached by upgrading and restarting, with no manual step, so this copy is the one rollback an operator is sure to have. It is taken only when a migration will run, not on an equal version, a fresh file, or an open refused for a missing step. Pruning old copies is the operator's.
 
 The shape this produces, with natural keys as alternative keys over surrogate integer primary keys:
 

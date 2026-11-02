@@ -12,7 +12,8 @@ therefore opens its own connection and sets `foreign_keys` and `journal_mode` it
 `DbFile.check()` carries a `TODO` where migration belongs, so the version lives here instead:
 a `SchemaVersion` row records what wrote the file, and opening compares it against
 `SCHEMA_VERSION`. Equal proceeds, older migrates through `MIGRATIONS` in order, newer is
-refused -- an old binary must not write into a file it does not understand.
+refused -- an old binary must not write into a file it does not understand. Before an older
+file is touched it is copied aside, next to itself, so a failed or wrong step can be undone.
 
 Every table is classified durable or rebuildable in `TABLES`, because only durable tables ever
 need a migration written: bars, corporate actions, restatements and run logs can be dropped and
@@ -876,6 +877,8 @@ class Store:
     schema: Schema
     version: int
     migrations: list[Migration]
+    migration_backup: Path | None
+    """The copy taken before this open migrated the file, None if it did not migrate."""
 
     def __init__(
         self,
@@ -889,8 +892,11 @@ class Store:
         self.schema = schema
         self.version = version
         self.migrations = MIGRATIONS if migrations is None else migrations
+        self.migration_backup = None
         self.conn = self._connect()
         try:
+            # Before creating tables, so the copy is the file exactly as the older build left it.
+            self._back_up_before_migrating()
             self._create_missing_tables()
             self._create_indexes()
             self._check_version()
@@ -931,6 +937,8 @@ class Store:
         self.conn.commit()
 
     def _stored_version(self) -> int | None:
+        if SchemaVersion.get_table_name() not in self._existing_tables():
+            return None
         rows = SchemaVersion.select(self.conn)
         return max((row.version for row in rows), default=None)
 
@@ -949,7 +957,27 @@ class Store:
         elif stored < self.version:
             self._migrate(stored)
 
+    def _back_up_before_migrating(self) -> None:
+        stored = self._stored_version()
+        if stored is None or stored >= self.version:
+            return
+        # Raises `MigrationGap` first, so a refused open leaves no copy behind.
+        self._steps(stored)
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        target = self.path.with_name(f"{self.path.name}.v{stored}-{stamp}.bak")
+        backup_database(self.path, target)
+        log.info(
+            "%s is at schema version %d; copied to %s before migrating", self.path, stored, target
+        )
+        self.migration_backup = target
+
     def _migrate(self, stored: int) -> None:
+        for step in self._steps(stored):
+            step.apply(self.conn)
+            self._record_version(step.to_version)
+
+    def _steps(self, stored: int) -> list[Migration]:
+        """The steps from `stored` to `version` in order, or `MigrationGap` if they fall short."""
         steps = sorted(
             (m for m in self.migrations if stored < m.to_version <= self.version),
             key=lambda m: m.to_version,
@@ -960,9 +988,7 @@ class Store:
                 f"{self.path} is at schema version {stored} and this build is at "
                 f"{self.version}, but the steps available reach {reached}"
             )
-        for step in steps:
-            step.apply(self.conn)
-            self._record_version(step.to_version)
+        return steps
 
     # -- Identity --
 

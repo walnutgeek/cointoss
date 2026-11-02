@@ -228,6 +228,35 @@ def test_a_missing_migration_step_is_refused(db_path: Path):
         Store(db_path, version=2, migrations=[])
 
 
+def test_a_file_about_to_migrate_is_copied_aside_first(db_path: Path):
+    with Store(db_path, version=1) as store:
+        store.conn.execute("CREATE TABLE Before (x INTEGER)")
+        store.conn.execute("INSERT INTO Before VALUES (7)")
+        store.conn.commit()
+
+    def apply(conn: sqlite3.Connection) -> None:
+        conn.execute("DROP TABLE Before")
+
+    with Store(db_path, version=2, migrations=[Migration(2, apply)]) as store:
+        copy = store.migration_backup
+    assert copy is not None
+    assert copy.parent == db_path.parent
+    assert copy.name.startswith(f"{db_path.name}.v1-")
+    with closing(sqlite3.connect(copy)) as conn:
+        assert conn.execute("SELECT x FROM Before").fetchall() == [(7,)]
+        assert conn.execute("SELECT max(version) FROM SchemaVersion").fetchone()[0] == 1
+
+
+def test_no_copy_is_made_unless_a_migration_runs(db_path: Path):
+    with Store(db_path, version=1) as store:
+        assert store.migration_backup is None
+    with Store(db_path, version=1) as store:
+        assert store.migration_backup is None
+    with pytest.raises(MigrationGap):
+        Store(db_path, version=2, migrations=[])
+    assert sorted(p.name for p in db_path.parent.iterdir() if ".v1-" in p.name) == []
+
+
 def test_the_version_is_stamped_with_a_time(db_path: Path):
     before = datetime.now(UTC)
     with Store(db_path) as store:

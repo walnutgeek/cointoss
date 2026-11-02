@@ -238,6 +238,34 @@ systemctl --user start cointoss
 directory. It refuses a backup whose schema is newer than the installed cointoss reads; to
 roll back an upgrade, restore a backup taken before it with the older version installed.
 
+## Upgrade
+
+Install the new version and restart the service; there is no separate migration command.
+
+```bash
+uv tool upgrade cointoss          # or, from a checkout: git pull && uv sync --all-extras
+systemctl --user restart cointoss
+```
+
+`cointoss.db` records the schema version that wrote it. On open, cointoss compares that with
+the version it ships:
+
+- Equal: it opens as usual. New tables and indexes are created if absent.
+- Older: it first copies the database next to itself as `cointoss.db.v<old>-<UTC time>.bak`,
+  then runs the migration steps in order and records each version reached. A step missing on
+  the way refuses the open and touches nothing.
+- Newer: it refuses to open, so an older cointoss never writes into a file it does not
+  understand.
+
+The copy is kept until you delete it. To undo a migration, stop the service, install the older
+version, and move the copy back to `cointoss.db`. Taking a `cointoss backup` before an upgrade
+is still worthwhile, since it also keeps the configs.
+
+For developers: a new table only needs adding to `TABLES` in `cointoss.store`. Changing an
+existing durable table needs a `Migration` step appended to `MIGRATIONS` and `SCHEMA_VERSION`
+raised to match; rebuildable tables (bars, corporate actions, restatements, run logs) may be
+dropped and backfilled instead. See ADR-0008.
+
 ## Development
 
 ```bash
