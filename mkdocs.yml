@@ -124,8 +124,8 @@ nav:
           - cointoss.explorer: reference/explorer.md
           - cointoss.cli: reference/cli.md
   - Releases:
+      - v0.0.4: release_notes/v0.0.4.md
       - v0.0.3: release_notes/v0.0.3.md
       - v0.0.2: release_notes/v0.0.2.md
-      - v0.0.1: release_notes/v0.0.1.md
       - "...": release_notes/index.md
   - Privacy: privacy.md
