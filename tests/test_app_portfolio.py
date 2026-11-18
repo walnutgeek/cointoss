@@ -25,7 +25,7 @@ import tornado.testing
 import yaml
 from lythonic.compose.namespace import Namespace
 from typing_extensions import override
-from woodglue.access import AccessDenied, Caller, Grant, current_caller, resolve_roles
+from woodglue.access import Caller, Grant, current_caller, resolve_roles
 from woodglue.apps.server import create_app
 from woodglue.auth_store import AuthStore
 from woodglue.cli import load_namespaces
@@ -54,12 +54,6 @@ NOT_FOUND = {"warning": "No identifier found."}
 
 ALICE = Caller(user_id="usr_alice", grant_sets=(tuple(map(Grant.parse, PORTFOLIO_GRANTS)),))
 BOB = Caller(user_id="usr_bob", grant_sets=(tuple(map(Grant.parse, PORTFOLIO_GRANTS)),))
-READER = Caller(user_id="usr_reader", grant_sets=((Grant.parse("call cointoss"),),))
-EXPLORER = Caller(
-    user_id="admin",
-    grant_sets=(resolve_roles({})["admin"], (Grant.parse("call cointoss"),)),
-    credential_kind="delegated",
-)
 
 
 def coins() -> list[dict[str, Any]]:
@@ -162,27 +156,6 @@ async def add(ns: Namespace, caller: Caller, portfolio_id: int, instrument: str,
 def void(ns: Namespace, caller: Caller, trade_id: int) -> Any:
     with acting_as(caller):
         return ns.get("data:void_trade")(trade_id=trade_id)
-
-
-@pytest.mark.parametrize("caller", [READER, EXPLORER], ids=["reader", "explorer"])
-async def test_a_caller_without_the_role_is_refused_and_nothing_is_written(
-    ns: Namespace, data_dir: Path, caller: Caller
-):
-    portfolio = create(ns, ALICE)
-    trade = await add(ns, ALICE, portfolio.id, BTC, quantity=1.0)
-
-    with pytest.raises(AccessDenied):
-        create(ns, caller, name="mine")
-    with pytest.raises(AccessDenied):
-        await add(ns, caller, portfolio.id, "neo", quantity=1.0)
-    with pytest.raises(AccessDenied):
-        void(ns, caller, trade.id)
-
-    with stored(data_dir) as store:
-        assert [p.name for p in store.portfolios_of(caller.user_id or "")] == []
-        assert [t.voided for t in store.trades_of(portfolio.id)] == [False]
-        assert store.load_instrument(NEO) is None
-        assert InstrumentId(NEO) not in store.require_universe(PORTFOLIO_HELD).parameters.inclusions
 
 
 async def test_the_caller_owns_the_portfolio_it_creates(ns: Namespace, data_dir: Path):
@@ -349,6 +322,8 @@ class TestOverHttp(tornado.testing.AsyncHTTPTestCase):
         roles: dict[str, list[str]] = {
             PORTFOLIO_ROLE: list(PORTFOLIO_GRANTS),
             "viewer": ["call cointoss"],
+            "wildcard": ["call *", "call cointoss*"],
+            "before_v0_0_5": ["call cointoss", "call cointoss.portfolio"],
         }
         self.auth = AuthStore(data_dir / "auth.db", resolve_roles(roles))
         config = WoodglueConfig(namespaces={}, auth=AuthConfig(enabled=True, roles=roles))
@@ -373,21 +348,34 @@ class TestOverHttp(tornado.testing.AsyncHTTPTestCase):
         assert response.code == 200
         return json.loads(response.body)
 
-    def test_the_role_reaches_the_writes_and_a_reader_or_the_explorer_does_not(self) -> None:
+    def test_the_role_reaches_the_writes_and_no_call_grant_does(self) -> None:
         trader = self.token("trader", PORTFOLIO_ROLE)
-        reader = self.token("reader", "viewer")
+        readers = [self.token(role, role) for role in ("viewer", "wildcard", "before_v0_0_5")]
         self.auth.ensure_admin_token()
         session = self.auth.create_session("admin")
         explorer = self.auth.delegate(session, "explore", ["call cointoss"])
 
         created = self.rpc(trader, "cointoss.data:create_portfolio", name="main")["result"]
         assert created["owner"].startswith("svc_")
-        for token in (reader, explorer):
+        for token in (*readers, explorer):
             answer = self.rpc(token, "cointoss.data:create_portfolio", name="theirs")
             assert answer["error"]["code"] == -32003
+            trade = self.rpc(
+                token,
+                "cointoss.data:add_trade",
+                portfolio_id=created["id"],
+                instrument="neo",
+                quantity=1.0,
+            )
+            assert trade["error"]["code"] == -32003
+            assert (
+                self.rpc(token, "cointoss.data:void_trade", trade_id=1)["error"]["code"] == -32003
+            )
             assert self.rpc(token, "cointoss.data:universes")["result"] == []
         with Store(Path(self.home.name) / "cointoss.db") as store:
             assert store.portfolios_of("admin") == []
+            assert store.trades_of(created["id"]) == []
+            assert store.load_instrument(NEO) is None
 
         admin = self.auth.admin_tokens()[0]
         missing = self.rpc(admin, "cointoss.data:void_trade", trade_id=1)

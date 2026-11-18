@@ -95,7 +95,22 @@ def test_init_reports_the_role_missing_from_a_kept_woodglue_yaml(
 
     assert code == 0, out
     assert f"no `{PORTFOLIO_ROLE}` Role" in out
-    assert "call cointoss.portfolio" in out
+    assert "write cointoss" in out
+
+
+def test_init_reports_a_portfolio_role_written_before_required_actions(
+    home: Path, capsys: pytest.CaptureFixture[str]
+):
+    assert main(["init", "--data-dir", str(home)]) == 0
+    written = yaml.safe_load((home / "woodglue.yaml").read_text())
+    written["auth"]["roles"][PORTFOLIO_ROLE] = ["call cointoss", "call cointoss.portfolio"]
+    (home / "woodglue.yaml").write_text(yaml.safe_dump(written))
+
+    code, out = run(capsys, home, "init")
+
+    assert code == 0, out
+    assert f"the `{PORTFOLIO_ROLE}` Role cannot write portfolios" in out
+    assert "write cointoss" in out
 
 
 def test_create_trade_and_void_against_the_local_instance(
@@ -138,7 +153,7 @@ def test_a_token_without_the_role_is_refused_in_one_line(
         code, out = run(capsys, home, "portfolio", "create", "main", f"--token={explorer}")
 
     assert code == 1
-    assert out == ("cointoss portfolio: Forbidden: requires 'call' on 'cointoss.portfolio'\n")
+    assert out == ("cointoss portfolio: Forbidden: requires 'write' on 'cointoss'\n")
     with Store(home / "cointoss.db") as store:
         assert store.portfolios_of("admin") == []
 

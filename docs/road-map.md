@@ -146,8 +146,8 @@ early, because accumulated history is the one thing that cannot be produced late
    int, so it ships in a release.
    1. **Storage (#32).** Done. `Portfolio` and `Trade` tables, positions on read.
    2. **Writes (#33).** Done. `create_portfolio`, `add_trade` and `void_trade` over JSON-RPC,
-      each checking `call cointoss.portfolio`, which the `portfolio` Role and `admin` hold and the
-      explorer's Delegated Token does not; the caller owns what it creates and touches only its
+      each requiring woodglue's Required Action `write` (#37), which the `portfolio` Role and
+      `admin` hold and no `call` Grant, the explorer's Delegated Token included, reaches; the caller owns what it creates and touches only its
       own. `cointoss portfolio create`, `trade add` and `trade void` are clients of them. A traded
       Instrument is an Inclusion of `portfolio-held`, which the sweep evaluates and prices,
       fetching by CoinGecko id an Inclusion the `markets` listing leaves out.

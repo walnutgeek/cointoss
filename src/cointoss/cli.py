@@ -228,8 +228,8 @@ def explorer_ui() -> dict[str, Any]:
     Its only Grant is `call` on the cointoss namespace, so whoever views it, the app can do no
     more than call cointoss's read nodes: woodglue exposes only `api` nodes over JSON-RPC, so
     the sweep is not callable, and firing its trigger needs a `trigger` Grant. The portfolio
-    writes are `api` nodes but also check `call` on `cointoss.app.WRITE_TARGET`, which this
-    Grant does not cover.
+    writes are `api` nodes but require `cointoss.app.WRITE_ACTION`, which no `call` Grant
+    reaches.
     """
     return {
         "kind": "streamlit",
@@ -242,10 +242,9 @@ def explorer_ui() -> dict[str, Any]:
 def auth_roles() -> dict[str, list[str]]:
     """The Roles a new `woodglue.yaml` defines: `portfolio`, for Users who record their trades.
 
-    The built-in `admin` Role, whose token `cointoss token` prints, needs no definition. A Role
-    added by hand that grants `call *` or `call cointoss*` can write portfolios too, since the
-    write check matches `call cointoss.portfolio` against Grant patterns; one meant only to read
-    names `call cointoss` exactly.
+    The built-in `admin` Role, whose token `cointoss token` prints, needs no definition. Only a
+    `write cointoss` Grant reaches the portfolio writes, so a reader's Role may use any `call`
+    pattern.
     """
     return {PORTFOLIO_ROLE: list(PORTFOLIO_GRANTS)}
 
@@ -460,14 +459,22 @@ def _report_backfill_trigger(config: WoodglueConfig) -> None:
 
 
 def _report_portfolio_role(config: WoodglueConfig) -> None:
-    """Say what to add when a kept `woodglue.yaml` has no `portfolio` Role to grant Users.
+    """Say what to add when a kept `woodglue.yaml` has no `portfolio` Role that can write.
 
-    Without it only the admin token, or a wildcard `call` Grant (see `auth_roles`), can write
-    portfolios, so it is reported rather than refused.
+    Without it only the admin token can write portfolios, so it is reported rather than refused.
+    A Role written before v0.0.5 grants `call cointoss.portfolio`, which reaches nothing now.
     """
-    if not config.auth.enabled or PORTFOLIO_ROLE in config.auth.roles:
+    if not config.auth.enabled:
         return
-    print(f"{WOODGLUE_CONFIG}: no `{PORTFOLIO_ROLE}` Role; for Users who record trades, add:")
+    grants = config.auth.roles.get(PORTFOLIO_ROLE)
+    if grants is None:
+        print(f"{WOODGLUE_CONFIG}: no `{PORTFOLIO_ROLE}` Role; for Users who record trades, add:")
+    elif not set(PORTFOLIO_GRANTS) <= set(grants):
+        print(
+            f"{WOODGLUE_CONFIG}: the `{PORTFOLIO_ROLE}` Role cannot write portfolios; replace it with:"
+        )
+    else:
+        return
     _print_snippet({"auth": {"roles": auth_roles()}})
 
 

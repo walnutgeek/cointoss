@@ -159,7 +159,8 @@ the service after editing.
 The admin can open it. Anyone else needs a Role with `view ui:explore` and `call cointoss`.
 `grants` limits what the app can do as any viewer to calling the cointoss namespace.
 `call cointoss` reaches only the namespace's read nodes: the sweep is not callable over
-JSON-RPC, and firing its trigger needs `trigger cointoss`.
+JSON-RPC, firing its trigger needs `trigger cointoss`, and the portfolio writes need
+`write cointoss`, which the `portfolio` Role holds and no `call` pattern reaches.
 
 ## Pause the daily sweep
 

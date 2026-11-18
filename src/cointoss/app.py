@@ -31,17 +31,13 @@ than for its whole run, which is long, so a sweep or backup waiting for the lock
 one coin's write.
 
 The portfolio writes, `create_portfolio`, `add_trade` and `void_trade`, are `api` nodes too, but
-a woodglue Grant names a whole namespace, so `call cointoss` alone would reach them, and that is
-the explorer's Grant. Each write therefore checks a second Grant itself: `call` on
-`WRITE_TARGET`, `cointoss.portfolio`. No namespace can be called that, since woodglue splits a
-method name at its first dot, so the Grant means only "may write portfolios". The `portfolio`
-Role (`PORTFOLIO_ROLE`, `PORTFOLIO_GRANTS`) holds it beside `call cointoss`, and the built-in
-`admin` Role holds every Grant. A Delegated Token is narrowed to its UI's `grants`, so the
-explorer's token cannot write whoever views it. A Grant's target is an fnmatch pattern, so a
-wildcard that also matches `cointoss.portfolio`, such as `call *` or `call cointoss*`, grants
-the writes too: a Role meant only to read names `call cointoss` exactly. A refused write raises
-woodglue's `AccessDenied` before anything is read or written, which a JSON-RPC client receives
-as -32003.
+declare the Required Action `WRITE_ACTION`, `write` (woodglue ADR 0005). woodglue runs them over
+JSON-RPC only for a Grant of `write` on the namespace, which no `call` Grant reaches, wildcards
+such as `call *` included; the explorer's Grant and a reader's Role are `call cointoss`. The
+`portfolio` Role (`PORTFOLIO_ROLE`, `PORTFOLIO_GRANTS`) holds `write cointoss` beside
+`call cointoss`, and the built-in `admin` Role reaches every Action. A refused write is answered
+before the node runs, which a JSON-RPC client receives as -32003. woodglue checks only requests
+it serves: a node called in process, as the tests do, runs for any Caller.
 
 The caller is the owner: `create_portfolio` records the Caller's User id, and `add_trade` and
 `void_trade` act only on that User's Portfolios. Another User's Portfolio or Trade is reported
@@ -98,7 +94,7 @@ from typing import IO, Any, ClassVar, TypeVar
 from lythonic.compose.namespace import NamespaceFragment, nsnode
 from lythonic.frame import FrameData
 from pydantic import BaseModel, ConfigDict, ValidationError
-from woodglue.access import ANONYMOUS, Action, check, current_caller
+from woodglue.access import ANONYMOUS, current_caller
 from woodglue.apps.rpc import RpcError
 from woodglue.mount import current_mount
 
@@ -152,7 +148,7 @@ __all__ = [
     "SWEEP_LOCK_WAIT",
     "SWEEP_NODE",
     "SWEEP_TRIGGER",
-    "WRITE_TARGET",
+    "WRITE_ACTION",
     "ApiError",
     "BadRequest",
     "ChangeView",
@@ -192,12 +188,10 @@ BACKFILL_TRIGGER = "daily_backfill"
 FRAGMENT_GREF = "cointoss.app:CointossApp"
 NAMESPACE = "cointoss"
 """The woodglue namespace `cointoss init` mounts the fragment under."""
-WRITE_TARGET = f"{NAMESPACE}.portfolio"
-"""The target of the `call` Grant a portfolio write checks for; never a namespace's name.
-
-Matched as an fnmatch pattern, so `call *` and `call cointoss*` grant the writes as well."""
+WRITE_ACTION = "write"
+"""The Required Action of the portfolio writes; only a `write` Grant on the namespace runs them."""
 PORTFOLIO_ROLE = "portfolio"
-PORTFOLIO_GRANTS = (f"call {NAMESPACE}", f"call {WRITE_TARGET}")
+PORTFOLIO_GRANTS = (f"call {NAMESPACE}", f"{WRITE_ACTION} {NAMESPACE}")
 """The Grants of `PORTFOLIO_ROLE`: the read API and the portfolio writes."""
 SWEEP_LOCK = "sweep.lock"
 SWEEP_LOCK_WAIT = 600.0
@@ -661,7 +655,7 @@ class CointossApp(NamespaceFragment):
                     "narrow the range, the instruments or the universe"
                 ) from None
 
-    @nsnode(tags=["api"])
+    @nsnode(tags=["api"], requires=WRITE_ACTION)
     def create_portfolio(
         self, name: str, kind: str = PortfolioKind.REAL, custodian: str | None = None
     ) -> Portfolio:
@@ -676,7 +670,7 @@ class CointossApp(NamespaceFragment):
         with self._store() as store:
             return store.create_portfolio(owner, name.strip(), portfolio_kind, custodian)
 
-    @nsnode(tags=["api"])
+    @nsnode(tags=["api"], requires=WRITE_ACTION)
     async def add_trade(
         self,
         portfolio_id: int,
@@ -731,7 +725,7 @@ class CointossApp(NamespaceFragment):
             except ValidationError as exc:
                 raise BadRequest(one_line(exc)) from None
 
-    @nsnode(tags=["api"])
+    @nsnode(tags=["api"], requires=WRITE_ACTION)
     def void_trade(self, trade_id: int) -> Trade:
         """Void one of the caller's Trades now. It stays recorded and counts toward nothing.
 
@@ -746,8 +740,7 @@ class CointossApp(NamespaceFragment):
 
 
 def _writer() -> UserId:
-    """The User a portfolio write runs as, once the Caller is shown to hold the write Grant."""
-    check(Action.call, WRITE_TARGET)
+    """The User a portfolio write runs as."""
     return _caller_user("a portfolio write runs as a User")
 
 
@@ -755,7 +748,7 @@ def _caller_user(why: str) -> UserId:
     """The Caller's User id, `anonymous` with auth disabled; `Unauthorized` with no Caller.
 
     An owned Dataset reads as this User with no Grant beyond the namespace's, so the explorer
-    reads as its viewer; a write checks its Grant first.
+    reads as its viewer; woodglue has checked a write's Required Action before it runs.
     """
     caller = current_caller.get()
     if caller is None:
